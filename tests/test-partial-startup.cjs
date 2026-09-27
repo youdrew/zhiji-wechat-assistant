@@ -176,6 +176,7 @@ test("final update unlocks the UI after commit while account validation can cont
       reportUiReady: () => commit } },
     startInitialLoad: () => { events.push("account-validation-started"); return new Promise(() => {}); },
     loadModelSource: () => events.push("model-source-load-started"),
+    loadLocalModel: () => events.push("local-model-load-started"),
   });
   vm.runInContext(source.slice(unlockStart, unlockEnd) + source.slice(bootStart, bootEnd), context);
   assert.equal(byId("startupOverlay").hidden, false);
@@ -193,6 +194,7 @@ test("final update unlocks the UI after commit while account validation can cont
       reportUiReady: () => Promise.resolve(true) } },
     startInitialLoad: () => { throw new Error("validation must not open account data"); },
     loadModelSource: () => { throw new Error("validation must not load model settings"); },
+    loadLocalModel: () => { throw new Error("validation must not start local model loading"); },
   });
   vm.runInContext(source.slice(unlockStart, unlockEnd) + source.slice(bootStart, bootEnd), validationContext);
   await Promise.resolve();

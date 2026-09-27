@@ -34,6 +34,10 @@ export interface GenerationRequest {
   prompt: string;
   maxOutputTokens: number;
   signal?: AbortSignal;
+  /** A bounded per-request timeout; larger portrait batches may need longer than a probe. */
+  timeoutMs?: number;
+  /** Ask compatible providers for a JSON object; callers still validate every field. */
+  jsonMode?: boolean;
 }
 
 export interface GenerationResult {
@@ -335,10 +339,14 @@ export async function generateStructured(
   if (!request || typeof request.system !== "string" || typeof request.prompt !== "string" ||
       !request.prompt.trim() || !Number.isInteger(request.maxOutputTokens) ||
       request.maxOutputTokens < 1 || request.maxOutputTokens > 8192 ||
+      (request.jsonMode !== undefined && typeof request.jsonMode !== "boolean") ||
+      (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) ||
+        request.timeoutMs < 1000 || request.timeoutMs > 120_000)) ||
       Buffer.byteLength(request.system, "utf8") + Buffer.byteLength(request.prompt, "utf8") > MAX_PROMPT_BYTES) {
     invalid("生成请求超出允许范围");
   }
   if (request.signal?.aborted) throw new ModelConnectorError("cancelled", "请求已取消");
+  const timeoutMs = request.timeoutMs ?? REQUEST_TIMEOUT_MS;
   try {
     let result: GenerationResult;
     switch (safe.protocol) {
@@ -346,11 +354,29 @@ export async function generateStructured(
         const { default: OpenAI } = await import("openai");
         const client = new OpenAI({ apiKey: safe.apiKey || NO_KEY, baseURL: safe.baseUrl,
           organization: null, project: null, adminAPIKey: null,
-          fetch: guardedFetch(safe, request.signal), maxRetries: 0,
-          timeout: REQUEST_TIMEOUT_MS, logLevel: "off" });
-        const response = await client.responses.create({ model: safe.model, input: request.prompt,
-          instructions: request.system, max_output_tokens: request.maxOutputTokens, store: false },
-        { signal: request.signal });
+          fetch: guardedFetch(safe, request.signal, timeoutMs), maxRetries: 0,
+          timeout: timeoutMs, logLevel: "off" });
+        const params = { model: safe.model, input: request.prompt,
+          instructions: request.system, max_output_tokens: request.maxOutputTokens, store: false as const };
+        // DeepSeek's official Responses API enables thinking by default, and its
+        // output cap includes reasoning tokens. Structured analysis needs room
+        // for the final JSON rather than spending the cap before any text appears.
+        const officialDeepSeekJson = request.jsonMode &&
+          new URL(safe.baseUrl).hostname.toLowerCase() === "api.deepseek.com";
+        let response;
+        try {
+          response = await client.responses.create({ ...params,
+            ...(request.jsonMode ? { text: { format: { type: "json_object" as const } } } : {}),
+            ...(officialDeepSeekJson ? { reasoning: { effort: "none" as const } } : {}) },
+          { signal: request.signal });
+        } catch (error) {
+          // Some compatible gateways omit JSON mode. Remove only that format hint;
+          // official DeepSeek must not re-enter its default thinking mode on fallback.
+          if (!request.jsonMode || ![400, 422].includes(errorStatus(error) ?? -1)) throw error;
+          response = await client.responses.create({ ...params,
+            ...(officialDeepSeekJson ? { reasoning: { effort: "none" as const } } : {}) },
+          { signal: request.signal });
+        }
         result = { text: response.output_text || "",
           usage: usage(response.usage?.input_tokens, response.usage?.output_tokens) };
         break;
@@ -359,12 +385,21 @@ export async function generateStructured(
         const { default: OpenAI } = await import("openai");
         const client = new OpenAI({ apiKey: safe.apiKey || NO_KEY, baseURL: safe.baseUrl,
           organization: null, project: null, adminAPIKey: null,
-          fetch: guardedFetch(safe, request.signal), maxRetries: 0,
-          timeout: REQUEST_TIMEOUT_MS, logLevel: "off" });
-        const response = await client.chat.completions.create({ model: safe.model,
-          messages: [{ role: "system", content: request.system },
-            { role: "user", content: request.prompt }],
-          max_tokens: request.maxOutputTokens }, { signal: request.signal });
+          fetch: guardedFetch(safe, request.signal, timeoutMs), maxRetries: 0,
+          timeout: timeoutMs, logLevel: "off" });
+        const params = { model: safe.model,
+          messages: [{ role: "system" as const, content: request.system },
+            { role: "user" as const, content: request.prompt }],
+          max_tokens: request.maxOutputTokens };
+        let response;
+        try {
+          response = await client.chat.completions.create({ ...params,
+            ...(request.jsonMode ? { response_format: { type: "json_object" as const } } : {}) },
+          { signal: request.signal });
+        } catch (error) {
+          if (!request.jsonMode || ![400, 422].includes(errorStatus(error) ?? -1)) throw error;
+          response = await client.chat.completions.create(params, { signal: request.signal });
+        }
         result = { text: response.choices[0]?.message.content ?? "",
           usage: usage(response.usage?.prompt_tokens, response.usage?.completion_tokens) };
         break;
@@ -373,8 +408,8 @@ export async function generateStructured(
         const { default: Anthropic } = await import("@anthropic-ai/sdk");
         const client = new Anthropic({ apiKey: safe.apiKey || NO_KEY, authToken: null,
           credentials: null, config: null, profile: null, baseURL: anthropicSdkBase(safe),
-          fetch: guardedFetch(safe, request.signal), maxRetries: 0,
-          timeout: REQUEST_TIMEOUT_MS, logLevel: "off" });
+          fetch: guardedFetch(safe, request.signal, timeoutMs), maxRetries: 0,
+          timeout: timeoutMs, logLevel: "off" });
         const response = await client.messages.create({ model: safe.model,
           system: request.system, max_tokens: request.maxOutputTokens,
           messages: [{ role: "user", content: request.prompt }] }, { signal: request.signal });
@@ -386,10 +421,11 @@ export async function generateStructured(
       case "gemini": {
         const { GoogleGenAI } = await import("@google/genai");
         const client = new GoogleGenAI({ apiKey: safe.apiKey || NO_KEY, vertexai: false,
-          httpOptions: { baseUrl: safe.baseUrl, apiVersion: "", timeout: REQUEST_TIMEOUT_MS,
-            fetch: guardedFetch(safe, request.signal) } });
+          httpOptions: { baseUrl: safe.baseUrl, apiVersion: "", timeout: timeoutMs,
+            fetch: guardedFetch(safe, request.signal, timeoutMs) } });
         const response = await client.models.generateContent({ model: safe.model,
           contents: request.prompt, config: { systemInstruction: request.system,
+            ...(request.jsonMode ? { responseMimeType: "application/json" } : {}),
             maxOutputTokens: request.maxOutputTokens, abortSignal: request.signal } });
         result = { text: response.text ?? "",
           usage: usage(response.usageMetadata?.promptTokenCount,
@@ -399,9 +435,10 @@ export async function generateStructured(
       case "ollama": {
         const { Ollama } = await import("ollama");
         const client = new Ollama({ host: ollamaSdkBase(safe),
-          fetch: guardedFetch(safe, request.signal),
+          fetch: guardedFetch(safe, request.signal, timeoutMs),
           headers: safe.apiKey ? { Authorization: `Bearer ${safe.apiKey}` } : undefined });
         const response = await client.chat({ model: safe.model, stream: false,
+          ...(request.jsonMode ? { format: "json" } : {}),
           messages: [{ role: "system", content: request.system },
             { role: "user", content: request.prompt }],
           options: { num_predict: request.maxOutputTokens } });
@@ -423,9 +460,12 @@ export async function testConnection(config: ModelConfig): Promise<{
 }> {
   const start = performance.now();
   await generateStructured(config, {
-    system: "This is a connection test. Reply briefly.",
-    prompt: "Reply with OK.",
+    system: "This is a connection test. Return only a JSON object.",
+    prompt: 'Reply with JSON {"ok":true}.',
     maxOutputTokens: 128,
+    jsonMode: true,
+    // Keep the probe finite so the settings buttons never stay busy for long.
+    timeoutMs: 15_000,
   });
   return { ok: true, latencyMs: Math.round(performance.now() - start), model: config.model.trim() };
 }

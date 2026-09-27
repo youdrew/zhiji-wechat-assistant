@@ -120,12 +120,15 @@ class ModelDownload {
         try { await this.downloadOnce(archive); }
         catch (error) {
           if (fs.existsSync(archive)) fs.unlinkSync(archive);
-          if (!this.enableFallback || !await this.enableFallback()) throw error;
+          if (this.state.phase !== "downloading" || !this.enableFallback ||
+              !await this.enableFallback()) throw error;
           await this.downloadOnce(archive);
         }
         return this.getState();
       } catch (error) {
+        const stage = this.state.phase;
         this.publish({ phase: "failed", received: 0, total: this.asset.bytes,
+          stage,
           error: error instanceof Error ? error.message : "模型下载失败" });
         return this.getState();
       } finally {

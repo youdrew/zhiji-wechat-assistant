@@ -252,18 +252,24 @@ def make_handler(backend, accounts=None, control_token=None):
                 if endpoint == "/api/model-insights":
                     account = user_value(request.get("account"))
                     user = user_value(request.get("user"))
-                    limit = integer(request.get("limit"), 4, 8)
+                    limit = integer(request.get("limit"), 2, 2)
                     around = request.get("around")
                     return self.send(202, backend.start_model_insights(
                         account, user, limit, request.get("targetIds"), around))
                 if endpoint == "/api/model-portrait":
                     if set(request) not in ({"account", "user"},
-                                            {"account", "user", "member"}):
+                                            {"account", "user", "member"},
+                                            {"account", "user", "refreshAxes"},
+                                            {"account", "user", "member", "refreshAxes"}):
                         raise ValueError("invalid portrait request")
                     member = request.get("member")
+                    refresh_axes = request.get("refreshAxes", False)
+                    if type(refresh_axes) is not bool:
+                        raise ValueError("invalid portrait request")
                     return self.send(202, backend.start_model_portrait(
                         user_value(request.get("account")), user_value(request.get("user")),
-                        user_value(member) if member is not None else None))
+                        user_value(member) if member is not None else None,
+                        refresh_axes=refresh_axes))
                 if endpoint in ("/api/analysis-cache/clear", "/api/analysis-cache/resume"):
                     if set(request) != {"account", "sourceId"}:
                         raise ValueError("invalid cache request")

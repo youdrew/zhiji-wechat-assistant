@@ -71,7 +71,7 @@ async function main() {
   blocked.tick();
   await flush();
   assert.equal(blocked.calls.length, 1);
-  assert.deepEqual(Array.from(blocked.calls[0].args).slice(-2), ['--no-open', '--recovery']);
+  assert.deepEqual(Array.from(blocked.calls[0].args).slice(-3), ['--no-open', '--recovery', '--json']);
   blocked.setMarker(true);
   blocked.calls[0].done(null);
   await flush();
@@ -81,10 +81,18 @@ async function main() {
   const available = fixture(false);
   await flush();
   assert.equal(available.calls.length, 1);
-  available.calls[0].done(null);
+  available.calls[0].done(null, '{"ok":true,"created":true}');
   await flush();
   assert.equal(available.recovered(), 1);
   available.stop();
+
+  const reused = fixture(false);
+  await flush();
+  assert.equal(reused.calls.length, 1);
+  reused.calls[0].done(null, '{"ok":true,"created":false}');
+  await flush();
+  assert.equal(reused.recovered(), 0, 'a reused bridge must not report recovery');
+  reused.stop();
 
   const matching = fixture(false, 'matching');
   await flush();

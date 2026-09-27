@@ -339,14 +339,17 @@ class BackendTests(unittest.TestCase):
         analyzer = NodeAnalysis()
         analyzer.version = "synthetic-version"
         process = Mock()
-        process.stdout = iter([
-            json.dumps({"ready": True, "analysisVersion": "synthetic-version",
-                        "model": {"state": "ready", "provider": "webgpu"}}),
-            json.dumps({"id": 1, "modelStatus": {"state": "ready", "provider": "cpu"}}),
-        ])
+        analyzer.process = process
+        observed = {}
+        def lines():
+            yield json.dumps({"ready": True, "analysisVersion": "synthetic-version",
+                              "model": {"state": "ready", "provider": "webgpu"}})
+            yield json.dumps({"id": 1, "modelStatus": {"state": "ready", "provider": "cpu"}})
+            observed.update(analyzer.model)
+        process.stdout = lines()
         analyzer._read(process)
-        self.assertEqual(analyzer.model["provider"], "cpu")
-        self.analyzer.model = analyzer.model
+        self.assertEqual(observed["provider"], "cpu")
+        self.analyzer.model = observed
         self.assertEqual(self.backend.health()["model"]["provider"], "cpu")
         self.assertEqual(self.backend.analysis("friend")["modelProvider"], "cpu")
 
@@ -1135,9 +1138,10 @@ class BackendTests(unittest.TestCase):
                                      {"Content-Type": "application/json"})[0], 400)
             self.assertEqual(request("GET", "/api/media?user=friend&id=missing")[0], 404)
             valid = {"Content-Type": "application/json; charset=UTF-8", "Origin": f"http://localhost:{server.server_port}"}
-            self.assertEqual(request("POST", "/api/analyze", json.dumps({"user": "friend", "mode": "recent"}), valid)[0], 202)
-            self.assertEqual(request("POST", "/api/analyze", json.dumps({"user": "friend", "mode": "history", "limit": "all"}), valid)[0], 202)
-            self.assertEqual(request("POST", "/api/analyze", json.dumps({"user": "friend", "mode": "recent", "limit": "all"}), valid)[0], 400)
+            self.assertEqual(request("POST", "/api/analyze", json.dumps({"user": "friend", "mode": "recent"}), valid)[0], 400)
+            self.assertEqual(request("POST", "/api/analyze", json.dumps({"account": "account-a", "user": "friend", "mode": "recent"}), valid)[0], 202)
+            self.assertEqual(request("POST", "/api/analyze", json.dumps({"account": "account-a", "user": "friend", "mode": "history", "limit": "all"}), valid)[0], 202)
+            self.assertEqual(request("POST", "/api/analyze", json.dumps({"account": "account-a", "user": "friend", "mode": "recent", "limit": "all"}), valid)[0], 400)
             self.assertEqual(request("GET", "/", headers={"Host": f"evil.example:{server.server_port}"})[0], 403)
             self.assertEqual(request("GET", "/api/health", headers={"Origin": "https://evil.example"})[0], 403)
             self.assertEqual(request("POST", "/api/analyze", "{}", {**valid, "Origin": "null"})[0], 403)

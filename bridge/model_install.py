@@ -10,6 +10,10 @@ import uuid
 import zipfile
 from pathlib import Path
 
+# The bundled Windows Python uses an isolated ._pth and does not add the
+# invoked script's directory to sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from model_bundle import ModelBundleError, available_model_dir, pinned_files, validate_model_dir
 
 

@@ -10,18 +10,54 @@ from pathlib import Path
 from model_bundle import ModelBundleError, available_model_dir, validate_model_dir
 
 
+_MISSING = object()
+
+
 class ModelSource:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         self.downloaded = self.root / ".local" / "models" / "laya"
         self.bundled = self.root / ".models" / "laya"
-        self.config = self.root / ".local" / "real-client-runtime" / "model-source.json"
+        runtime = self.root / ".local" / "real-client-runtime"
+        self.config = runtime / "local-model-source.json"
+        self.legacy_config = runtime / "model-source.json"
+
+    def _check_config(self, path: Path) -> None:
+        if not path.is_relative_to(self.root) or not path.resolve().is_relative_to(self.root):
+            raise ModelBundleError("模型配置不可用")
+        cursor = path
+        while cursor != self.root:
+            try:
+                stat = cursor.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise ModelBundleError("模型配置不可用") from exc
+            else:
+                if cursor.is_symlink() or getattr(stat, "st_file_attributes", 0) & 0x400:
+                    raise ModelBundleError("模型配置不可用")
+            cursor = cursor.parent
+
+    def _read_config(self, path: Path):
+        self._check_config(path)
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return _MISSING
+
+    def _selected_path(self):
+        setting = self._read_config(self.config)
+        if setting is _MISSING:
+            setting = self._read_config(self.legacy_config)
+            # The old shared filename also held encrypted API settings.
+            if isinstance(setting, dict) and setting.get("version") == 1 and "schema" not in setting:
+                return None
+        return setting.get("path") if isinstance(setting, dict) and setting.get("schema") == 1 else None
 
     def status(self) -> dict:
         try:
-            setting = json.loads(self.config.read_text(encoding="utf-8"))
-            selected = setting.get("path") if setting.get("schema") == 1 else None
-        except (OSError, ValueError, AttributeError):
+            selected = self._selected_path()
+        except (OSError, ValueError, ModelBundleError):
             selected = None
         if isinstance(selected, str) and selected and Path(selected).is_absolute():
             path = Path(selected)
@@ -46,7 +82,9 @@ class ModelSource:
             path = validate_model_dir(path)
         except OSError as exc:
             raise ModelBundleError("模型目录不可用") from exc
+        self._check_config(self.config)
         self.config.parent.mkdir(parents=True, exist_ok=True)
+        self._check_config(self.config)
         temporary = self.config.with_name(self.config.name + "." + uuid.uuid4().hex + ".tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:

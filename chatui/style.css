@@ -1255,6 +1255,10 @@ body.theme-light .kaomoji-btn {
   flex-direction: column;
   gap: 16px;
 }
+.api-portrait-details { display: grid; gap: 9px; color: var(--text-main); font-size: 14px; line-height: 1.5; }
+.api-portrait-details[hidden] { display: none; }
+.api-portrait-detail { overflow-wrap: anywhere; }
+.api-portrait-detail strong { color: var(--text-secondary); font-weight: 500; margin-right: 8px; }
 
 /* Status Strip */
 .persona-status-strip {
@@ -2932,7 +2936,8 @@ body.theme-light .inline-intent-row .intent-item.primary { color: #4a4a4c; }
 #localModelSettings .settings-row > :first-child { white-space: nowrap; }
 #localModelSettings .settings-row > :last-child { justify-self: end; min-width: 0; }
 #localModelSettings .runtime-control, .local-model-control { justify-content: flex-end; }
-.local-model-control { min-width: 0; flex-wrap: nowrap; }
+.local-model-control { min-width: 0; padding-left: 110px; flex-wrap: wrap; }
+.local-model-control .settings-action-btn { flex: none; white-space: nowrap; }
 #localModelStatus { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
 .local-model-progress { margin: -5px 0 8px; color: var(--text-secondary); font-size: 12px; }
 .account-manager-head, .account-manager-actions, .account-confirm-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-main); font-size: 12px; }

@@ -39,7 +39,7 @@ import {
   generateStructured, listModels, ModelConnectorError, testConnection,
   type ModelConfig, type Protocol,
 } from "../electron/model-connectors";
-import { analyzeApiInsights, updateApiPortrait,
+import { analyzeApiInsights, refreshApiPortraitAxes, updateApiPortrait,
   type ApiInsightMessage, type ApiPortrait, type ApiPortraitMessage } from "../electron/api-insights";
 
 // Observed, unattributed text has model-only generic labels; v3 is reserved for fine targets.
@@ -78,6 +78,58 @@ function connectorConfig(req: Record<string, unknown>, requireModel: boolean): M
   return { protocol: req.protocol as Protocol, baseUrl: req.baseUrl,
     apiKey: typeof req.apiKey === "string" ? req.apiKey : "",
     model: typeof req.model === "string" ? req.model : "" };
+}
+
+type ApiGenerationCommand = "model:insights" | "model:portrait" | "model:portrait-axes";
+
+function isApiGenerationCommand(cmd: string): cmd is ApiGenerationCommand {
+  return cmd === "model:insights" || cmd === "model:portrait" || cmd === "model:portrait-axes";
+}
+
+async function handleApiGeneration(id: unknown, cmd: ApiGenerationCommand,
+  req: Record<string, unknown>): Promise<void> {
+  if (cmd === "model:insights") {
+    if (!Array.isArray(req.messages) || !Array.isArray(req.targetIds)) {
+      emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
+      return;
+    }
+    const result = await analyzeApiInsights(connectorConfig(req, true), {
+      messages: req.messages as ApiInsightMessage[],
+      targetIds: req.targetIds as string[],
+    });
+    emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+    return;
+  }
+  if (cmd === "model:portrait") {
+    if (!Array.isArray(req.messages) ||
+        (req.previous !== null && (!req.previous || typeof req.previous !== "object" ||
+                                   Array.isArray(req.previous)))) {
+      emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
+      return;
+    }
+    const result = await updateApiPortrait(connectorConfig(req, true),
+      req.previous as ApiPortrait | null, req.messages as ApiPortraitMessage[]);
+    emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+    return;
+  }
+  if (!req.portrait || typeof req.portrait !== "object" || Array.isArray(req.portrait)) {
+    emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
+    return;
+  }
+  const result = await refreshApiPortraitAxes(connectorConfig(req, true),
+    req.portrait as ApiPortrait);
+  emit({ id, cmd, analysisVersion: ANALYSIS_VERSION,
+    axes: { mbtiAxes: result.mbtiAxes, traits: result.traits, affinity: result.affinity },
+    ...(result.usage ? { usage: result.usage } : {}) });
+}
+
+function emitRequestError(id: unknown, error: unknown, apiOnly: boolean): void {
+  emit({ id, error: error instanceof ModelConnectorError ? error.code :
+    error instanceof MessageBatchInputError ? "bad-request:batch" :
+    error instanceof Error ? error.name : "error",
+    // The API-only worker has no Laya model to load. Its local model status must
+    // never overwrite Python's ready API-worker state after a provider error.
+    ...(!apiOnly ? { modelStatus: getModelStatus() } : {}) });
 }
 
 const EVIDENCE_AXES = {
@@ -351,6 +403,19 @@ async function handleForecast(id: unknown, req: Record<string, unknown>): Promis
   emit({ id, cmd: "forecast", modelStatus: getModelStatus(), analysisVersion: ANALYSIS_VERSION, candidates });
 }
 
+interface QueuedApiGeneration {
+  id: unknown;
+  cmd: ApiGenerationCommand;
+  req: Record<string, unknown>;
+  complete: () => void;
+  timeout: NodeJS.Timeout | null;
+}
+
+interface ApiGenerationLane {
+  active: number;
+  pending: QueuedApiGeneration[];
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes("--analysis-version")) {
     emit({ analysisVersion: ANALYSIS_VERSION });
@@ -368,6 +433,32 @@ async function main(): Promise<void> {
   emit({ ready: model.state === "ready", model, analysisVersion: ANALYSIS_VERSION });
 
   const rl = readline.createInterface({ input: process.stdin });
+  const probeTasks = new Set<Promise<void>>();
+  const generationTasks = new Set<Promise<void>>();
+  const generationLanes: Record<ApiGenerationCommand, ApiGenerationLane> = {
+    "model:insights": { active: 0, pending: [] },
+    "model:portrait": { active: 0, pending: [] },
+    "model:portrait-axes": { active: 0, pending: [] },
+  };
+  function drainGenerationLane(lane: ApiGenerationLane): void {
+    while (lane.active < 10 && lane.pending.length) {
+      const task = lane.pending.shift()!;
+      if (task.timeout) clearTimeout(task.timeout);
+      task.timeout = null;
+      lane.active++;
+      void (async () => {
+        try {
+          await handleApiGeneration(task.id, task.cmd, task.req);
+        } catch (error) {
+          emitRequestError(task.id, error, true);
+        } finally {
+          lane.active--;
+          task.complete();
+          drainGenerationLane(lane);
+        }
+      })();
+    }
+  }
   for await (const line of rl) {
     let req: Record<string, unknown>;
     try {
@@ -383,6 +474,53 @@ async function main(): Promise<void> {
     }
     const id = req.id;
     const cmd = typeof req.cmd === "string" ? req.cmd : "observe";
+    // Model discovery and connection checks must not wait behind one another in
+    // this API-only worker. Bound concurrent probes so repeated clicks fail fast.
+    if (apiOnly && (cmd === "model:list" || cmd === "model:test")) {
+      if (probeTasks.size >= 2) {
+        emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "rate-limit" });
+        continue;
+      }
+      const task = (async () => {
+        try {
+          const config = connectorConfig(req, cmd === "model:test");
+          const result = cmd === "model:list" ? await listModels(config) : await testConnection(config);
+          emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+        } catch (error) {
+          emit({ id, cmd, analysisVersion: ANALYSIS_VERSION,
+            error: error instanceof ModelConnectorError ? error.code :
+              error instanceof Error ? error.name : "error" });
+        }
+      })();
+      probeTasks.add(task);
+      void task.then(() => probeTasks.delete(task), () => probeTasks.delete(task));
+      continue;
+    }
+    if (apiOnly && isApiGenerationCommand(cmd)) {
+      const lane = generationLanes[cmd];
+      if (lane.active >= 10 && lane.pending.length >= 20) {
+        emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "rate-limit" });
+        continue;
+      }
+      let complete!: () => void;
+      const settled = new Promise<void>(resolve => { complete = resolve; });
+      generationTasks.add(settled);
+      void settled.then(() => generationTasks.delete(settled));
+      const task: QueuedApiGeneration = { id, cmd, req, complete, timeout: null };
+      lane.pending.push(task);
+      if (lane.active >= 10) {
+        task.timeout = setTimeout(() => {
+          const index = lane.pending.indexOf(task);
+          if (index < 0) return;
+          lane.pending.splice(index, 1);
+          task.timeout = null;
+          emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "rate-limit" });
+          task.complete();
+        }, 10_000);
+      }
+      drainGenerationLane(lane);
+      continue;
+    }
     try {
       if (cmd === "model:list") {
         const result = await listModels(connectorConfig(req, false));
@@ -408,28 +546,8 @@ async function main(): Promise<void> {
         emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
         continue;
       }
-      if (cmd === "model:insights") {
-        if (!Array.isArray(req.messages) || !Array.isArray(req.targetIds)) {
-          emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
-          continue;
-        }
-        const result = await analyzeApiInsights(connectorConfig(req, true), {
-          messages: req.messages as ApiInsightMessage[],
-          targetIds: req.targetIds as string[],
-        });
-        emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
-        continue;
-      }
-      if (cmd === "model:portrait") {
-        if (!Array.isArray(req.messages) ||
-            (req.previous !== null && (!req.previous || typeof req.previous !== "object" ||
-                                       Array.isArray(req.previous)))) {
-          emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
-          continue;
-        }
-        const result = await updateApiPortrait(connectorConfig(req, true),
-          req.previous as ApiPortrait | null, req.messages as ApiPortraitMessage[]);
-        emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+      if (isApiGenerationCommand(cmd)) {
+        await handleApiGeneration(id, cmd, req);
         continue;
       }
       if (cmd === "configure-runtime") {
@@ -515,11 +633,10 @@ async function main(): Promise<void> {
       }
       await handleObserve(id, text);
     } catch (error) {
-      emit({ id, error: error instanceof ModelConnectorError ? error.code :
-        error instanceof MessageBatchInputError ? "bad-request:batch" :
-        error instanceof Error ? error.name : "error", modelStatus: getModelStatus() });
+      emitRequestError(id, error, apiOnly);
     }
   }
+  await Promise.allSettled([...probeTasks, ...generationTasks]);
   if (!apiOnly) await disposeAnalysisModel();
 }
 

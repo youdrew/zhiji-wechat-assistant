@@ -7,6 +7,7 @@ actually active. Reading a saved profile must never imply a successful switch.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -22,6 +23,14 @@ MAX_MODEL_ID = 256
 MAX_API_KEY = 4096
 MIN_CONTEXT_TOKENS = 4096
 MAX_CONTEXT_TOKENS = 1000000
+_MISSING = object()
+
+
+def _source_fingerprint(protocol, base_url, model):
+    """Keep source identity stable across key changes and context budgets."""
+    identity = json.dumps(["api-source-v1", protocol, base_url, model],
+                          ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 class ModelSourceUnavailable(RuntimeError):
@@ -95,33 +104,49 @@ def _dpapi_unprotect(value):
 
 
 class ModelSourceStore:
-    def __init__(self, path, *, root=None, protect=None, unprotect=None):
+    def __init__(self, path, *, root=None, legacy_path=None, protect=None, unprotect=None):
         self.path = Path(path)
         self.root = Path(root) if root is not None else self.path.parent.parent.parent
+        self.legacy_path = Path(legacy_path) if legacy_path is not None else None
         self.protect = protect or _dpapi_protect
         self.unprotect = unprotect or _dpapi_unprotect
         self.lock = threading.RLock()
 
-    def _check_path(self):
+    def _check_path(self, path):
         root = self.root.resolve()
-        if not self.path.resolve().is_relative_to(root):
+        if not path.is_relative_to(self.root) or not path.resolve().is_relative_to(root):
             raise ModelSourceUnavailable("model settings unavailable")
-        cursor = self.path
+        cursor = path
         while cursor != self.root and cursor.is_relative_to(self.root):
-            if cursor.exists():
+            try:
                 stat = cursor.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise ModelSourceUnavailable("model settings unavailable") from exc
+            else:
                 if cursor.is_symlink() or getattr(stat, "st_file_attributes", 0) & 0x400:
                     raise ModelSourceUnavailable("model settings unavailable")
             cursor = cursor.parent
 
-    def _read(self):
-        self._check_path()
+    def _read_json(self, path):
+        self._check_path(path)
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return None
+            return _MISSING
         except (OSError, ValueError, UnicodeError) as exc:
             raise ModelSourceUnavailable("model settings unavailable") from exc
+
+    def _read(self):
+        raw = self._read_json(self.path)
+        if raw is _MISSING and self.legacy_path is not None:
+            raw = self._read_json(self.legacy_path)
+            # The old shared filename also held local model-directory settings.
+            if isinstance(raw, dict) and raw.get("schema") == 1 and "version" not in raw:
+                return None
+        if raw is _MISSING:
+            return None
         if not isinstance(raw, dict) or raw.get("version") != 1 or not isinstance(raw.get("api"), dict):
             raise ModelSourceUnavailable("model settings unavailable")
         api = raw["api"]
@@ -141,10 +166,39 @@ class ModelSourceStore:
         selected_mode = raw.get("selectedMode", "api")
         if selected_mode not in ("local", "api"):
             raise ModelSourceUnavailable("model settings unavailable")
-        return {"api": {"protocol": validated["protocol"], "baseUrl": validated["baseUrl"],
-                        "model": validated["model"], "contextTokens": validated["contextTokens"],
-                        "encryptedKey": encrypted},
-                "sourceId": source_id, "selectedMode": selected_mode}
+        source_ids = raw.get("sourceIds", _MISSING)
+        if source_ids is not _MISSING and (not isinstance(source_ids, dict) or any(
+                not isinstance(fingerprint, str) or len(fingerprint) != 64 or
+                any(char not in "0123456789abcdef" for char in fingerprint) or
+                not isinstance(value, str) or len(value) != 32 or
+                any(char not in "0123456789abcdef" for char in value)
+                for fingerprint, value in source_ids.items()) or
+                len(set(source_ids.values())) != len(source_ids)):
+            raise ModelSourceUnavailable("model settings unavailable")
+        saved = {"api": {"protocol": validated["protocol"], "baseUrl": validated["baseUrl"],
+                         "model": validated["model"], "contextTokens": validated["contextTokens"],
+                         "encryptedKey": encrypted},
+                 "sourceId": source_id, "selectedMode": selected_mode}
+        if source_ids is not _MISSING:
+            saved["sourceIds"] = source_ids
+        return saved
+
+    def _decrypted_key(self, encrypted):
+        try:
+            return self.unprotect(base64.b64decode(encrypted, validate=True))
+        except Exception as exc:
+            raise ModelSourceUnavailable("model settings unavailable") from exc
+
+    def _source_ids(self, saved):
+        source_ids = dict(saved.get("sourceIds", {})) if saved else {}
+        if not saved or "sourceIds" in saved:
+            return source_ids
+        # Version 1 held only the last profile. Preserve that source's cache ID
+        # before another API selection replaces it.
+        api = saved["api"]
+        fingerprint = _source_fingerprint(api["protocol"], api["baseUrl"], api["model"])
+        source_ids[fingerprint] = saved["sourceId"]
+        return source_ids
 
     def saved_selection(self):
         """Intent for startup restore; never proof that the worker switched."""
@@ -171,11 +225,7 @@ class ModelSourceStore:
             if (not saved or saved["api"]["protocol"] != protocol or
                     saved["api"]["baseUrl"] != base_url or not saved["api"]["encryptedKey"]):
                 return None
-            try:
-                encrypted = base64.b64decode(saved["api"]["encryptedKey"], validate=True)
-                return self.unprotect(encrypted)
-            except Exception as exc:
-                raise ModelSourceUnavailable("model settings unavailable") from exc
+            return self._decrypted_key(saved["api"]["encryptedKey"])
 
     def save_api(self, protocol, base_url, model, key, source_id=None, context_tokens=None):
         """Call only after the analysis worker has atomically activated this source."""
@@ -184,6 +234,8 @@ class ModelSourceStore:
             raise ValueError("invalid contextTokens")
         with self.lock:
             saved = self._read()
+            source_ids = self._source_ids(saved)
+            fingerprint = _source_fingerprint(protocol, base_url, model)
             encrypted = None
             if key:
                 try:
@@ -192,14 +244,17 @@ class ModelSourceStore:
                     raise ModelSourceUnavailable("model settings unavailable") from exc
             elif saved and (saved["api"]["protocol"], saved["api"]["baseUrl"]) == (protocol, base_url):
                 encrypted = saved["api"]["encryptedKey"]
-            source_id = source_id or uuid.uuid4().hex
+            source_id = source_ids.get(fingerprint, source_id or uuid.uuid4().hex)
             if not isinstance(source_id, str) or len(source_id) != 32 or any(
                     char not in "0123456789abcdef" for char in source_id):
                 raise ValueError("invalid sourceId")
+            if source_id in source_ids.values() and source_ids.get(fingerprint) != source_id:
+                raise ValueError("duplicate sourceId")
+            source_ids[fingerprint] = source_id
             self._write({"version": 1, "sourceId": source_id, "selectedMode": "api",
                         "api": {"protocol": protocol, "baseUrl": base_url, "model": model,
                                  "contextTokens": context_tokens,
-                                 "encryptedKey": encrypted}})
+                                 "encryptedKey": encrypted}, "sourceIds": source_ids})
             return source_id
 
     def save_local(self):
@@ -207,19 +262,22 @@ class ModelSourceStore:
         with self.lock:
             saved = self._read()
             if saved:
-                self._write({"version": 1, **saved, "selectedMode": "local"})
+                self._write({"version": 1, **saved, "selectedMode": "local",
+                             "sourceIds": self._source_ids(saved)})
 
     def clear_key(self):
         with self.lock:
             saved = self._read()
             if saved and (saved["api"]["encryptedKey"] or saved["selectedMode"] != "local"):
+                source_ids = self._source_ids(saved)
                 saved["api"]["encryptedKey"] = None
-                self._write({"version": 1, **saved, "selectedMode": "local"})
+                self._write({"version": 1, **saved, "selectedMode": "local",
+                             "sourceIds": source_ids})
 
     def _write(self, data):
-        self._check_path()
+        self._check_path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._check_path()
+        self._check_path(self.path)
         temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:

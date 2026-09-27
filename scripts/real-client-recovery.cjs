@@ -4,6 +4,19 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 
+function launcherCreatedBridge(stdout) {
+  if (typeof stdout !== 'string') return false;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') return parsed.created === true;
+    } catch (_) { }
+  }
+  return false;
+}
+
 function monitorBridge({ root, url, instanceId, isOpen, onRecovered }) {
   const port = Number(new URL(url).port);
   const bundledPython = path.join(root, 'runtime', 'python', 'python.exe');
@@ -55,13 +68,16 @@ function monitorBridge({ root, url, instanceId, isOpen, onRecovered }) {
     // never stops another process or creates a duplicate bridge.
     recoveryDone = new Promise(resolve => {
       try {
-        execFile(python, [launcher, '--no-open', '--recovery'],
+        execFile(python, [launcher, '--no-open', '--recovery', '--json'],
           { cwd: root, windowsHide: true, timeout: 60000,
-            env: { ...process.env, CHATUI_PORT: String(port) } }, error => {
+            env: { ...process.env, CHATUI_PORT: String(port) } }, (error, stdout) => {
             recovering = false;
             retryAfter = Date.now() + 10000;
             try {
-              if (!error && !stopped && isOpen() && !fs.existsSync(noAutoRecovery)) onRecovered();
+              // A reused bridge is not a recovery: only a real (re)start may tell the
+              // renderer to reset, so a busy-but-healthy bridge never flickers the UI.
+              if (!error && !stopped && isOpen() && !fs.existsSync(noAutoRecovery) &&
+                  launcherCreatedBridge(stdout)) onRecovered();
             } finally { resolve(); }
           });
       } catch (_) {

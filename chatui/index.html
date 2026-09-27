@@ -219,7 +219,7 @@
             <span><span id="stripTextLabel">文本：</span><strong id="stripMsgCount">待读取</strong></span>
           </div>
           <div class="status-item" id="stripConfidenceItem" style="display:none">
-          <span>已分析：<strong id="stripConfidence"></strong></span>
+           <span><span id="stripAnalysisLabel">已分析：</span><strong id="stripConfidence"></strong></span>
         </div>
           <div class="status-item" id="stripStatusItem" style="display:none">
             <span>状态：<strong id="stripStatusText"></strong></span>
@@ -287,9 +287,9 @@
             <div class="card-header">
               <span class="card-title">
                 <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
-                高频词
+                <span id="tagCardTitle">高频词</span>
               </span>
-              <span class="card-badge">词频统计 Top 6</span>
+              <span class="card-badge" id="tagCardBadge">词频统计 Top 6</span>
             </div>
             <div class="tag-cloud" id="tagCloud">
               <!-- Dynamically rendered -->
@@ -308,6 +308,7 @@
             <p class="bot-summary-text" id="botSummaryText">
               <!-- Dynamically rendered -->
             </p>
+            <div class="api-portrait-details" id="apiPortraitDetails" hidden></div>
             <div class="api-portrait-status" id="apiPortraitStatus" role="status" hidden></div>
             <button type="button" class="ui-retry" id="btnRetryApiPortrait" hidden>重试 API 画像</button>
           </div>
@@ -415,11 +416,11 @@
             </div>
             <div class="settings-row">
               <span>模型文件</span>
-              <div class="local-model-control">
-                <span id="localModelStatus" role="status">检测中…</span>
-                <button type="button" class="settings-action-btn" id="btnDownloadLocalModel">下载模型</button>
-                <button type="button" class="settings-action-btn" id="btnChooseLocalModelDir">选择目录</button>
-              </div>
+              <span id="localModelStatus" role="status">检测中…</span>
+            </div>
+            <div class="local-model-control">
+              <button type="button" class="settings-action-btn" id="btnDownloadLocalModel">下载模型</button>
+              <button type="button" class="settings-action-btn" id="btnChooseLocalModelDir">选择目录</button>
             </div>
             <div class="local-model-progress" id="localModelDownloadProgress" role="status" hidden></div>
             <div class="model-source-actions" id="localModelActions" hidden>

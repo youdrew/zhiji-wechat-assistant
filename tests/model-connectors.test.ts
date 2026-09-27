@@ -186,12 +186,57 @@ it("uses each SDK's generation format and returns only raw text and usage", asyn
 it("connection test sends only a fixed synthetic prompt", async () => {
   const result = await withMockFetch((_url, init) => {
     const body = typeof init?.body === "string" ? init.body : "";
-    assert.match(body, /Reply with OK/u);
+    assert.match(body, /Reply with JSON/u);
     assert.doesNotMatch(body, /private chat/u);
     return json(generationFixture("chat_completions"));
   }, () => testConnection(configs.chat_completions));
   assert.deepEqual({ ok: result.ok, model: result.model }, { ok: true, model: "test-model" });
   assert.ok(result.latencyMs >= 0);
+});
+
+it("keeps official DeepSeek structured requests out of default thinking mode", async () => {
+  const config = { ...configs.responses, baseUrl: "https://api.deepseek.com/" };
+  const result = await withMockFetch((_url, init) => {
+    const body = JSON.parse(String(init?.body || "{}"));
+    assert.equal(body.text?.format?.type, "json_object");
+    assert.equal(body.reasoning?.effort, "none");
+    return json(generationFixture("responses"));
+  }, () => generateStructured(config, {
+    system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64, jsonMode: true,
+  }));
+  assert.equal(result.text, '{"ok":true}');
+});
+
+it("requests JSON mode and falls back once when a compatible gateway rejects it", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const result = await withMockFetch((_url, init) => {
+    bodies.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+    return bodies.length === 1
+      ? json({ error: { message: "format unsupported" } }, 400)
+      : json(generationFixture("responses"));
+  }, () => generateStructured(configs.responses, {
+    system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64, jsonMode: true,
+  }));
+  assert.equal((bodies[0].text as { format: { type: string } }).format.type, "json_object");
+  assert.equal(bodies[1].text, undefined);
+  assert.equal(result.text, '{"ok":true}');
+});
+
+it("keeps official DeepSeek thinking disabled when JSON mode falls back", async () => {
+  const config = { ...configs.responses, baseUrl: "https://api.deepseek.com/v1" };
+  const bodies: Record<string, unknown>[] = [];
+  await withMockFetch((_url, init) => {
+    bodies.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+    return bodies.length === 1
+      ? json({ error: { message: "synthetic format rejection" } }, 422)
+      : json(generationFixture("responses"));
+  }, () => generateStructured(config, {
+    system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64, jsonMode: true,
+  }));
+  assert.equal(bodies.length, 2);
+  assert.equal((bodies[0].reasoning as { effort: string }).effort, "none");
+  assert.equal(bodies[1].text, undefined);
+  assert.equal((bodies[1].reasoning as { effort: string }).effort, "none");
 });
 
 it("keeps provider error bodies and keys out of application errors", async () => {

@@ -42,8 +42,8 @@ class FakeProvider(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         prompt = body["messages"][1]["content"]
         self.prompts.append(prompt)
-        if prompt == "Reply with OK.":
-            answer = "OK"
+        if prompt == 'Reply with JSON {"ok":true}.':
+            answer = '{"ok":true}'
         else:
             payload = json.loads(prompt.removeprefix("INPUT_JSON:\n"))
             if "windows" in payload:
@@ -54,7 +54,11 @@ class FakeProvider(BaseHTTPRequestHandler):
                 answer = json.dumps({"summary": "常讨论周末见面", "communication": "表达简洁",
                                      "emotionExpression": "", "interactionPreferences": "",
                                      "topics": ["周末"], "patterns": [], "boundaries": [],
-                                     "uncertain": []}, ensure_ascii=False)
+                                     "uncertain": [], "affinity": None,
+                                     "mbtiAxes": {key: None for key in ("EI", "SN", "TF", "JP")},
+                                     "traits": {key: None for key in ("socialEnergy", "humor", "composure",
+                                                                         "initiative", "care", "affection")}},
+                                    ensure_ascii=False)
         self.reply({"id": "synthetic-response", "object": "chat.completion", "created": 0,
                     "model": "synthetic-model", "choices": [{"index": 0,
                     "message": {"role": "assistant", "content": answer}, "finish_reason": "stop"}]})
@@ -74,6 +78,15 @@ class Source:
 
     def identity(self):
         return "synthetic-account", str(self.root)
+
+    def contact(self, _user):
+        return {"name": "合成联系人", "avatar": "", "avatarCandidates": []}
+
+    def profile_metadata(self, user, member=None):
+        if member is not None:
+            raise ValueError("unknown member")
+        return {"contact": {"name": "合成联系人", "avatar": "", "avatarCandidates": []},
+                "members": [], "count": len(self.rows), "textCount": len(self.rows)}
 
     def messages(self, _user, limit):
         return self.rows[-limit:]
@@ -164,7 +177,7 @@ class ApiInsightHttpTests(unittest.TestCase):
                 _status, cache = call("/api/analysis-cache")
                 api_source = next(item for item in cache["sources"] if item["kind"] == "api")
                 self.assertEqual((api_source["messageCount"], api_source["portraitCount"]), (0, 0))
-                self.assertTrue(api_source["suspended"])
+                self.assertFalse(api_source["suspended"])
             finally:
                 app.shutdown()
                 app.server_close()

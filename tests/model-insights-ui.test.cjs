@@ -14,8 +14,10 @@ function section(start, end) {
 const code = section("async function api(", "function status(") +
   section("function updateLabel(", "function messageNode(") +
   section("const MODEL_SOURCE_PROTOCOLS", "let managedAccounts = [];") +
+  section("let analysisCacheRequest = 0;", "async function loadAnalysisCache") +
   "globalThis.ui = { showModelSource, updateLabel, validApiInsight, renderApiInsightResult, " +
   "ensureApiInsights, cancelApiInsightWork, activeApiInsightKey, apiInsightCache, " +
+  "renderAnalysisCache, suppressedApiSources, suppressedLocalAccounts, " +
   "getSource: () => modelSourceSnapshot };";
 
 function element(tag, className = "", value = "") {
@@ -23,6 +25,8 @@ function element(tag, className = "", value = "") {
     tag, className, textContent: value == null ? "" : String(value), value: "", hidden: false,
     disabled: false, dataset: {}, children: [], parent: null,
     appendChild(child) { child.parent = this; this.children.push(child); return child; },
+    append(...children) { for (const child of children) this.appendChild(child); },
+    addEventListener() {},
     replaceChildren(...children) { this.children = []; for (const child of children) this.appendChild(child); },
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
     getBoundingClientRect() { return { top: 0, bottom: 0 }; },
@@ -84,8 +88,10 @@ function harness(fetchImpl = async () => response({ account: "acct", sourceId: "
     setTimeout: () => 1, clearTimeout() {},
     settings: { intent: true }, currentAccount: "acct", currentUser: "chat",
     view: "chat", apiPortraitSnapshot: null,
-    syncPortraitMode() {}, cancelApiPortraitPoll() {}, loadProfile() {},
+    syncPortraitMode() {}, cancelApiPortraitPoll() {}, clearApiPortraitView() {}, loadProfile() {},
     controller: new AbortController(), generation: 1, historyState: null,
+    messageSourceReady: false,
+    localModelResolved: false, localModelReady: false,
     runtimeSnapshot: null, runtimeBusy: false, incrementalFailed: false, recentFailed: false,
     messages: [], results: {}, inlineIntentPending: new Map(),
     CURRENT_LABEL_SCHEMA: "generic-v8", catalogReady: true, catalogLabelRevision: 0,
@@ -141,7 +147,8 @@ it("renders only emotion and intent tags, with no confidence or response suggest
   assert.match(textOf(row), /意图 请求帮助/);
   assert.doesNotMatch(textOf(row), /下一步|请把文件|发送文件/);
   assert.equal(ui.validApiInsight({ ...insight, emotion: "平静80%" }, "m1"), false);
-  assert.equal(ui.validApiInsight({ ...insight, intent: "问" }, "m1"), false);
+  assert.equal(ui.validApiInsight({ ...insight, intent: "问" }, "m1"), true);
+  assert.equal(ui.validApiInsight({ ...insight, intent: "这是超过八字的完整句子" }, "m1"), false);
   assert.equal(ui.validApiInsight({ ...insight, emotion: "非常开心" }, "m1"), true);
 });
 
@@ -212,7 +219,7 @@ it("analyzes only visible historical messages using a scoped history anchor", as
   assert.equal(JSON.stringify(post.body).includes("上周见面吗"), false);
 });
 
-it("reveals visible API labels in small batches without losing later messages", async () => {
+it("reveals visible API labels in batches of two without losing later messages", async () => {
   const posts = [];
   const { ui, context } = harness(async (url, options) => {
     if (url === "/api/model-insights") {
@@ -227,13 +234,13 @@ it("reveals visible API labels in small batches without losing later messages", 
       job: { id: completed.length ? `job-${posts.length}` : null,
         status: completed.length ? "done" : "idle", total: completed.length, processed: completed.length } });
   });
-  context.messages = Array.from({ length: 5 }, (_, index) => ({
+  context.messages = Array.from({ length: 11 }, (_, index) => ({
     id: `m${index + 1}`, side: "other", kind: "text", text: `请处理第${index + 1}件事`,
   }));
   ui.showModelSource(apiState());
   for (let i = 0; i < 8; i++) await tick();
-  assert.deepEqual(posts, [["m1", "m2", "m3"], ["m4", "m5"]]);
-  assert.equal(Object.keys(ui.apiInsightCache.get(ui.activeApiInsightKey()).results).length, 5);
+  assert.deepEqual(posts, [["m1", "m2"], ["m3", "m4"], ["m5", "m6"], ["m7", "m8"], ["m9", "m10"], ["m11"]]);
+  assert.equal(Object.keys(ui.apiInsightCache.get(ui.activeApiInsightKey()).results).length, 11);
 });
 
 it("hydrates completed API results into the current bubble", async () => {
@@ -289,6 +296,23 @@ it("ignores a late result after the account or conversation changes", async () =
   await tick();
   assert.equal(ui.apiInsightCache.get(JSON.stringify(["acct", "chat", "api-a"])).results.m1, undefined);
   assert.equal(ui.activeApiInsightKey(), JSON.stringify(["another-account", "another-chat", "api-a"]));
+});
+
+it("unblocks analysis when a previously suspended source reports active again", () => {
+  const { ui } = harness();
+  const apiKey = JSON.stringify(["acct", "api-a"]);
+  const apiSource = suspended => ({ sourceId: "api-a", kind: "api", label: "合成模型",
+    messageCount: 0, portraitCount: 0, suspended });
+  const localSource = suspended => ({ sourceId: "local", kind: "local", label: "本地 Laya",
+    messageCount: 0, portraitCount: 0, suspended });
+
+  ui.renderAnalysisCache({ account: "acct", sources: [apiSource(true), localSource(true)] });
+  assert.equal(ui.suppressedApiSources.has(apiKey), true);
+  assert.equal(ui.suppressedLocalAccounts.has("acct"), true);
+
+  ui.renderAnalysisCache({ account: "acct", sources: [apiSource(false), localSource(false)] });
+  assert.equal(ui.suppressedApiSources.has(apiKey), false);
+  assert.equal(ui.suppressedLocalAccounts.has("acct"), false);
 });
 
 it("reports API failure without falling back to local bubble labels", async () => {

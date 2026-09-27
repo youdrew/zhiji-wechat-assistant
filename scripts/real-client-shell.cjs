@@ -5,7 +5,7 @@ const path = require("node:path");
 const { monitorBridge } = require("./real-client-recovery.cjs");
 const { checkForUpdates, downloadAndStageUpdate, errorStatus, RELEASES_URL } = require("./real-client-update.cjs");
 const { createUpdateProxyFetch } = require("./real-client-update-proxy.cjs");
-const { ModelDownload } = require("./real-client-model.cjs");
+const { ModelDownload, ownedDirectory } = require("./real-client-model.cjs");
 
 const ROOT = process.env.WECHATVIBE_CLIENT_ROOT ?
   path.resolve(process.env.WECHATVIBE_CLIENT_ROOT) : path.resolve(__dirname, "..");
@@ -54,6 +54,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   app.setPath("userData", userData);
   let window = null;
   let stopBridgeMonitor = null;
+  let loadRetries = 0;
   let validationTimer = null;
   let exiting = false;
   let updateHandoff = "none";
@@ -154,8 +155,12 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
 
     ipcMain.handle("real-client:model-choose-directory", async (event) => {
       if (!trustedFrame(event) || selfTest || updateValidation || !window) return null;
+      let defaultPath = ROOT;
+      try {
+        defaultPath = ownedDirectory(ownedDirectory(ROOT, ".local"), "models");
+      } catch (_) { /* Keep the picker inside the client if model storage is unavailable. */ }
       const choice = await dialog.showOpenDialog(window, {
-        title: "选择 Laya 模型目录", properties: ["openDirectory"],
+        title: "选择 Laya 模型目录", defaultPath, properties: ["openDirectory"],
       });
       return choice.canceled ? null : choice.filePaths[0] || null;
     });
@@ -295,11 +300,21 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
         return { action: "deny" };
       });
       contents.on("did-fail-load", (_event, code, description, validatedUrl, isMainFrame) => {
-        if (selfTest && isMainFrame) {
+        if (!isMainFrame) return;
+        if (selfTest) {
           process.stdout.write(JSON.stringify({ ok: false, code, description, url: validatedUrl }) + "\n");
           app.exit(1);
+          return;
         }
+        // The owned bridge may still be starting when the window first opens. Retry the
+        // local page instead of leaving the user on a blank white content area.
+        if (exiting || loadRetries >= 20 || !window || window.isDestroyed()) return;
+        loadRetries += 1;
+        setTimeout(() => {
+          if (!exiting && window && !window.isDestroyed()) void window.webContents.loadURL(url);
+        }, 600);
       });
+      contents.on("did-finish-load", () => { loadRetries = 0; });
       if (selfTest) {
         contents.once("did-finish-load", async () => {
           try {

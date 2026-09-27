@@ -34,12 +34,18 @@ MODEL_CONNECTOR_ERRORS = frozenset({
     "network", "provider-error", "invalid-output", "response-too-large", "empty-response",
 })
 API_INSIGHT_REVISION = "free-label-v3"
-API_PORTRAIT_REVISION = "portrait-v1"
+API_PORTRAIT_REVISION = "portrait-v2"
 API_PORTRAIT_PIECE_CHARS = 1000
 API_PORTRAIT_BATCH_ITEMS = 20_000
 API_PORTRAIT_MAX_WIRE_CHARS = 600_000
 API_PORTRAIT_MAX_BATCHES = 4096
 API_PORTRAIT_INVENTORY_CACHE_BYTES = 2 * 1024 * 1024
+API_MODEL_RETRY_MAX = 10
+API_MODEL_RETRY_SECONDS = 5
+API_MODEL_RETRYABLE = frozenset({
+    "invalid-output", "invalid-portrait", "invalid-insights", "timeout",
+    "empty-response", "response-too-large", "network", "provider-error", "rate-limit",
+})
 
 
 def api_insight_scope(source_id):
@@ -53,22 +59,36 @@ def api_portrait_scope(source_id):
 def valid_api_portrait(value):
     if not isinstance(value, dict) or set(value) != {
             "summary", "communication", "emotionExpression", "interactionPreferences",
-            "topics", "patterns", "boundaries", "uncertain"}:
+            "topics", "patterns", "boundaries", "uncertain",
+            "affinity", "mbtiAxes", "traits"}:
         return False
     if any(not isinstance(value[key], str) or len(value[key]) > maximum
            for key, maximum in (("summary", 240), ("communication", 120),
                                 ("emotionExpression", 120), ("interactionPreferences", 120))):
         return False
-    return all(isinstance(value[key], list) and len(value[key]) <= 6 and
+    if not all(isinstance(value[key], list) and len(value[key]) <= 6 and
                all(isinstance(item, str) and 0 < len(item) <= maximum for item in value[key])
                for key, maximum in (("topics", 30), ("patterns", 80),
-                                    ("boundaries", 80), ("uncertain", 80)))
+                                    ("boundaries", 80), ("uncertain", 80))):
+        return False
+    def score(number):
+        return number is None or (type(number) is int and 0 <= number <= 100)
+    axes = value["mbtiAxes"]
+    traits = value["traits"]
+    return (score(value["affinity"]) and isinstance(axes, dict) and
+            set(axes) == {"EI", "SN", "TF", "JP"} and all(map(score, axes.values())) and
+            isinstance(traits, dict) and
+            set(traits) == {"socialEnergy", "humor", "composure", "initiative", "care", "affection"} and
+            all(map(score, traits.values())))
 
 
 def empty_api_portrait():
     return {"summary": "", "communication": "", "emotionExpression": "",
             "interactionPreferences": "", "topics": [], "patterns": [],
-            "boundaries": [], "uncertain": []}
+            "boundaries": [], "uncertain": [], "affinity": None,
+            "mbtiAxes": {key: None for key in ("EI", "SN", "TF", "JP")},
+            "traits": {key: None for key in ("socialEnergy", "humor", "composure",
+                                              "initiative", "care", "affection")}}
 
 
 def api_portrait_wire_chars(context_tokens):
@@ -101,6 +121,39 @@ def api_portrait_plan(pieces, wire_chars):
     if len(groups) > API_PORTRAIT_MAX_BATCHES:
         raise ModelSourceUnavailable("context-too-long")
     return [last for _first, last in groups]
+
+
+API_PORTRAIT_COUNT_KEYS = ("messageCount", "textCount", "targetTextCount",
+                           "totalChars", "pieceCount")
+
+
+def api_portrait_add_counts(base, delta):
+    if not all(type(base.get(key)) is int and type(delta.get(key)) is int and
+               base[key] >= 0 and delta[key] >= 0 for key in API_PORTRAIT_COUNT_KEYS):
+        raise ValueError("invalid API portrait inventory")
+    return {key: base[key] + delta[key] for key in API_PORTRAIT_COUNT_KEYS}
+
+
+def api_portrait_tail_hashes(rows):
+    """A compact chain over the remaining frozen rows, including non-text rows."""
+    count = len(rows) // 32
+    tails = bytearray((count + 1) * 32)
+    tails[count * 32:] = hashlib.sha256(b"").digest()
+    for index in range(count - 1, -1, -1):
+        start = index * 32
+        tails[start:start + 32] = hashlib.sha256(
+            rows[start:start + 32] + tails[start + 32:start + 64]).digest()
+    return tails
+
+
+def api_portrait_resume_anchor(piece, piece_offset, batch_index, tails):
+    after = piece["_sort"] if piece["_last"] else piece["_before"]
+    return {"batchIndex": batch_index, "pieceOffset": piece_offset,
+            "after": list(after) if after is not None else None,
+            "partialSort": list(piece["_sort"]) if not piece["_last"] else None,
+            "skipPieces": 0 if piece["_last"] else piece["_pieceIndex"] + 1,
+            "tailHash": tails[(piece["_rowIndex"] + int(piece["_last"])) * 32:
+                              (piece["_rowIndex"] + int(piece["_last"]) + 1) * 32].hex()}
 
 
 def model_source_failure(error, fallback):
@@ -374,6 +427,7 @@ class WeChatSource:
         self.issued_images = OrderedDict()
         self.window_images = {}
         self.profile_metadata_cache = OrderedDict()
+        self.profile_overview_counts_cache = OrderedDict()
         self.media_reason = threading.local()
 
     def _release_db(self):
@@ -422,6 +476,9 @@ class WeChatSource:
     def forget_account(self, account):
         """Drop only this account's open reader and volatile key references."""
         with self.lock:
+            for key in list(self.profile_overview_counts_cache):
+                if key[0] == account:
+                    del self.profile_overview_counts_cache[key]
             if self.db is not None and str(self.db.account) == account:
                 for name in ("_keys", "_volatile_keys"):
                     value = getattr(self.db, name, None)
@@ -441,6 +498,7 @@ class WeChatSource:
             if self.db is not None:
                 self.forget_account(str(self.db.account))
             self._release_db()
+            self.profile_overview_counts_cache.clear()
 
     def _db(self, fresh=False):
         with self.lock:
@@ -992,13 +1050,17 @@ class WeChatSource:
             return int(record[7]), shard, int(record[0])
 
     def history_page(self, user, highwater, after=None, page_size=256):
-        self.require_messages_ready()
-        if highwater is None:
-            return [], None
         with self.lock:
-            db = self._db()
+            # Resolve and validate one reader per page. Re-discovering the same
+            # live account for readiness, reader access and self_user made every
+            # page pay several Windows ownership queries before reading any rows.
+            db = self._db(fresh=True)
+            if self.live_account and not db.messages_ready:
+                raise MessagesUnavailableError()
+            if highwater is None:
+                return [], None
             contacts = self._contacts(db)
-            own_user = self.self_user()
+            own_user = self.self_user(db)
             found = db._msg_conns(user)
             rows = []
             try:
@@ -1249,6 +1311,61 @@ class WeChatSource:
                     "members": [{"id": sender, **contact_display(contacts, sender)} for sender in sorted(counts)] if group else [],
                     "count": count, "textCount": text_count}
 
+    def profile_overview(self, user, member=None, highwater=None):
+        """Contact, member list, and per-sender message counts without classifying text.
+
+        The API portrait read path must never re-render the analysis of every message
+        just to show who is in a group: text totals come from the persisted portrait
+        inventory/checkpoint instead.
+        """
+        with self.lock:
+            db = self._db(fresh=True)
+            if self.live_account and not db.messages_ready:
+                raise MessagesUnavailableError()
+            contacts = self._contacts(db)
+            # A live reader may be replaced while the account and newest message
+            # stay the same. Reuse the counts across that replacement, with a
+            # bounded refresh window for older-message backfills.
+            # The same account name can exist under different local WeChat roots.
+            account_dir = getattr(db, "account_dir", None) or getattr(db, "workdir", "")
+            account_dir = os.path.normcase(str(Path(account_dir).resolve())) if account_dir else ""
+            cache_key = (str(db.account), account_dir, user, highwater)
+            cached = self.profile_overview_counts_cache.get(cache_key)
+            if cached is not None and cached[2] > time.monotonic():
+                counts, total, _expires = cached
+                self.profile_overview_counts_cache.move_to_end(cache_key)
+            else:
+                found = db._msg_conns(user)
+                counts = {}
+                total = 0
+                try:
+                    for conn, table in found:
+                        if not re.fullmatch(r"Msg_[0-9a-fA-F]{32}", table):
+                            raise RuntimeError("invalid message table")
+                        senders = {int(row[0]): row[1] for row in
+                                   conn.execute("SELECT rowid,user_name FROM Name2Id")}
+                        for sender_id, amount in conn.execute(
+                                f"SELECT real_sender_id,COUNT(*) FROM {table} GROUP BY real_sender_id"):
+                            total += amount
+                            sender = senders.get(int(sender_id or 0))
+                            if sender:
+                                counts[sender] = counts.get(sender, 0) + amount
+                finally:
+                    for conn in {id(conn): conn for conn, _ in found}.values():
+                        conn.close()
+                self.profile_overview_counts_cache[cache_key] = (counts, total, time.monotonic() + 60)
+                while len(self.profile_overview_counts_cache) > PROFILE_METADATA_CACHE_LIMIT:
+                    self.profile_overview_counts_cache.popitem(last=False)
+            group = user.endswith("@chatroom")
+            if member and (not group or member not in counts):
+                raise ValueError("unknown member")
+            return {"contact": contact_display(contacts, member or user),
+                    "members": [{"id": sender, **contact_display(contacts, sender)}
+                                for sender in sorted(counts)] if group else [],
+                    "count": counts.get(member, 0) if member else
+                             (total if group else counts.get(user, 0)),
+                    "textCount": None}
+
     def contact(self, user):
         with self.lock:
             db = self._db(fresh=True)
@@ -1264,6 +1381,7 @@ class NodeAnalysis:
         self.process = None
         self.reader_thread = None
         self.pending = {}
+        self.expired_request_ids = set()
         self.model = {"state": "idle"}
         self.serial = 0
         self.version = None
@@ -1308,6 +1426,8 @@ class NodeAnalysis:
         if self.process is not None and self.process.poll() is None:
             return
         self.model = {"state": "loading"}
+        self.pending.clear()
+        self.expired_request_ids.clear()
         command = ["node", "--import", "tsx", str(ROOT / "bridge/analysis_server.ts")]
         command += ["--api-only"] if self.api_only else ["--provider", self.requested_provider]
         environment = os.environ.copy()
@@ -1409,6 +1529,8 @@ class NodeAnalysis:
             except ValueError:
                 continue
             with self.condition:
+                if self.process is not process:
+                    continue
                 if "ready" in reply:
                     self.model = reply.get("model") or {"state": "error", "message": "model status missing"}
                     self.running_version = reply.get("analysisVersion")
@@ -1416,9 +1538,16 @@ class NodeAnalysis:
                         self.model = {"state": "error", "message": "analysis version changed; restart service"}
                 elif reply.get("id") is not None:
                     status = reply.get("modelStatus")
-                    if isinstance(status, dict) and status.get("state") in ("ready", "loading", "missing", "error"):
+                    # API-only workers have no Laya runtime. An API error used to
+                    # carry Laya's default 'loading' status and poison this channel,
+                    # making the NEXT request wait 120s before sending anything.
+                    if (not self.api_only and isinstance(status, dict) and
+                            status.get("state") in ("ready", "loading", "missing", "error")):
                         self.model = status
-                    self.pending[reply["id"]] = reply
+                    if reply["id"] in self.expired_request_ids:
+                        self.expired_request_ids.discard(reply["id"])
+                    else:
+                        self.pending[reply["id"]] = reply
                 self.condition.notify_all()
         with self.condition:
             if self.process is process:
@@ -1429,15 +1558,22 @@ class NodeAnalysis:
         version = self.analysis_version()
         with self.condition:
             self._launch_locked()
-            deadline = time.monotonic() + 120
-            while self.model["state"] == "loading" and time.monotonic() < deadline:
+            process = self.process
+            probe = self.api_only and payload.get("cmd") in ("model:list", "model:test")
+            deadline = time.monotonic() + (12 if probe else 120)
+            while (self.model["state"] == "loading" and time.monotonic() < deadline and
+                   process.poll() is None and self.process is process):
                 self.condition.wait(timeout=1)
-            if require_model and self.model["state"] in ("missing", "error") and self.process.poll() is None:
+            if self.model["state"] == "loading":
+                raise RuntimeError("timeout" if self.api_only else "model worker startup timeout")
+            if self.api_only and self.process is not process:
+                raise RuntimeError("model-source-changed")
+            if require_model and self.model["state"] in ("missing", "error") and process.poll() is None:
                 self.serial += 1
                 prepare_id = self.serial
-                self.process.stdin.write(json.dumps({"id": prepare_id, "cmd": "prepare"}) + "\n")
-                self.process.stdin.flush()
-                while prepare_id not in self.pending and time.monotonic() < deadline and self.process.poll() is None:
+                process.stdin.write(json.dumps({"id": prepare_id, "cmd": "prepare"}) + "\n")
+                process.stdin.flush()
+                while prepare_id not in self.pending and time.monotonic() < deadline and process.poll() is None:
                     self.condition.wait(timeout=1)
                 prepared = self.pending.pop(prepare_id, {})
                 self.model = prepared.get("model") or {"state": "error", "message": "model retry failed"}
@@ -1447,14 +1583,19 @@ class NodeAnalysis:
                 raise RuntimeError("analysis version changed; restart service")
             self.serial += 1
             request_id = self.serial
-            self.process.stdin.write(json.dumps({"id": request_id, **payload}, ensure_ascii=False) + "\n")
-            self.process.stdin.flush()
-            deadline = time.monotonic() + 180
-            while request_id not in self.pending and time.monotonic() < deadline and self.process.poll() is None:
+            process.stdin.write(json.dumps({"id": request_id, **payload}, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+            response_timeout = (16 if payload.get("cmd") == "model:list" else
+                                18 if payload.get("cmd") == "model:test" else 180)
+            deadline = time.monotonic() + response_timeout
+            while request_id not in self.pending and time.monotonic() < deadline and process.poll() is None:
                 self.condition.wait(timeout=1)
             response = self.pending.pop(request_id, None)
             if not response:
-                raise RuntimeError("analysis process timeout or exited")
+                self.expired_request_ids.add(request_id)
+                if len(self.expired_request_ids) > 256:
+                    self.expired_request_ids.clear()
+                raise RuntimeError("timeout" if self.api_only else "analysis process timeout or exited")
             if response.get("error"):
                 raise RuntimeError(str(response["error"]))
             if response.get("analysisVersion") != version:
@@ -1502,6 +1643,16 @@ class NodeAnalysis:
         if not valid_api_portrait(portrait):
             raise RuntimeError("invalid-portrait")
         return portrait
+
+    def refresh_portrait_axes(self, protocol, base_url, api_key, model, portrait):
+        response, _ = self._request({"cmd": "model:portrait-axes", "protocol": protocol,
+                                     "baseUrl": base_url, "apiKey": api_key, "model": model,
+                                     "portrait": portrait},
+                                    require_model=False)
+        update = response.get("axes")
+        if not isinstance(update, dict):
+            raise RuntimeError("invalid-portrait")
+        return update
 
     @staticmethod
     def _wire_messages(messages):
@@ -1613,12 +1764,47 @@ class NodeAnalysis:
             if process.stdout is not None:
                 process.stdout.close()
 
+    def cancel(self):
+        """Stop this API-only worker promptly when its model source changes."""
+        if not self.api_only:
+            return
+        with self.condition:
+            process = self.process
+            reader_thread = self.reader_thread
+            self.process = None
+            self.reader_thread = None
+            self.model = {"state": "idle"}
+            self.pending.clear()
+            self.condition.notify_all()
+        if process is not None and process.poll() is None:
+            process.terminate()
+        if process is not None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            if reader_thread is not None:
+                reader_thread.join(timeout=2)
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except (OSError, ValueError):
+                    pass
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except (OSError, ValueError):
+                    pass
+
 
 class ResultStore:
     def __init__(self, path):
         self.path = path
         self.profile_lock = threading.RLock()
         with self.connect() as conn:
+            # Serialize first-time schema creation and nullable-column migration.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("CREATE TABLE IF NOT EXISTS results_v2 (account TEXT NOT NULL, session TEXT NOT NULL, id TEXT NOT NULL, "
                          "sort_seq INTEGER NOT NULL, shard TEXT NOT NULL, local_id INTEGER NOT NULL, sender TEXT NOT NULL, "
                          "side TEXT NOT NULL, result TEXT NOT NULL, score REAL, version TEXT NOT NULL, "
@@ -1652,7 +1838,17 @@ class ResultStore:
                          "plan_json TEXT NOT NULL, batch_index INTEGER NOT NULL, "
                          "complete INTEGER NOT NULL, processed INTEGER NOT NULL, "
                          "processed_chars INTEGER NOT NULL, portrait_json TEXT NOT NULL, "
+                         "resume_json TEXT, "
                          "PRIMARY KEY(account,session,source_id,subject))")
+            if "resume_json" not in {row[1] for row in conn.execute("PRAGMA table_info(api_portrait_v1)")}:
+                try:
+                    conn.execute("ALTER TABLE api_portrait_v1 ADD COLUMN resume_json TEXT")
+                except sqlite3.OperationalError:
+                    # Concurrent first opens can both observe the old schema. Only
+                    # accept the race if the other writer installed this column.
+                    if "resume_json" not in {row[1] for row in
+                                             conn.execute("PRAGMA table_info(api_portrait_v1)")}:
+                        raise
             conn.execute("CREATE TABLE IF NOT EXISTS api_history_inventory_v1 (account TEXT NOT NULL, "
                          "session TEXT NOT NULL, subject TEXT NOT NULL, highwater_json TEXT, "
                          "fingerprint TEXT NOT NULL, available_json TEXT NOT NULL, "
@@ -1948,6 +2144,12 @@ class ResultStore:
             conn.execute("DELETE FROM analysis_cache_suspended_v1 WHERE account=? AND source_id=?",
                          (account, source_id))
 
+    def clear_legacy_suspensions(self, account):
+        """A suspension only ever lived for the duration of a Clear, so one found at
+        rest is a leftover from the previous Clear behavior and must not block analysis."""
+        with self.connect() as conn:
+            conn.execute("DELETE FROM analysis_cache_suspended_v1 WHERE account=?", (account,))
+
     def api_history_inventory_get(self, account, user, subject, highwater):
         with self.connect() as conn:
             row = conn.execute("SELECT highwater_json,fingerprint,available_json "
@@ -1966,7 +2168,7 @@ class ResultStore:
     def api_portrait_get(self, account, user, source_id, subject):
         with self.connect() as conn:
             row = conn.execute("SELECT highwater_json,after_json,fingerprint,available_json,plan_json,"
-                               "batch_index,complete,processed,processed_chars,portrait_json "
+                               "batch_index,complete,processed,processed_chars,portrait_json,resume_json "
                                "FROM api_portrait_v1 WHERE account=? AND session=? AND source_id=? AND subject=?",
                                (account, user, source_id, subject)).fetchone()
         if row is None:
@@ -1979,7 +2181,8 @@ class ResultStore:
                 "fingerprint": row[2], "available": json.loads(row[3]),
                 "plan": json.loads(row[4]), "batchIndex": row[5],
                 "complete": bool(row[6]), "processed": row[7],
-                "processedChars": row[8], "portrait": portrait}
+                "processedChars": row[8], "portrait": portrait,
+                "resume": json.loads(row[10]) if row[10] else None}
 
     def api_portrait_begin(self, account, user, source_id, subject, highwater, after,
                            fingerprint, available, plan):
@@ -2006,26 +2209,59 @@ class ResultStore:
             return saved
         portrait = saved["portrait"] if saved else empty_api_portrait()
         with self.connect() as conn:
-            conn.execute("INSERT OR REPLACE INTO api_portrait_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT OR REPLACE INTO api_portrait_v1 "
+                         "(account,session,source_id,subject,highwater_json,after_json,fingerprint,"
+                         "available_json,plan_json,batch_index,complete,processed,processed_chars,"
+                         "portrait_json,resume_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (account, user, source_id, subject,
                           json.dumps(highwater) if highwater else None,
                           json.dumps(after) if after else None, fingerprint,
                           json.dumps(available, ensure_ascii=False), json.dumps(plan), 0,
-                          int(not plan), 0, 0, json.dumps(portrait, ensure_ascii=False)))
+                          int(not plan), 0, 0, json.dumps(portrait, ensure_ascii=False), None))
         return self.api_portrait_get(account, user, source_id, subject)
 
+    def api_portrait_upgrade_resume(self, account, user, source_id, subject,
+                                    fingerprint, batch_index, available, resume):
+        """Attach a verified seek point to one legacy checkpoint without changing it."""
+        with self.connect() as conn:
+            changed = conn.execute(
+                "UPDATE api_portrait_v1 SET available_json=?,resume_json=? WHERE account=? AND "
+                "session=? AND source_id=? AND subject=? AND fingerprint=? AND batch_index=? "
+                "AND complete=0",
+                (json.dumps(available, ensure_ascii=False), json.dumps(resume), account, user,
+                 source_id, subject, fingerprint, batch_index)).rowcount
+            if changed != 1:
+                raise RuntimeError("API portrait checkpoint changed during resume upgrade")
+
     def api_portrait_checkpoint(self, account, user, source_id, subject, batch_index,
-                                portrait, processed, processed_chars, complete):
+                                portrait, processed, processed_chars, complete,
+                                processed_target=None, resume=None):
         if (not valid_api_portrait(portrait) or type(processed) is not int or processed < 0 or
-                type(processed_chars) is not int or processed_chars < 0):
+                type(processed_chars) is not int or processed_chars < 0 or
+                processed_target is not None and (type(processed_target) is not int or processed_target < 0) or
+                resume is not None and (not isinstance(resume, dict) or
+                                        resume.get("batchIndex") != batch_index)):
             raise ValueError("invalid API portrait checkpoint")
         with self.connect() as conn:
+            row = conn.execute("SELECT available_json FROM api_portrait_v1 WHERE account=? AND session=? "
+                               "AND source_id=? AND subject=?",
+                               (account, user, source_id, subject)).fetchone()
+            if row is None:
+                raise RuntimeError("API portrait scope disappeared")
+            available = json.loads(row[0])
+            if processed_target is not None:
+                if processed_target > available.get("targetTextCount", processed_target):
+                    raise ValueError("invalid API target progress")
+                available["processedTargetTextCount"] = processed_target
+            resume_clause = ",resume_json=?" if resume is not None else ""
+            args = (batch_index, int(complete), processed, processed_chars,
+                    json.dumps(portrait, ensure_ascii=False), json.dumps(available, ensure_ascii=False))
+            if resume is not None:
+                args += (json.dumps(resume),)
             changed = conn.execute("UPDATE api_portrait_v1 SET batch_index=?,complete=?,processed=?,"
-                                   "processed_chars=?,portrait_json=? WHERE account=? AND session=? "
-                                   "AND source_id=? AND subject=?",
-                                   (batch_index, int(complete), processed, processed_chars,
-                                    json.dumps(portrait, ensure_ascii=False),
-                                    account, user, source_id, subject)).rowcount
+                                   "processed_chars=?,portrait_json=?,available_json=?" + resume_clause +
+                                   " WHERE account=? AND session=? AND source_id=? AND subject=?",
+                                   (*args, account, user, source_id, subject)).rowcount
             if changed != 1:
                 raise RuntimeError("API portrait scope disappeared")
 
@@ -2079,8 +2315,6 @@ class ResultStore:
 
     def clear_analysis_cache(self, account, source_id):
         with self.connect() as conn:
-            conn.execute("INSERT OR IGNORE INTO analysis_cache_suspended_v1 VALUES (?,?)",
-                         (account, source_id))
             if source_id == LOCAL_SOURCE_ID:
                 present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 for table in ("results_v2", "analysis_skips", "fine_results_v1", "fine_skips_v1",
@@ -2094,6 +2328,10 @@ class ResultStore:
                 for table in ("api_insights_v1", "api_portrait_v1"):
                     conn.execute(f"DELETE FROM {table} WHERE account=? AND source_id LIKE ?",
                                  (account, source_id + ":%"))
+                # A saved source record with zero rows may still carry stale config/job
+                # state, so clearing it must remove that record too.
+                conn.execute("DELETE FROM api_source_meta_v1 WHERE account=? AND source_id=?",
+                             (account, source_id))
 
     def skip_fine(self, account, user, version, message, reason):
         seq, shard, local_id = message["_sort"]
@@ -2231,7 +2469,8 @@ class Backend:
         # Discovery and connection probes must not wait behind a long portrait job.
         self.api_probe_analyzer = NodeAnalysis(api_only=True) if analyzer is None else analyzer
         self.model_source_store = model_source_store or ModelSourceStore(
-            ROOT / ".local" / "real-client-runtime" / "model-source.json", root=ROOT)
+            ROOT / ".local" / "real-client-runtime" / "api-model-source.json", root=ROOT,
+            legacy_path=ROOT / ".local" / "real-client-runtime" / "model-source.json")
         # API chat insights have their own source-scoped cache. The local Laya
         # portrait/affinity worker keeps its existing analysis version.
         self.api_lock = threading.RLock()
@@ -2266,7 +2505,7 @@ class Backend:
         self.request_condition = threading.Condition()
         self.active_requests = 0
         self.closing = False
-        self.cache_clear_in_progress = False
+        self.cache_clear_in_progress = set()
         self.account_clear_paused = False
         self.performance = {}
         self.priority_recent = {}
@@ -2290,9 +2529,9 @@ class Backend:
 
     @contextmanager
     def request_lease(self):
-        """Drain HTTP readers/writers before clearing this bridge instance's account files."""
+        """Track HTTP requests. A source-scoped cache clear must not block unrelated reads."""
         with self.request_condition:
-            if self.closing or self.cache_clear_in_progress:
+            if self.closing:
                 raise RuntimeError("bridge is closing")
             self.active_requests += 1
         try:
@@ -2311,6 +2550,7 @@ class Backend:
         # API insight jobs outlive their HTTP request. Drain them before
         # touching this account's SQLite file.
         with self.api_condition:
+            self._cancel_api_source_work_locked()
             if not self.api_condition.wait_for(lambda: self.api_inflight == 0, timeout=200):
                 raise RuntimeError("API insight requests did not finish")
         self.tasks.put((99, next(self.task_serial), None))
@@ -2373,6 +2613,7 @@ class Backend:
             self.closing = True
             self.account_clear_paused = False
         with self.api_condition:
+            self._cancel_api_source_work_locked()
             if not self.api_condition.wait_for(lambda: self.api_inflight == 0, timeout=200):
                 raise RuntimeError("API insight requests did not finish")
         if first or paused:
@@ -2503,7 +2744,11 @@ class Backend:
             account, workdir = self.source.identity()
         scope = (str(account), str(Path(workdir).resolve()))
         if scope not in self.stores:
-            self.stores[scope] = self.store_factory(account, workdir)
+            store = self.store_factory(account, workdir)
+            normalize = getattr(store, "clear_legacy_suspensions", None)
+            if callable(normalize):
+                normalize(str(account))
+            self.stores[scope] = store
         return scope[0], scope[1], self.stores[scope]
 
     def _identity(self):
@@ -2624,14 +2869,32 @@ class Backend:
             raise ModelSourceUnavailable("model connection failed")
         return {"ok": True, "latencyMs": latency}
 
+    def _cancel_api_source_work_locked(self):
+        """Stop old-source model calls; saved portraits and cursors remain intact."""
+        self.api_jobs.clear()
+        self.api_portrait_jobs.clear()
+        self.api_condition.notify_all()
+        seen = set()
+        for analyzer in (self.api_analyzer, self.api_portrait_analyzer,
+                         self.api_probe_analyzer):
+            if analyzer is self.analyzer or id(analyzer) in seen:
+                continue
+            seen.add(id(analyzer))
+            cancel = getattr(analyzer, "cancel", None)
+            if callable(cancel):
+                cancel()
+
     def model_source_activate(self, request):
         if request == {"mode": "local"}:
             with self.api_lock:
+                was_api = self.active_model_source_mode == "api"
                 self.model_source_store.save_local()
                 self.active_model_source_mode = "local"
                 self.active_model_source_id = LOCAL_SOURCE_ID
                 self.active_api_config = None
                 self.model_source_revision += 1
+                if was_api:
+                    self._cancel_api_source_work_locked()
                 return self.model_source()
         if not isinstance(request, dict) or request.get("mode") != "api":
             raise ValueError("invalid model source request")
@@ -2643,32 +2906,37 @@ class Backend:
             key = self.model_source_store.resolve_key(values["protocol"], values["baseUrl"],
                                                       values["apiKey"])
             revision = self.model_source_revision
-        try:
-            tested = self.api_probe_analyzer.model_test(values["protocol"], values["baseUrl"], key,
-                                              values["model"])
-        except Exception as exc:
-            raise model_source_failure(exc, "model connection failed") from exc
-        if not isinstance(tested, dict) or tested.get("ok") is not True:
-            raise ModelSourceUnavailable("model connection failed")
+            saved_profile = self.model_source_store.saved_selection()["api"]
+            reuse_validated = (values["apiKey"] is None and key is not None and
+                               saved_profile is not None and
+                               (saved_profile["protocol"], saved_profile["baseUrl"],
+                                saved_profile["model"]) ==
+                               (values["protocol"], values["baseUrl"], values["model"]))
+        if not reuse_validated:
+            try:
+                tested = self.api_probe_analyzer.model_test(values["protocol"], values["baseUrl"], key,
+                                                  values["model"])
+            except Exception as exc:
+                raise model_source_failure(exc, "model connection failed") from exc
+            if not isinstance(tested, dict) or tested.get("ok") is not True:
+                raise ModelSourceUnavailable("model connection failed")
         with self.api_lock:
             if self.closing or revision != self.model_source_revision:
                 raise ModelSourceUnavailable("model source changed during connection test")
             saved = self.model_source_store.saved_selection()
-            source_id = uuid.uuid4().hex
             previous_context = saved["api"].get("contextTokens") if saved["api"] else None
-            if saved["api"] and all(saved["api"][field] == values[field]
-                                    for field in ("protocol", "baseUrl", "model")):
-                prior_key = self.model_source_store.resolve_key(values["protocol"],
-                                                                 values["baseUrl"], None)
-                if prior_key == key:
-                    source_id = saved["sourceId"]
-            self.model_source_store.save_api(values["protocol"], values["baseUrl"],
-                                             values["model"], key, source_id=source_id,
-                                             context_tokens=values["contextTokens"])
+            source_id = self.model_source_store.save_api(
+                values["protocol"], values["baseUrl"], values["model"], key,
+                context_tokens=values["contextTokens"])
+            changed_source = (self.active_model_source_mode != "api" or
+                              self.active_model_source_id != source_id or
+                              previous_context != values["contextTokens"])
             self.active_model_source_mode = "api"
             self.active_model_source_id = source_id
             self.active_api_config = {field: values[field] for field in
                                       ("protocol", "baseUrl", "model", "contextTokens")}
+            if changed_source:
+                self._cancel_api_source_work_locked()
             if previous_context != values["contextTokens"]:
                 for job_key, job in list(self.api_portrait_jobs.items()):
                     if job_key[2] == source_id and job.get("status") == "error":
@@ -2680,11 +2948,14 @@ class Backend:
         if request != {}:
             raise ValueError("invalid model source request")
         with self.api_lock:
+            was_api = self.active_model_source_mode == "api"
             self.model_source_store.clear_key()
             self.active_model_source_mode = "local"
             self.active_model_source_id = LOCAL_SOURCE_ID
             self.active_api_config = None
             self.model_source_revision += 1
+            if was_api:
+                self._cancel_api_source_work_locked()
             return self.model_source()
 
     def model_insights(self, user, ids=None):
@@ -2708,7 +2979,7 @@ class Backend:
                 "suspended": suspended}
 
     def start_model_insights(self, requested_account, user, limit, target_ids=None, around=None):
-        if type(limit) is not int or not 1 <= limit <= 8:
+        if type(limit) is not int or not 1 <= limit <= 2:
             raise ValueError("invalid API insight limit")
         if target_ids is not None and (not isinstance(target_ids, list) or
                 not 1 <= len(target_ids) <= limit or
@@ -2730,7 +3001,7 @@ class Backend:
             api_key = self.model_source_store.resolve_key(config["protocol"], config["baseUrl"], None)
         window = (browse_history(self.source, account, user, around=around, limit=80,
                                  max_issued_images=MAX_ISSUED_IMAGES)["messages"]
-                  if around is not None else self.source.messages(user, 64))
+                  if around is not None else self.source.messages(user, 80))
         self._assert_scope((account, workdir))
         with self.api_lock:
             if (self.closing or self.active_model_source_mode != "api" or
@@ -2758,7 +3029,8 @@ class Backend:
             if current and current["status"] in ("queued", "running"):
                 return {"account": account, "sourceId": source_id, "job": dict(current)}
             job = {"id": uuid.uuid4().hex, "status": "queued",
-                   "total": len(selected), "processed": len(selected) - len(pending)}
+                   "total": len(selected), "processed": len(selected) - len(pending),
+                   "startedAtMs": int(time.time() * 1000)}
             self.api_jobs[job_key] = job
             if len(self.api_jobs) > API_JOB_CACHE_LIMIT:
                 for old_key, old_job in list(self.api_jobs.items()):
@@ -2775,7 +3047,7 @@ class Backend:
             for item in pending:
                 index = positions[item["id"]]
                 included.update(range(max(0, index - 3), index + 1))
-            window_budget = 5500 // len(pending)
+            window_budget = 10000 // len(pending)
             target_cap = min(1800, max(180, window_budget * 3 // 5))
             context_cap = min(400, max(80, (window_budget - target_cap) // 3))
             wire = [{"id": item["id"], "sender": "SELF" if item["side"] == "self" else "OTHER",
@@ -2822,23 +3094,36 @@ class Backend:
                     raise RuntimeError("model-source-changed")
             self._assert_scope(scope)
             target_ids = [item["id"] for item in pending]
-            response = self.api_analyzer.model_insights(config["protocol"], config["baseUrl"],
-                                                    api_key, config["model"], wire, target_ids)
-            insights = response["insights"]
-            if (len(insights) != len(pending) or
-                    {item.get("id") for item in insights if isinstance(item, dict)} != set(target_ids)):
-                raise RuntimeError("invalid-insights")
-            by_id = {item["id"]: item for item in insights}
-            for message in pending:
-                item = by_id[message["id"]]
-                if item.get("status") not in ("ok", "insufficient"):
-                    raise RuntimeError("invalid-insights")
-                if item["status"] == "ok" and (not isinstance(item.get("emotion"), str) or
-                        not isinstance(item.get("intent"), str)):
-                    raise RuntimeError("invalid-insights")
+            for attempt in range(API_MODEL_RETRY_MAX + 1):
+                try:
+                    response = self.api_analyzer.model_insights(config["protocol"], config["baseUrl"],
+                                                            api_key, config["model"], wire, target_ids)
+                    insights = response["insights"]
+                    if (len(insights) != len(pending) or
+                            {item.get("id") for item in insights if isinstance(item, dict)} != set(target_ids)):
+                        raise RuntimeError("invalid-insights")
+                    by_id = {item["id"]: item for item in insights}
+                    for message in pending:
+                        item = by_id[message["id"]]
+                        if item.get("status") not in ("ok", "insufficient"):
+                            raise RuntimeError("invalid-insights")
+                        if item["status"] == "ok" and (not isinstance(item.get("emotion"), str) or
+                                not isinstance(item.get("intent"), str)):
+                            raise RuntimeError("invalid-insights")
+                except Exception as exc:
+                    code = str(exc)
+                    if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
+                        raise
+                    self._assert_scope(scope)
+                    self._wait_api_model_retry(self.api_jobs, job_key, job, store,
+                                               code, attempt + 1)
+                    continue
+                break
             with self.api_lock:
                 if (self.closing or self.active_model_source_mode != "api" or
-                        self.active_model_source_id != job_key[2]):
+                        self.active_model_source_id != job_key[2] or
+                        self.api_jobs.get(job_key) is not job or
+                        store.cache_suspended(job_key[0], job_key[2])):
                     raise RuntimeError("model-source-changed")
                 source_lock = getattr(self.source, "lock", None)
                 with source_lock if source_lock is not None else nullcontext():
@@ -2850,9 +3135,8 @@ class Backend:
         except Exception as exc:
             code = str(exc)
             with self.api_lock:
-                job["error"] = code if code in {
-                    "invalid-url", "invalid-request", "auth", "rate-limit", "timeout", "unsupported",
-                    "network", "provider-error", "response-too-large", "empty-response",
+                job.pop("retry", None)
+                job["error"] = code if code in MODEL_CONNECTOR_ERRORS or code in {
                     "invalid-insights", "model-source-changed"} else "model-analysis-failed"
                 job["status"] = "error"
         finally:
@@ -2861,25 +3145,35 @@ class Backend:
                 self.api_condition.notify_all()
 
     def _api_portrait_history(self, user, subject, highwater, scope, after=None,
-                              piece_limit_bytes=None):
-        """Count the frozen history once and retain only the requested new text."""
+                              piece_limit_bytes=None, cancel_check=None, start_after=None,
+                              skip_first_pieces=0, partial_sort=None):
+        """Read a frozen range and retain pieces plus compact per-row seek evidence."""
         full_digest, delta_digest = hashlib.sha256(), hashlib.sha256()
         pieces = []
         retained_bytes = 0
         full = {"messageCount": 0, "textCount": 0, "targetTextCount": 0,
                 "totalChars": 0, "pieceCount": 0}
         delta = dict(full)
-        cursor = None
+        row_hashes = bytearray()
+        cursor = start_after
+        previous_sort = start_after
+        first_item = True
 
         while highwater is not None:
             self._assert_scope(scope)
-            page, next_cursor = self.source.history_page(user, highwater, cursor, page_size=256)
+            if cancel_check is not None:
+                cancel_check()
+            page, next_cursor = self.source.history_page(user, highwater, cursor, page_size=1000)
+            self._assert_scope(scope)
+            if cancel_check is not None:
+                cancel_check()
             if next_cursor is None:
                 break
             if cursor is not None and next_cursor <= cursor:
                 raise RuntimeError("history cursor did not advance")
             for item in page:
-                current = after is None or tuple(item["_sort"]) > after
+                item_sort = tuple(item["_sort"])
+                current = after is None or item_sort > after
                 full["messageCount"] += 1
                 if current:
                     delta["messageCount"] += 1
@@ -2889,10 +3183,25 @@ class Backend:
                                        item.get("kind"), text if isinstance(text, str) else None],
                                       ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 full_digest.update(evidence)
+                row_index = len(row_hashes) // 32 if row_hashes is not None else -1
+                if row_hashes is not None:
+                    if piece_limit_bytes is not None and retained_bytes + 32 > piece_limit_bytes:
+                        pieces, row_hashes = None, None
+                    else:
+                        row_hashes.extend(hashlib.sha256(evidence).digest())
+                        retained_bytes += 32
                 if current:
                     delta_digest.update(evidence)
+                if first_item and skip_first_pieces and item_sort != partial_sort:
+                    raise ValueError("unfinished portrait source changed")
                 if item.get("kind") != "text" or sender not in ("self", "other") or not isinstance(text, str) or not text:
+                    if first_item and skip_first_pieces:
+                        raise ValueError("unfinished portrait source changed")
+                    previous_sort, first_item = item_sort, False
                     continue
+                if (first_item and skip_first_pieces >=
+                        (len(text) + API_PORTRAIT_PIECE_CHARS - 1) // API_PORTRAIT_PIECE_CHARS):
+                    raise ValueError("unfinished portrait source changed")
                 target = sender == "other" and (not user.endswith("@chatroom") or
                                                   subject == user or item.get("senderId") == subject)
                 for counts in (full, delta) if current else (full,):
@@ -2900,33 +3209,43 @@ class Backend:
                     counts["targetTextCount"] += int(target)
                     counts["totalChars"] += len(text)
                 for offset in range(0, len(text), API_PORTRAIT_PIECE_CHARS):
+                    piece_index = offset // API_PORTRAIT_PIECE_CHARS
                     piece = {"id": f"{item['id']}:{offset // API_PORTRAIT_PIECE_CHARS}",
                              "sender": "SELF" if sender == "self" else "OTHER",
                              "target": target, "text": text[offset:offset + API_PORTRAIT_PIECE_CHARS],
-                             "_last": offset + API_PORTRAIT_PIECE_CHARS >= len(text)}
+                             "_last": offset + API_PORTRAIT_PIECE_CHARS >= len(text),
+                             "_sort": item_sort, "_before": previous_sort,
+                             "_pieceIndex": piece_index, "_rowIndex": row_index}
                     full["pieceCount"] += 1
                     if current:
                         delta["pieceCount"] += 1
+                        if first_item and piece_index < skip_first_pieces:
+                            continue
                         if pieces is not None:
                             retained_bytes += len(piece["text"].encode("utf-8"))
                             if piece_limit_bytes is not None and retained_bytes > piece_limit_bytes:
-                                pieces = None
+                                pieces, row_hashes = None, None
                             else:
                                 pieces.append(piece)
+                previous_sort, first_item = item_sort, False
             cursor = next_cursor
         self._assert_scope(scope)
+        if cancel_check is not None:
+            cancel_check()
+        if skip_first_pieces and first_item:
+            raise ValueError("unfinished portrait source changed")
         def available(counts):
             return {key: counts[key] for key in
                     ("messageCount", "textCount", "targetTextCount", "totalChars", "pieceCount")}
         return (pieces, available(delta), delta_digest.hexdigest(),
-                available(full), full_digest.hexdigest())
+                available(full), full_digest.hexdigest(), row_hashes)
 
     def _run_api_portrait_inventory(self, key, scope, store):
         account, _workdir, user, subject, highwater = key
         try:
             request_scope = getattr(self.source, "request_scope", None)
             with request_scope() if callable(request_scope) else nullcontext():
-                pieces, _delta, _delta_fingerprint, available, fingerprint = (
+                pieces, _delta, _delta_fingerprint, available, fingerprint, _rows = (
                     self._api_portrait_history(user, subject, highwater, scope,
                                                piece_limit_bytes=API_PORTRAIT_INVENTORY_CACHE_BYTES))
                 self._assert_scope(scope)
@@ -2934,9 +3253,10 @@ class Backend:
                 if not self.closing:
                     store.api_history_inventory_save(account, user, subject, highwater,
                                                      fingerprint, available)
-                    if pieces is not None:
+                    if pieces is not None and _rows is not None:
                         self.api_portrait_inventory_pieces = (key, pieces, available,
-                                                              fingerprint, time.monotonic() + 60)
+                                                              fingerprint, time.monotonic() + 60,
+                                                              _rows)
                 self.api_portrait_inventory_jobs.pop(key, None)
                 self.api_condition.notify_all()
         except Exception:
@@ -2959,6 +3279,29 @@ class Backend:
                                    not isinstance(member, str) or not member or len(member) > 256):
             raise ValueError("invalid member")
         subject = member or user
+        group = user.endswith("@chatroom")
+        highwater = self.source.history_highwater(user)
+        message_count = text_count = None
+        # Group reads must stay cheap: per-message text classification is reserved for
+        # the portrait inventory, and its persisted totals are reused here.
+        if not group and hasattr(self.source, "contact"):
+            contact, members = self.source.contact(user), []
+        elif hasattr(self.source, "profile_overview"):
+            overview = self.source.profile_overview(user, member, highwater)
+            contact, members = overview["contact"], overview["members"]
+            message_count = overview["count"]
+        elif hasattr(self.source, "profile_metadata"):
+            metadata = self.source.profile_metadata(user, member)
+            contact, members = metadata["contact"], metadata["members"]
+            message_count, text_count = metadata["count"], metadata["textCount"]
+        else:
+            message_count, text_count, members = self.source.stats(user)
+            if member and member not in {item["id"] for item in members}:
+                raise ValueError("unknown member")
+            if member:
+                message_count, text_count = self.source.stats(user, member)[:2]
+            contact = self.source.contact(subject)
+        self._assert_scope((account, workdir))
         with self.api_lock:
             mode, source_id = self.active_model_source_mode, self.active_model_source_id
             running = self.api_portrait_jobs.get((account, user, source_id, subject))
@@ -2974,9 +3317,31 @@ class Backend:
         if running and running["status"] in ("queued", "running") and saved and running.get("_available"):
             highwater, available = saved["highwater"], running["_available"]
             inventory_status = "ready"
+        elif saved is not None:
+            # Render the saved portrait from its persisted inventory immediately after
+            # a reload. A fresh full-history scan is deferred to the portrait POST and
+            # must never make this read wait seconds behind unrelated inventory work.
+            available = saved["available"].get("fullAvailable")
+            if not isinstance(available, dict) or not all(
+                    type(available.get(key)) is int for key in API_PORTRAIT_COUNT_KEYS):
+                inventory = store.api_history_inventory_get(account, user, subject,
+                                                            saved["highwater"])
+                if inventory is not None:
+                    available = inventory["available"]
+                else:
+                    # Legacy delta rows may lack a full inventory. Text and target
+                    # totals remain exact from their persisted base plus delta; the
+                    # other inventory fields stay unknown until one migration scan.
+                    delta = saved["available"]
+                    available = {
+                        "messageCount": None,
+                        "textCount": delta.get("baseTextCount", 0) + delta["textCount"],
+                        "targetTextCount": delta.get("baseTargetTextCount", 0) +
+                                           delta["targetTextCount"],
+                        "totalChars": None, "pieceCount": None,
+                    }
+            inventory_status = "ready"
         else:
-            highwater = self.source.history_highwater(user)
-            self._assert_scope((account, workdir))
             inventory = store.api_history_inventory_get(account, user, subject, highwater)
             if inventory is None:
                 available = None
@@ -3009,19 +3374,40 @@ class Backend:
                 available = inventory["available"]
                 inventory_status = "ready"
         self._assert_scope((account, workdir))
+        if group and text_count is None and available is not None:
+            text_count = available["targetTextCount"] if member else available["textCount"]
+            if not member and available.get("messageCount") is not None:
+                # Present counts from one indexed history snapshot, not a fresh
+                # message total beside an older text denominator.
+                message_count = available["messageCount"]
+        identity = {"username": subject, **contact, "isGroup": group,
+                    "members": members if group else [],
+                    **({"messageCount": message_count, "textCount": text_count} if group else {})}
         if saved:
             base = saved["available"].get("baseTextCount", 0)
+            base_target = saved["available"].get("baseTargetTextCount", 0)
+            processed_target = saved["available"].get("processedTargetTextCount")
+            if type(processed_target) is not int:
+                processed_target = math.floor(saved["available"].get("targetTextCount", 0) *
+                                              saved["processed"] /
+                                              max(1, saved["available"].get("textCount", 0)))
             up_to_date = saved["highwater"] == highwater
             progress = {"processed": base + saved["processed"],
                         "total": available["textCount"] if up_to_date and available else max(
                             available["textCount"] if available else 0,
                             base + saved["available"]["textCount"]),
+                        "processedTargetTexts": base_target + processed_target,
+                        "totalTargetTexts": available["targetTextCount"] if available else
+                                            base_target + saved["available"]["targetTextCount"],
                         "batchIndex": saved["batchIndex"], "batchTotal": len(saved["plan"]),
                         "complete": saved["complete"] and up_to_date}
         else:
             progress = {"processed": 0, "total": available["textCount"] if available else 0,
+                        "processedTargetTexts": 0,
+                        "totalTargetTexts": available["targetTextCount"] if available else 0,
                         "batchIndex": 0, "batchTotal": 0, "complete": False}
         return {"account": account, "sourceId": source_id, "subject": subject,
+                "identity": identity,
                 "portrait": saved["portrait"] if saved else None,
                 "available": available, "inventoryReady": inventory_status == "ready",
                 "inventoryStatus": inventory_status, "progress": progress,
@@ -3053,22 +3439,24 @@ class Backend:
             raise AccountChangedError()
         if source_id not in {item["sourceId"] for item in self.analysis_cache_status()["sources"]}:
             raise ValueError("unknown analysis source")
+        clear_scope = (account, source_id)
         with self.request_condition:
-            if self.cache_clear_in_progress:
+            if clear_scope in self.cache_clear_in_progress:
                 raise RuntimeError("cache clear already running")
-            self.cache_clear_in_progress = True
+            self.cache_clear_in_progress.add(clear_scope)
+        was_suspended = False
+        quiesced = False
         try:
+            was_suspended = store.cache_suspended(account, source_id)
             store.suspend_cache(account, source_id)
-            with self.request_condition:
-                if not self.request_condition.wait_for(lambda: self.active_requests <= 1, timeout=200):
-                    raise RuntimeError("active requests did not drain")
+            quiesced = True
             if source_id == LOCAL_SOURCE_ID:
                 with self.tasks.all_tasks_done:
                     if not self.tasks.all_tasks_done.wait_for(
                             lambda: self.tasks.unfinished_tasks == 0, timeout=200):
                         raise RuntimeError("local analysis worker did not drain")
                 # No worker turn can now write the selected account. Drop paused
-                # iterators so an explicit resume starts from empty saved state.
+                # iterators so a later analysis starts from empty saved state.
                 with self.jobs_lock:
                     for key in list(self.jobs):
                         if key[0] == account:
@@ -3099,9 +3487,10 @@ class Backend:
                     if key[0] == account:
                         del self.performance[key]
             else:
+                # Source-scoped: only drop this source's jobs. The suspension above
+                # makes its writers refuse to save, so unrelated inflight inventory or
+                # other sources must not be waited on here.
                 with self.api_condition:
-                    while self.api_inflight:
-                        self.api_condition.wait(timeout=1)
                     snapshot = self.api_portrait_inventory_pieces
                     if snapshot is not None and snapshot[0][0] == account:
                         self.api_portrait_inventory_pieces = None
@@ -3115,12 +3504,23 @@ class Backend:
             store.clear_analysis_cache(account, source_id)
             if source_id == LOCAL_SOURCE_ID and hasattr(self.source, "profile_metadata_cache"):
                 self.source.profile_metadata_cache.clear()
+            # Clear deletes the saved analysis and portraits, so the source must be
+            # usable immediately rather than hidden behind a separate Restore action.
+            # Lifting the quiesce flag inside the critical section avoids a window
+            # where a fresh request sees the source as suspended.
+            store.resume_cache(account, source_id)
+        except Exception:
+            # Only undo the transient quiesce flag this call actually added, so a
+            # source that was already suspended (or whose state could not be read)
+            # keeps its prior state.
+            if quiesced and not was_suspended:
+                store.resume_cache(account, source_id)
+            raise
         finally:
             with self.request_condition:
-                self.cache_clear_in_progress = False
+                self.cache_clear_in_progress.discard(clear_scope)
                 self.request_condition.notify_all()
-        return {"cleared": True, "account": account, "sourceId": source_id,
-                "resumeRequired": True}
+        return {"cleared": True, "account": account, "sourceId": source_id}
 
     def analysis_cache_resume(self, requested_account, source_id):
         account, workdir, store = self._scoped_identity()
@@ -3133,10 +3533,12 @@ class Backend:
         self._assert_scope((account, workdir))
         return {"resumed": True, "account": account, "sourceId": source_id}
 
-    def start_model_portrait(self, requested_account, user, member=None):
+    def start_model_portrait(self, requested_account, user, member=None, refresh_axes=False):
         if member is not None and (not user.endswith("@chatroom") or
                                    not isinstance(member, str) or not member or len(member) > 256):
             raise ValueError("invalid member")
+        if type(refresh_axes) is not bool:
+            raise ValueError("invalid portrait refresh")
         account, workdir, store = self._scoped_identity()
         if account != requested_account:
             raise AccountChangedError()
@@ -3155,74 +3557,44 @@ class Backend:
             if current and current["status"] in ("queued", "running"):
                 return {"account": account, "sourceId": source_id,
                         "job": {key: value for key, value in current.items() if not key.startswith("_")}}
-        existing = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
-        current_highwater = self.source.history_highwater(user)
-        self._assert_scope((account, workdir))
-        if existing and existing["complete"] and existing["highwater"] == current_highwater:
-            job = {"id": None, "status": "done",
-                   "processed": existing["available"].get("baseTextCount", 0) + existing["processed"],
-                   "total": existing["available"].get("baseTextCount", 0) +
-                            existing["available"]["textCount"],
-                   "batchIndex": existing["batchIndex"], "batchTotal": len(existing["plan"])}
-            return {"account": account, "sourceId": source_id, "job": job}
-        highwater = existing["highwater"] if existing and not existing["complete"] else current_highwater
-        after = existing["after"] if existing and not existing["complete"] else (
-            existing["highwater"] if existing else None)
-        base_count = (existing["available"].get("baseTextCount", 0) +
-                      existing["available"]["textCount"] if existing and existing["complete"] else
-                      existing["available"].get("baseTextCount", 0) if existing else 0)
-        snapshot_key = (account, workdir, user, subject, highwater)
-        with self.api_condition:
-            if self.api_portrait_inventory_jobs.get(snapshot_key) == "running":
-                self.api_condition.wait_for(
-                    lambda: self.api_portrait_inventory_jobs.get(snapshot_key) != "running",
-                    timeout=30)
-            snapshot = self.api_portrait_inventory_pieces
-            if (after is None and snapshot is not None and snapshot[0] == snapshot_key and
-                    snapshot[4] >= time.monotonic()):
-                pieces, full_available, fingerprint = snapshot[1:4]
-                available, full_fingerprint = dict(full_available), fingerprint
-            else:
-                pieces = None
-        if pieces is None:
-            pieces, available, fingerprint, full_available, full_fingerprint = (
-                self._api_portrait_history(user, subject, highwater, (account, workdir), after))
-        available["baseTextCount"] = base_count
-        wire_chars = api_portrait_wire_chars(config.get("contextTokens"))
-        if existing and not existing["complete"]:
-            completed = existing["batchIndex"]
-            prefix = existing["plan"][:completed]
-            offset = prefix[-1] if prefix else 0
-            plan = prefix + [offset + end for end in api_portrait_plan(pieces[offset:], wire_chars)]
-        else:
-            plan = api_portrait_plan(pieces, wire_chars)
-        if snapshot is not None and pieces is snapshot[1]:
-            with self.api_condition:
-                if self.api_portrait_inventory_pieces is snapshot:
-                    self.api_portrait_inventory_pieces = None
-        store.api_history_inventory_save(account, user, subject, highwater,
-                                         full_fingerprint, full_available)
-        with self.api_lock:
-            if (self.closing or self.active_model_source_mode != "api" or
-                    self.active_model_source_id != source_id or store.cache_suspended(account, source_id)):
-                raise ModelSourceUnavailable("model source changed")
-            store.register_api_source(account, source_id, config["protocol"], config["model"])
-            saved = store.api_portrait_begin(account, user, api_portrait_scope(source_id), subject,
-                                             highwater, after, fingerprint, available, plan)
-            job = {"id": uuid.uuid4().hex, "status": "queued",
-                   "processed": base_count + saved["processed"],
-                   "total": base_count + available["textCount"],
-                   "batchIndex": saved["batchIndex"], "batchTotal": len(saved["plan"]),
-                   "_available": full_available, "_contextTokens": config.get("contextTokens")}
-            self.api_portrait_jobs[job_key] = job
-            if saved["complete"]:
-                job["status"] = "done"
+            if refresh_axes:
+                # Re-estimate MBTI/traits from the saved cumulative portrait with one
+                # bounded call: no history rescan, no progress reset, same source scope.
+                saved = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
+                if saved is None:
+                    raise ValueError("no saved portrait to re-evaluate")
+                job = {"id": uuid.uuid4().hex, "status": "queued",
+                       "processed": saved["available"].get("baseTextCount", 0) + saved["processed"],
+                       "total": saved["available"].get("baseTextCount", 0) + saved["available"]["textCount"],
+                       "batchIndex": saved["batchIndex"], "batchTotal": len(saved["plan"]),
+                       "startedAtMs": int(time.time() * 1000),
+                       "_axesRefresh": True, "_contextTokens": config.get("contextTokens")}
+                self.api_portrait_jobs[job_key] = job
+                self.api_inflight += 1
+                thread = threading.Thread(target=self._run_model_portrait_axes,
+                                          args=(job_key, job, (account, workdir), store, config,
+                                                api_key, saved), daemon=True)
+                try:
+                    thread.start()
+                except Exception:
+                    self.api_inflight -= 1
+                    job.update(status="error", error="portrait-analysis-failed")
+                    self.api_condition.notify_all()
+                    raise
                 return {"account": account, "sourceId": source_id,
                         "job": {key: value for key, value in job.items() if not key.startswith("_")}}
+            # The full history scan and batch planning can take minutes. Register
+            # the scoped job before starting that work so POST can return at once.
+            job = {"id": uuid.uuid4().hex, "status": "queued", "phase": "preparing",
+                   "processed": 0, "total": 0, "processedTargetTexts": 0,
+                   "totalTargetTexts": 0, "batchIndex": 0, "batchTotal": 0,
+                   "startedAtMs": int(time.time() * 1000),
+                   "_contextTokens": config.get("contextTokens")}
+            self.api_portrait_jobs[job_key] = job
             self.api_inflight += 1
             thread = threading.Thread(target=self._run_model_portrait,
-                                      args=(job_key, job, (account, workdir), store, config, api_key,
-                                            saved, pieces), daemon=True)
+                                      args=(job_key, job, (account, workdir), store, config, api_key),
+                                      daemon=True)
             try:
                 thread.start()
             except Exception:
@@ -3233,49 +3605,225 @@ class Backend:
             return {"account": account, "sourceId": source_id,
                     "job": {key: value for key, value in job.items() if not key.startswith("_")}}
 
-    def _run_model_portrait(self, job_key, job, scope, store, config, api_key, saved, pieces):
+    def _assert_api_portrait_job(self, job_key, job, store, config):
+        """A queued scan must not outlive its exact source, budget, or cache scope."""
+        with self.api_lock:
+            if (self.closing or self.active_model_source_mode != "api" or
+                    self.active_model_source_id != job_key[2] or
+                    (self.active_api_config or {}).get("contextTokens") != config.get("contextTokens") or
+                    self.api_portrait_jobs.get(job_key) is not job or
+                    store.cache_suspended(job_key[0], job_key[2])):
+                raise RuntimeError("model-source-changed")
+
+    def _prepare_model_portrait(self, job_key, job, scope, store, config):
+        """Freeze and plan history in the background; only then begin the cursor."""
         account, user, source_id, subject = job_key
+        self._assert_scope(scope)
+        self._assert_api_portrait_job(job_key, job, store, config)
+        existing = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
+        current_highwater = self.source.history_highwater(user)
+        self._assert_scope(scope)
+        self._assert_api_portrait_job(job_key, job, store, config)
+        if existing and existing["complete"] and existing["highwater"] is not None and (
+                current_highwater is None or current_highwater < existing["highwater"]):
+            raise ValueError("unfinished portrait source changed")
+        if existing and existing["complete"] and existing["highwater"] == current_highwater:
+            with self.api_lock:
+                self._assert_scope(scope)
+                self._assert_api_portrait_job(job_key, job, store, config)
+                job.update(status="done",
+                           processed=existing["available"].get("baseTextCount", 0) + existing["processed"],
+                           total=existing["available"].get("baseTextCount", 0) +
+                                 existing["available"]["textCount"],
+                           batchIndex=existing["batchIndex"], batchTotal=len(existing["plan"]))
+                job.pop("phase", None)
+            return None
+        highwater = existing["highwater"] if existing and not existing["complete"] else current_highwater
+        after = existing["after"] if existing and not existing["complete"] else (
+            existing["highwater"] if existing else None)
+        base_count = (existing["available"].get("baseTextCount", 0) +
+                      existing["available"]["textCount"] if existing and existing["complete"] else
+                      existing["available"].get("baseTextCount", 0) if existing else 0)
+        base_target_count = (existing["available"].get("baseTargetTextCount", 0) +
+                             existing["available"]["targetTextCount"] if existing and existing["complete"] else
+                             existing["available"].get("baseTargetTextCount", 0) if existing else 0)
+        saved_full = existing["available"].get("fullAvailable") if existing else None
+        saved_full_fingerprint = existing["available"].get("fullFingerprint") if existing else None
+        if existing and (not isinstance(saved_full, dict) or
+                         not isinstance(saved_full_fingerprint, str)):
+            inventory = store.api_history_inventory_get(account, user, subject,
+                                                        existing["highwater"])
+            if inventory is not None:
+                saved_full, saved_full_fingerprint = inventory["available"], inventory["fingerprint"]
+        has_full = (isinstance(saved_full, dict) and isinstance(saved_full_fingerprint, str) and
+                    bool(saved_full_fingerprint) and
+                    all(type(saved_full.get(key)) is int and saved_full[key] >= 0
+                        for key in API_PORTRAIT_COUNT_KEYS))
+        completed = existing["batchIndex"] if existing and not existing["complete"] else 0
+        piece_offset = existing["plan"][completed - 1] if completed else 0
+        resume = existing.get("resume") if existing and not existing["complete"] else None
+        valid_resume = (isinstance(resume, dict) and resume.get("batchIndex") == completed and
+                        resume.get("pieceOffset") == piece_offset and
+                        isinstance(resume.get("tailHash"), str) and
+                        len(resume["tailHash"]) == 64 and
+                        type(resume.get("skipPieces")) is int and resume["skipPieces"] >= 0 and
+                        (resume.get("after") is None or
+                         isinstance(resume["after"], list) and len(resume["after"]) == 3) and
+                        (resume.get("partialSort") is None or
+                         isinstance(resume["partialSort"], list) and len(resume["partialSort"]) == 3) and
+                        (resume["skipPieces"] == 0) == (resume.get("partialSort") is None))
+        fast_resume = bool(existing and not existing["complete"] and has_full and
+                           (completed == 0 or valid_resume))
+        fast_incremental = bool(existing and existing["complete"] and has_full)
+        if fast_resume and completed:
+            start_after = tuple(resume["after"]) if resume["after"] is not None else None
+        elif fast_resume or fast_incremental:
+            start_after = after
+        else:
+            start_after = None
+        skip_pieces = resume["skipPieces"] if fast_resume and completed else 0
+        partial_sort = (tuple(resume["partialSort"]) if skip_pieces and
+                        resume["partialSort"] is not None else None)
+        snapshot = None
+        pieces = None
+        row_hashes = None
+        if start_after is None and after is None:
+            snapshot_key = (account, scope[1], user, subject, highwater)
+            deadline = time.monotonic() + 30
+            while True:
+                self._assert_scope(scope)
+                self._assert_api_portrait_job(job_key, job, store, config)
+                with self.api_condition:
+                    if self.api_portrait_inventory_jobs.get(snapshot_key) != "running":
+                        snapshot = self.api_portrait_inventory_pieces
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        snapshot = self.api_portrait_inventory_pieces
+                        break
+                    self.api_condition.wait(timeout=min(1, remaining))
+            if (snapshot is not None and snapshot[0] == snapshot_key and
+                    snapshot[4] >= time.monotonic() and len(snapshot) > 5):
+                pieces, full_available, fingerprint = snapshot[1:4]
+                available, full_fingerprint, row_hashes = dict(full_available), fingerprint, snapshot[5]
+        if pieces is None:
+            pieces, scan_available, scan_fingerprint, scan_full, scan_full_fingerprint, row_hashes = (
+                self._api_portrait_history(
+                    user, subject, highwater, scope, after,
+                    cancel_check=lambda: self._assert_api_portrait_job(job_key, job, store, config),
+                    start_after=start_after, skip_first_pieces=skip_pieces,
+                    partial_sort=partial_sort))
+            if fast_resume:
+                tails = api_portrait_tail_hashes(row_hashes)
+                if completed and tails[:32].hex() != resume["tailHash"]:
+                    raise ValueError("unfinished portrait source changed")
+                if not completed and (scan_fingerprint != existing["fingerprint"] or
+                                      any(scan_available[key] != existing["available"][key]
+                                          for key in API_PORTRAIT_COUNT_KEYS)):
+                    raise ValueError("unfinished portrait source changed")
+                available = dict(existing["available"])
+                fingerprint = existing["fingerprint"]
+                full_available, full_fingerprint = saved_full, saved_full_fingerprint
+            elif fast_incremental:
+                available, fingerprint = scan_available, scan_fingerprint
+                full_available = api_portrait_add_counts(saved_full, scan_full)
+                full_fingerprint = "chain-v2:" + hashlib.sha256(
+                    (saved_full_fingerprint + ":" + scan_fingerprint).encode("ascii")).hexdigest()
+            else:
+                available, fingerprint = scan_available, scan_fingerprint
+                full_available, full_fingerprint = scan_full, scan_full_fingerprint
+                if existing and not existing["complete"] and fingerprint != existing["fingerprint"]:
+                    raise ValueError("unfinished portrait source changed")
+        self._assert_scope(scope)
+        self._assert_api_portrait_job(job_key, job, store, config)
+        tails = api_portrait_tail_hashes(row_hashes)
+        legacy_resume = None
+        if existing and not existing["complete"] and completed and not fast_resume:
+            if piece_offset < 1 or piece_offset > len(pieces):
+                raise ValueError("unfinished portrait source changed")
+            legacy_resume = api_portrait_resume_anchor(
+                pieces[piece_offset - 1], piece_offset, completed, tails)
+            if type(existing["available"].get("processedTargetTextCount")) is not int:
+                available["processedTargetTextCount"] = sum(
+                    bool(item["target"] and item["_last"]) for item in pieces[:piece_offset])
+            pieces = pieces[piece_offset:]
+        if existing and not existing["complete"] and not pieces:
+            raise ValueError("unfinished portrait source changed")
+        available["baseTextCount"] = base_count
+        available["baseTargetTextCount"] = base_target_count
+        available["fullAvailable"] = full_available
+        available["fullFingerprint"] = full_fingerprint
+        wire_chars = api_portrait_wire_chars(config.get("contextTokens"))
+        if existing and not existing["complete"]:
+            prefix = existing["plan"][:completed]
+            plan = prefix + [piece_offset + end for end in api_portrait_plan(pieces, wire_chars)]
+        else:
+            plan = api_portrait_plan(pieces, wire_chars)
+        self._assert_scope(scope)
+        source_lock = getattr(self.source, "lock", None)
+        with self.api_lock:
+            self._assert_api_portrait_job(job_key, job, store, config)
+            with source_lock if source_lock is not None else nullcontext():
+                self._assert_scope(scope)
+                store.api_history_inventory_save(account, user, subject, highwater,
+                                                 full_fingerprint, full_available)
+                store.register_api_source(account, source_id, config["protocol"], config["model"])
+                saved = store.api_portrait_begin(account, user, api_portrait_scope(source_id), subject,
+                                                 highwater, after, fingerprint, available, plan)
+                if existing and not existing["complete"] and (
+                        available != saved["available"] or legacy_resume is not None):
+                    store.api_portrait_upgrade_resume(
+                        account, user, api_portrait_scope(source_id), subject,
+                        fingerprint, completed, available, legacy_resume or saved["resume"])
+                    saved = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
+                if (snapshot is not None and pieces is snapshot[1] and
+                        self.api_portrait_inventory_pieces is snapshot):
+                    self.api_portrait_inventory_pieces = None
+                job.update(processed=base_count + saved["processed"],
+                           total=base_count + available["textCount"],
+                           processedTargetTexts=base_target_count +
+                                                saved["available"].get("processedTargetTextCount", 0),
+                           totalTargetTexts=base_target_count + available["targetTextCount"],
+                           batchIndex=saved["batchIndex"], batchTotal=len(saved["plan"]),
+                           _available=full_available, _contextTokens=config.get("contextTokens"))
+                job.pop("phase", None)
+                if saved["complete"]:
+                    job["status"] = "done"
+                    return None
+                job["status"] = "running"
+        return saved, pieces, piece_offset, tails
+
+    def _wait_api_model_retry(self, jobs, job_key, job, store, code, attempt):
+        """Expose one retryable error and wait without holding the API lock."""
+        with self.api_condition:
+            deadline = time.monotonic() + API_MODEL_RETRY_SECONDS
+            job["retry"] = {"reason": code, "attempt": attempt,
+                            "max": API_MODEL_RETRY_MAX,
+                            "nextAtMs": int((time.time() + API_MODEL_RETRY_SECONDS) * 1000)}
+            self.api_condition.notify_all()
+            while True:
+                if (self.closing or self.active_model_source_mode != "api" or
+                        self.active_model_source_id != job_key[2] or
+                        jobs.get(job_key) is not job or
+                        store.cache_suspended(job_key[0], job_key[2])):
+                    raise RuntimeError("model-source-changed")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    job.pop("retry", None)
+                    return
+                self.api_condition.wait(timeout=min(1, remaining))
+
+    def _run_model_portrait(self, job_key, job, scope, store, config, api_key):
+        """Keep the verified source reader pinned through generation and commit."""
+        request_scope = getattr(self.source, "request_scope", None)
         try:
-            job["status"] = "running"
-            portrait = saved["portrait"]
-            processed = saved["processed"]
-            processed_chars = saved["processedChars"]
-            plan = saved["plan"]
-            for batch_index in range(saved["batchIndex"], len(plan)):
-                self._assert_scope(scope)
-                with self.api_lock:
-                    if (self.closing or self.active_model_source_mode != "api" or
-                            self.active_model_source_id != source_id or
-                            (self.active_api_config or {}).get("contextTokens") != config.get("contextTokens") or
-                            store.cache_suspended(account, source_id)):
-                        raise RuntimeError("model-source-changed")
-                start = plan[batch_index - 1] if batch_index else 0
-                batch = pieces[start:plan[batch_index]]
-                wire = [{key: item[key] for key in ("id", "sender", "target", "text")}
-                        for item in batch]
-                updated = self.api_portrait_analyzer.model_portrait(config["protocol"], config["baseUrl"],
-                                                           api_key, config["model"], portrait, wire)
-                if not valid_api_portrait(updated):
-                    raise RuntimeError("invalid-portrait")
-                self._assert_scope(scope)
-                with self.api_lock:
-                    if (self.closing or self.active_model_source_mode != "api" or
-                            self.active_model_source_id != source_id or
-                            (self.active_api_config or {}).get("contextTokens") != config.get("contextTokens") or
-                            store.cache_suspended(account, source_id)):
-                        raise RuntimeError("model-source-changed")
-                    portrait = updated
-                    processed += sum(bool(item["_last"]) for item in batch)
-                    processed_chars += sum(len(item["text"]) for item in batch)
-                    store.api_portrait_checkpoint(account, user, api_portrait_scope(source_id),
-                                                  subject, batch_index + 1, portrait, processed,
-                                                  processed_chars, batch_index + 1 == len(plan))
-                    job["processed"] = saved["available"].get("baseTextCount", 0) + processed
-                    job["batchIndex"] = batch_index + 1
-            job["status"] = "done"
+            with request_scope() if callable(request_scope) else nullcontext():
+                self._run_model_portrait_scoped(job_key, job, scope, store, config, api_key)
         except Exception as exc:
             code = str(exc)
             with self.api_lock:
+                job.pop("retry", None)
+                job.pop("phase", None)
                 job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
                            code in {"invalid-portrait", "model-source-changed"} else
                            "portrait-analysis-failed")
@@ -3284,6 +3832,157 @@ class Backend:
                 self.api_inflight -= 1
                 self.api_condition.notify_all()
 
+    def _run_model_portrait_scoped(self, job_key, job, scope, store, config, api_key):
+        account, user, source_id, subject = job_key
+        try:
+            with self.api_lock:
+                self._assert_api_portrait_job(job_key, job, store, config)
+                job["status"] = "running"
+            prepared = self._prepare_model_portrait(job_key, job, scope, store, config)
+            if prepared is None:
+                return
+            saved, pieces, piece_offset, tails = prepared
+            portrait = saved["portrait"]
+            processed = saved["processed"]
+            processed_chars = saved["processedChars"]
+            plan = saved["plan"]
+            processed_target = saved["available"].get("processedTargetTextCount")
+            if type(processed_target) is not int:
+                if saved["batchIndex"]:
+                    raise RuntimeError("API portrait target checkpoint unavailable")
+                processed_target = 0
+            for batch_index in range(saved["batchIndex"], len(plan)):
+                self._assert_scope(scope)
+                with self.api_lock:
+                    self._assert_api_portrait_job(job_key, job, store, config)
+                start = (plan[batch_index - 1] if batch_index else 0) - piece_offset
+                stop = plan[batch_index] - piece_offset
+                batch = pieces[start:stop]
+                if not batch:
+                    raise RuntimeError("API portrait batch cursor unavailable")
+                wire = [{key: item[key] for key in ("id", "sender", "target", "text")}
+                        for item in batch]
+                batch_started = time.monotonic()
+                job["batchStartedAtMs"] = int(time.time() * 1000)
+                for attempt in range(API_MODEL_RETRY_MAX + 1):
+                    self._assert_scope(scope)
+                    self._assert_api_portrait_job(job_key, job, store, config)
+                    try:
+                        updated = self.api_portrait_analyzer.model_portrait(
+                            config["protocol"], config["baseUrl"], api_key, config["model"], portrait, wire)
+                        if not valid_api_portrait(updated):
+                            raise RuntimeError("invalid-portrait")
+                    except Exception as exc:
+                        code = str(exc)
+                        if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
+                            raise
+                        self._assert_scope(scope)
+                        self._wait_api_model_retry(self.api_portrait_jobs, job_key, job,
+                                                   store, code, attempt + 1)
+                        continue
+                    break
+                self._assert_scope(scope)
+                with self.api_lock:
+                    self._assert_api_portrait_job(job_key, job, store, config)
+                    source_lock = getattr(self.source, "lock", None)
+                    with source_lock if source_lock is not None else nullcontext():
+                        self._assert_scope(scope)
+                        portrait = updated
+                        completed_texts = sum(bool(item["_last"]) for item in batch)
+                        completed_targets = sum(bool(item["target"] and item["_last"])
+                                                for item in batch)
+                        processed += completed_texts
+                        processed_target += completed_targets
+                        processed_chars += sum(len(item["text"]) for item in batch)
+                        store.api_portrait_checkpoint(account, user, api_portrait_scope(source_id),
+                                                      subject, batch_index + 1, portrait, processed,
+                                                      processed_chars, batch_index + 1 == len(plan),
+                                                      processed_target=processed_target,
+                                                      resume=api_portrait_resume_anchor(
+                                                          batch[-1], plan[batch_index],
+                                                          batch_index + 1, tails))
+                        job["processed"] = saved["available"].get("baseTextCount", 0) + processed
+                        job["processedTargetTexts"] = (saved["available"].get("baseTargetTextCount", 0) +
+                                                       processed_target)
+                        job["batchIndex"] = batch_index + 1
+                        elapsed = max(time.monotonic() - batch_started, .001)
+                        job["rateTextsPerSecond"] = round(completed_texts / elapsed, 2)
+                        job.pop("retry", None)
+            job["status"] = "done"
+        except Exception as exc:
+            code = str(exc)
+            with self.api_lock:
+                job.pop("retry", None)
+                job.pop("phase", None)
+                job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
+                           code in {"invalid-portrait", "model-source-changed"} else
+                           "portrait-analysis-failed")
+    def _run_model_portrait_axes(self, job_key, job, scope, store, config, api_key, saved):
+        """Pin the same source before the paid axes call and its checkpoint."""
+        request_scope = getattr(self.source, "request_scope", None)
+        try:
+            with request_scope() if callable(request_scope) else nullcontext():
+                self._run_model_portrait_axes_scoped(
+                    job_key, job, scope, store, config, api_key, saved)
+        except Exception as exc:
+            code = str(exc)
+            with self.api_lock:
+                job.pop("retry", None)
+                job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
+                           code in {"invalid-portrait", "model-source-changed"} else
+                           "portrait-analysis-failed")
+        finally:
+            with self.api_condition:
+                self.api_inflight -= 1
+                self.api_condition.notify_all()
+
+    def _run_model_portrait_axes_scoped(self, job_key, job, scope, store, config, api_key, saved):
+        account, user, source_id, subject = job_key
+        try:
+            self._assert_scope(scope)
+            with self.api_lock:
+                self._assert_api_portrait_job(job_key, job, store, config)
+                job["status"] = "running"
+            portrait = saved["portrait"]
+            job["batchStartedAtMs"] = int(time.time() * 1000)
+            for attempt in range(API_MODEL_RETRY_MAX + 1):
+                self._assert_scope(scope)
+                self._assert_api_portrait_job(job_key, job, store, config)
+                try:
+                    update = self.api_portrait_analyzer.refresh_portrait_axes(
+                        config["protocol"], config["baseUrl"], api_key, config["model"], portrait)
+                    if not isinstance(update, dict) or not {"mbtiAxes", "traits", "affinity"} <= update.keys():
+                        raise RuntimeError("invalid-portrait")
+                    merged = {**portrait, "mbtiAxes": update["mbtiAxes"],
+                              "traits": update["traits"], "affinity": update["affinity"]}
+                    if not valid_api_portrait(merged):
+                        raise RuntimeError("invalid-portrait")
+                except Exception as exc:
+                    code = str(exc)
+                    if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
+                        raise
+                    self._assert_scope(scope)
+                    self._wait_api_model_retry(self.api_portrait_jobs, job_key, job,
+                                               store, code, attempt + 1)
+                    continue
+                break
+            self._assert_scope(scope)
+            with self.api_lock:
+                self._assert_api_portrait_job(job_key, job, store, config)
+                source_lock = getattr(self.source, "lock", None)
+                with source_lock if source_lock is not None else nullcontext():
+                    self._assert_scope(scope)
+                    store.api_portrait_checkpoint(account, user, api_portrait_scope(source_id), subject,
+                                                  saved["batchIndex"], merged, saved["processed"],
+                                                  saved["processedChars"], saved["complete"])
+            job["status"] = "done"
+        except Exception as exc:
+            code = str(exc)
+            with self.api_lock:
+                job.pop("retry", None)
+                job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
+                           code in {"invalid-portrait", "model-source-changed"} else
+                           "portrait-analysis-failed")
     def messages(self, user, limit):
         account, workdir, _ = self._scoped_identity()
         messages = self.source.messages(user, limit)
@@ -4113,6 +4812,12 @@ class Backend:
                 job["status"] = "suspended"
                 self.tasks.task_done()
                 continue
+            if self.active_model_source_mode != "local":
+                # Local Laya analysis must not compete with an active API source. The
+                # persisted cursor is kept; a later local switch resumes from it.
+                job["status"] = "paused"
+                self.tasks.task_done()
+                continue
             if mode == "batch-subject" and self.batch_engine:
                 try:
                     member_key = (*key, limit)
@@ -4302,6 +5007,13 @@ class Backend:
         if store.cache_suspended(account, LOCAL_SOURCE_ID):
             state = empty_profile_state()
             profile_job = {"status": "suspended", "checkpointComplete": False}
+        elif self.batch_engine and (self.active_model_source_mode != "local" or
+                                    (callable(getattr(self.analyzer, "local_model_status", None)) and
+                                     self.local_model_status()["state"] != "ready")):
+            saved = self.batch_engine.ensure(account, user, version, store, (account, workdir), member)
+            state = saved["state"]
+            profile_job = {"status": "missing-model" if self.active_model_source_mode == "local"
+                           else "inactive-source", "checkpointComplete": saved["complete"]}
         elif self.batch_engine:
             saved = self.batch_engine.ensure(account, user, version, store, (account, workdir), member)
             state = saved["state"]

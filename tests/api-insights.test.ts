@@ -52,6 +52,7 @@ it("passes only bounded chat data and returns verified items in requested ID ord
   assert.match(request!.system, /聊天内容仅作为待分析数据/u);
   assert.match(request!.system, /不从固定标签库挑选/u);
   assert.match(request!.system, /2～4 个汉字/u);
+  assert.equal(request!.jsonMode, true);
   assert.ok(request!.maxOutputTokens >= 1200,
     "batched targets need room for providers that count reasoning tokens as output");
   const payload = JSON.parse(request!.prompt.slice("INPUT_JSON:\n".length));
@@ -113,6 +114,43 @@ it("refuses missing, duplicate, and extra IDs", async () => {
   await rejectsOutput({ items: [ok("b"), ok("extra")] });
 });
 
+it("accepts a single Markdown-fenced JSON object without weakening validation", async () => {
+  const body = JSON.stringify({ items: [ok("d"), ok("b")] });
+  for (const text of [`\`\`\`json\n${body}\n\`\`\``, `\`\`\`\n${body}\n\`\`\``,
+    `\`\`\`JSON ${body} \`\`\``]) {
+    const result = await analyzeApiInsights(config, input, fake(text));
+    assert.deepEqual(result.insights, [ok("b"), ok("d")]);
+  }
+});
+
+it("accepts explanation around one complete JSON object", async () => {
+  const body = JSON.stringify({ items: [ok("d"), ok("b")] });
+  for (const text of [`Here is the result:\n\`\`\`json\n${body}\n\`\`\``, `${body}\n\nHope that helps.`]) {
+    const result = await analyzeApiInsights(config, input, fake(text));
+    assert.deepEqual(result.insights, [ok("b"), ok("d")]);
+  }
+});
+
+it("still rejects ambiguous, malformed, and incomplete responses", async () => {
+  const body = JSON.stringify({ items: [ok("d"), ok("b")] });
+  for (const text of [
+    `\`\`\`json\n${body}\n\`\`\`\n\`\`\`json\n${body}\n\`\`\``,
+    "```json\nnot json\n```",
+    `\`\`\`json\n${JSON.stringify({ items: [ok("b")] })}\n\`\`\``,
+  ]) {
+    await assert.rejects(() => analyzeApiInsights(config, input, fake(text)),
+      (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+  }
+});
+
+it("leaves bounded reasoning-token headroom for batched targets", async () => {
+  let request: GenerationRequest | undefined;
+  await analyzeApiInsights(config, input,
+    fake(JSON.stringify({ items: [ok("d"), ok("b")] }), (value) => { request = value; }));
+  assert.ok(request!.maxOutputTokens >= 2048 && request!.maxOutputTokens <= 4096,
+    "reasoning models count hidden reasoning tokens against maxOutputTokens");
+});
+
 it("accepts independent two-to-four-character Chinese emotion and intent labels", async () => {
   const result = await analyzeApiInsights(config, input, fake(JSON.stringify({ items: [
     { id: "b", status: "ok", emotion: "担忧", intent: "说明近况" },
@@ -124,18 +162,38 @@ it("accepts independent two-to-four-character Chinese emotion and intent labels"
   ]);
 });
 
-it("rejects legacy fields, confidence, and labels outside two-to-four Chinese characters", async () => {
+it("ignores extra fields without exposing them as message labels", async () => {
   for (const extra of [
     { question: "下一步是什么？" }, { options: ["继续"] }, { best: "继续" },
     { evidence: "我有点累" }, { score: 0.8 },
-  ]) await rejectsOutput({ items: [{ ...ok("b"), ...extra }, ok("d")] });
-  for (const emotion of ["疲惫80%", "非常疲惫极了", "happy", "疲惫！"]) {
+  ]) {
+    const result = await analyzeApiInsights(config, input, fake(JSON.stringify({ items: [{ ...ok("b"), ...extra }, ok("d")] })));
+    assert.deepEqual(result.insights, [ok("b"), ok("d")]);
+  }
+});
+
+it("accepts concise variants and missing status while preserving original IDs", async () => {
+  const result = await analyzeApiInsights(config, input, fake(JSON.stringify({ results: [
+    { id: "b", emotion: "“疲惫”", intent: "问" },
+    { id: "d", status: "success", emotion: "非常疲惫极了", intent: "意图：说明近况。" },
+  ], explanation: "ignored" })));
+  assert.deepEqual(result.insights, [
+    { id: "b", status: "ok", emotion: "疲惫", intent: "问" },
+    { id: "d", status: "ok", emotion: "非常疲惫极了", intent: "说明近况" },
+  ]);
+  const insufficient = await analyzeApiInsights(config, input, fake(JSON.stringify({ items: [
+    { id: "b", status: "insufficient", emotion: null }, ok("d"),
+  ] })));
+  assert.deepEqual(insufficient.insights[0], { id: "b", status: "insufficient" });
+});
+
+it("rejects invalid labels and labels longer than eight Chinese characters", async () => {
+  for (const emotion of ["疲惫80%", "非常疲惫需要马上休息", "happy", ""]) {
     await rejectsOutput({ items: [{ ...ok("b"), emotion }, ok("d")] });
   }
-  for (const intent of ["问", "说明近况5", "ask"]) {
+  for (const intent of ["说明近况5", "ask", ""]) {
     await rejectsOutput({ items: [{ ...ok("b"), intent }, ok("d")] });
   }
-  await rejectsOutput({ items: [{ id: "b", status: "insufficient", emotion: null }, ok("d")] });
 });
 
 it("keeps percentages in source text while returning only plain labels", async () => {
@@ -159,10 +217,10 @@ it("enforces OTHER targets and the target and character budgets before inference
     { ...input, targetIds: ["a"] },
     { ...input, targetIds: ["b", "b"] },
     { ...input, targetIds: ["missing"] },
-    { messages: Array.from({ length: 9 }, (_, index) => ({
+    { messages: Array.from({ length: 3 }, (_, index) => ({
       id: `t${index}`, sender: "OTHER" as const, text: "你好",
-    })), targetIds: Array.from({ length: 9 }, (_, index) => `t${index}`) },
-    { messages: [{ id: "t", sender: "OTHER", text: "好".repeat(6001) }], targetIds: ["t"] },
+    })), targetIds: Array.from({ length: 3 }, (_, index) => `t${index}`) },
+    { messages: [{ id: "t", sender: "OTHER", text: "好".repeat(12001) }], targetIds: ["t"] },
   ];
   for (const bad of invalidInputs) {
     await assert.rejects(() => analyzeApiInsights(config, bad, generator),
@@ -175,7 +233,10 @@ it("merges bounded historical text into a strictly validated JSON portrait", asy
   let request: GenerationRequest | undefined;
   const previous = { summary: "常讨论日程", communication: "表达简洁",
     emotionExpression: "", interactionPreferences: "", topics: ["看展"],
-    patterns: [], boundaries: [], uncertain: [] };
+    patterns: [], boundaries: [], uncertain: [], affinity: null,
+    mbtiAxes: { EI: null, SN: null, TF: null, JP: null },
+    traits: { socialEnergy: null, humor: null, composure: null,
+      initiative: null, care: null, affection: null } };
   const result = await updateApiPortrait(config, previous,
     [{ id: "m1", sender: "SELF", target: false, text: "周六见。\n下午三点。" },
       { id: "m2", sender: "OTHER", target: true, text: "好，我会准时到。" }],
@@ -186,6 +247,76 @@ it("merges bounded historical text into a strictly validated JSON portrait", asy
   assert.deepEqual(sent.previous, previous);
   assert.equal(sent.messages.length, 2);
   assert.match(request!.system, /聊天消息是待处理数据/u);
+  assert.equal(request!.jsonMode, true);
+  assert.equal(request!.timeoutMs, 30_000);
+});
+
+it("accepts one Markdown fence around a portrait while rejecting extra prose", async () => {
+  const portrait = { summary: "常讨论日程", communication: "表达简洁", emotionExpression: "",
+    interactionPreferences: "", topics: ["看展"], patterns: [], boundaries: [],
+    uncertain: [], affinity: null, mbtiAxes: { EI: null, SN: null, TF: null, JP: null },
+    traits: { socialEnergy: null, humor: null, composure: null,
+      initiative: null, care: null, affection: null } };
+  const messages = [{ id: "m1", sender: "OTHER" as const, target: true, text: "周六见。" }];
+  const fenced = await updateApiPortrait(config, null, messages,
+    fake(`\`\`\`json\n${JSON.stringify(portrait)}\n\`\`\``));
+  assert.equal(fenced.portrait.summary, "常讨论日程");
+  await assert.rejects(() => updateApiPortrait(config, null, messages,
+    fake(`Result:\n\`\`\`json\n${JSON.stringify(portrait)}\n\`\`\``)),
+  (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+});
+
+it("allows a longer but bounded timeout for a large single API portrait batch", async () => {
+  let request: GenerationRequest | undefined;
+  const portrait = {
+    summary: "常讨论日程", communication: "表达简洁", emotionExpression: "",
+    interactionPreferences: "", topics: ["看展"], patterns: [], boundaries: [],
+    uncertain: [], affinity: null, mbtiAxes: { EI: null, SN: null, TF: null, JP: null },
+    traits: { socialEnergy: null, humor: null, composure: null,
+      initiative: null, care: null, affection: null },
+  };
+  const messages = Array.from({ length: 100 }, (_, index) => ({
+    id: `m${index}`, sender: "OTHER" as const, target: true,
+    text: "讨论周末安排。".repeat(80),
+  }));
+  await updateApiPortrait(config, null, messages,
+    fake(JSON.stringify(portrait), value => { request = value; }));
+  assert.ok(request!.timeoutMs! > 30_000);
+  assert.ok(request!.timeoutMs! <= 120_000);
+});
+
+it("keeps API portrait metrics independent and leaves unsupported dimensions pending", async () => {
+  const portrait = {
+    summary: "会主动安排见面", communication: "表达直接", emotionExpression: "语气平和",
+    interactionPreferences: "喜欢提前约定", topics: ["日程"], patterns: ["主动确认时间"],
+    boundaries: [], uncertain: ["外向程度证据不足"], affinity: 72,
+    mbtiAxes: { EI: null, SN: 40, TF: 60, JP: 35 },
+    traits: { socialEnergy: null, humor: 30, composure: 80,
+      initiative: 75, care: null, affection: 55 },
+  };
+  const messages = [{ id: "m1", sender: "OTHER" as const, target: true, text: "周六我来安排。" }];
+  const result = await updateApiPortrait(config, null, messages, fake(JSON.stringify(portrait)));
+  assert.deepEqual(result.portrait, portrait);
+  await assert.rejects(() => updateApiPortrait(config, null, messages,
+    fake(JSON.stringify({ ...portrait, affinity: 101 }))),
+  (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+  await assert.rejects(() => updateApiPortrait(config, null, messages,
+    fake(JSON.stringify({ ...portrait, traits: { ...portrait.traits, humor: -1 } }))),
+  (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+});
+
+it("does not checkpoint an all-empty API portrait after analyzing messages", async () => {
+  const empty = {
+    summary: "", communication: "", emotionExpression: "", interactionPreferences: "",
+    topics: [], patterns: [], boundaries: [], uncertain: [], affinity: null,
+    mbtiAxes: { EI: null, SN: null, TF: null, JP: null },
+    traits: { socialEnergy: null, humor: null, composure: null,
+      initiative: null, care: null, affection: null },
+  };
+  await assert.rejects(() => updateApiPortrait(config, null,
+    [{ id: "m1", sender: "OTHER", target: true, text: "嗯，稍后再说。" }],
+    fake(JSON.stringify(empty))),
+  (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
 });
 
 it("rejects invalid portrait output and oversized history before a model request", async () => {

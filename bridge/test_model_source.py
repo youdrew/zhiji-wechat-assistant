@@ -9,10 +9,14 @@ import unittest
 from contextlib import nullcontext
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from model_source import LOCAL_SOURCE_ID, ModelSourceStore, connection_values
+from local_model_source import ModelSource
+from model_bundle import ModelBundleError
+from model_source import LOCAL_SOURCE_ID, ModelSourceStore, ModelSourceUnavailable, connection_values
 from real_backend import Backend
 from real_http import make_handler
 
@@ -30,23 +34,38 @@ class FakeAnalyzer:
         return {"ok": True, "latencyMs": 12.5}
 
 
+class CancellableAnalyzer(FakeAnalyzer):
+    def __init__(self):
+        super().__init__()
+        self.cancelled = 0
+
+    def cancel(self):
+        self.cancelled += 1
+
+
 class ModelSourceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
-        self.path = root / ".local" / "real-client-runtime" / "model-source.json"
+        self.root = root
+        runtime = root / ".local" / "real-client-runtime"
+        self.path = runtime / "api-model-source.json"
+        self.legacy = runtime / "model-source.json"
         self.store = ModelSourceStore(
-            self.path, root=root,
+            self.path, root=root, legacy_path=self.legacy,
             protect=lambda key: b"protected:" + key[::-1].encode("utf-8"),
             unprotect=lambda data: data.removeprefix(b"protected:").decode("utf-8")[::-1],
         )
+        self.local_source = ModelSource(root)
         self.backend = object.__new__(Backend)
         self.backend.analyzer = FakeAnalyzer()
         self.backend.api_analyzer = self.backend.analyzer
+        self.backend.api_portrait_analyzer = self.backend.analyzer
         self.backend.api_probe_analyzer = self.backend.analyzer
         self.backend.api_portrait_jobs = {}
         self.backend.api_lock = threading.RLock()
+        self.backend.api_condition = threading.Condition(self.backend.api_lock)
         self.backend.api_jobs = {}
         self.backend.model_source_revision = 0
         self.backend.closing = False
@@ -64,6 +83,37 @@ class ModelSourceTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server
+
+    def test_switching_to_local_cancels_old_api_workers_without_erasing_source_identity(self):
+        insight = CancellableAnalyzer()
+        portrait = CancellableAnalyzer()
+        self.backend.api_analyzer = insight
+        self.backend.api_portrait_analyzer = portrait
+        source_id = self.store.save_api("responses", "https://example.test/v1", "test-model",
+                                        "test-only-key", context_tokens=128000)
+        self.backend.active_model_source_mode = "api"
+        self.backend.active_model_source_id = source_id
+        self.backend.active_api_config = {"protocol": "responses", "baseUrl": "https://example.test/v1",
+                                          "model": "test-model", "contextTokens": 128000}
+        self.backend.api_jobs[("account-a", "friend", source_id)] = {"status": "running"}
+        self.backend.api_portrait_jobs[("account-a", "friend", source_id, "friend")] = {"status": "running"}
+        self.backend.model_source_activate({"mode": "local"})
+        self.assertEqual((insight.cancelled, portrait.cancelled), (1, 1))
+        self.assertEqual(self.backend.api_jobs, {})
+        self.assertEqual(self.backend.api_portrait_jobs, {})
+        self.assertEqual(self.store.saved_selection()["sourceId"], source_id)
+
+    def test_returning_to_the_same_saved_api_source_skips_a_redundant_probe(self):
+        request = {"mode": "api", "protocol": "responses", "baseUrl": "https://example.test/v1",
+                   "model": "test-model", "apiKey": "test-only-key", "contextTokens": 128000}
+        first = self.backend.model_source_activate(request)["sourceId"]
+        self.assertEqual(len(self.backend.api_probe_analyzer.calls), 1)
+        self.backend.model_source_activate({"mode": "local"})
+        second = self.backend.model_source_activate({**request, "apiKey": ""})["sourceId"]
+        self.assertEqual(second, first)
+        self.assertEqual(len(self.backend.api_probe_analyzer.calls), 1)
+        self.backend.model_source_activate({**request, "model": "different-model", "apiKey": ""})
+        self.assertEqual(len(self.backend.api_probe_analyzer.calls), 2)
 
     @staticmethod
     def request(server, method, path, body=None, headers=None):
@@ -120,6 +170,135 @@ class ModelSourceTests(unittest.TestCase):
         self.store.save_api("responses", "https://example.test/v1", "test-model",
                             "test-only-key")
         self.assertIsNone(self.store.public()["api"]["contextTokens"])
+
+    def test_api_source_identity_survives_switches_restart_and_key_clear(self):
+        def activate(model, key, context_tokens=8192, base_url="https://example.test/v1"):
+            return self.backend.model_source_activate({
+                "mode": "api", "protocol": "responses", "baseUrl": base_url,
+                "model": model, "apiKey": key, "contextTokens": context_tokens})["sourceId"]
+
+        first = activate("model-a", "synthetic-key-a")
+        second = activate("model-b", "synthetic-key-b")
+        self.assertNotEqual(first, second)
+        self.assertEqual(activate("model-a", "synthetic-key-a", 16384), first)
+        changed_key = activate("model-a", "synthetic-key-c")
+        self.assertEqual(changed_key, first)
+        changed_endpoint = activate("model-a", "synthetic-key-a",
+                                    base_url="https://other.test/v1")
+        self.assertNotIn(changed_endpoint, (first, second))
+
+        reopened = ModelSourceStore(
+            self.path, root=self.root,
+            protect=lambda key: b"protected:" + key[::-1].encode("utf-8"),
+            unprotect=lambda data: data.removeprefix(b"protected:").decode("utf-8")[::-1])
+        self.backend.model_source_store = reopened
+        self.assertEqual(activate("model-b", "synthetic-key-b"), second)
+        self.backend.model_source_clear_key({})
+        keyless = activate("model-b", "")
+        self.assertEqual(keyless, second)
+        self.assertEqual(activate("model-a", "synthetic-key-a"), first)
+        public = self.backend.model_source()
+        self.assertNotIn("sourceIds", public)
+        stored = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("synthetic-key-a", stored)
+        self.assertNotIn("synthetic-key-b", stored)
+        self.assertNotIn("synthetic-key-c", stored)
+
+    def test_legacy_api_source_id_migrates_before_switch(self):
+        first = self.store.save_api("responses", "https://example.test/v1", "model-a",
+                                    "synthetic-key-a", context_tokens=8192)
+        old = json.loads(self.path.read_text(encoding="utf-8"))
+        old.pop("sourceIds")
+        self.legacy.write_text(json.dumps(old), encoding="utf-8")
+        self.path.unlink()
+        legacy_bytes = self.legacy.read_bytes()
+        self.backend.model_source_activate({
+            "mode": "api", "protocol": "responses", "baseUrl": "https://example.test/v1",
+            "model": "model-b", "apiKey": "synthetic-key-b", "contextTokens": 8192})
+        restored = self.backend.model_source_activate({
+            "mode": "api", "protocol": "responses", "baseUrl": "https://example.test/v1",
+            "model": "model-a", "apiKey": "synthetic-key-a", "contextTokens": 16384})
+        self.assertEqual(restored["sourceId"], first)
+        self.assertEqual(self.legacy.read_bytes(), legacy_bytes)
+        self.assertEqual(len(json.loads(self.path.read_text(encoding="utf-8"))["sourceIds"]), 2)
+
+    def test_legacy_local_selection_keeps_api_endpoint_available(self):
+        selected = self.root / "synthetic-model"
+        selected.mkdir()
+        self.legacy.parent.mkdir(parents=True)
+        self.legacy.write_text(json.dumps({"schema": 1, "path": str(selected)}), encoding="utf-8")
+        original = self.legacy.read_bytes()
+        with mock.patch("local_model_source.available_model_dir",
+                        side_effect=lambda path: Path(path) == selected):
+            self.assertEqual(self.local_source.status()["path"], str(selected))
+            self.assertEqual(self.request(self.server(), "GET", "/api/model-source"),
+                             (200, {"mode": "local", "api": None,
+                                    "sourceId": LOCAL_SOURCE_ID, "status": "active"}))
+            self.store.save_api("responses", "https://example.test/v1", "test-model",
+                                "synthetic-key", context_tokens=128000)
+            self.assertEqual(self.local_source.status()["path"], str(selected))
+        self.assertEqual(self.legacy.read_bytes(), original)
+        self.assertTrue(self.path.is_file())
+        self.assertNotIn("synthetic-key", self.path.read_text(encoding="utf-8"))
+
+    def test_legacy_api_profile_and_local_selection_survive_source_switches(self):
+        self.store.save_api("responses", "https://example.test/v1", "test-model",
+                            "synthetic-key", context_tokens=128000)
+        self.legacy.write_bytes(self.path.read_bytes())
+        self.path.unlink()
+        original = self.legacy.read_bytes()
+        self.assertEqual(self.store.saved_selection()["selectedMode"], "api")
+        self.assertTrue(self.store.public()["api"]["hasKey"])
+        self.assertIsNone(self.local_source._selected_path())
+        selected = self.root / "synthetic-model"
+        selected.mkdir()
+        with mock.patch("local_model_source.validate_model_dir", return_value=selected), \
+                mock.patch("local_model_source.available_model_dir",
+                           side_effect=lambda path: Path(path) == selected):
+            self.assertEqual(self.local_source.select(str(selected))["source"], "custom")
+            activated = self.backend.model_source_activate({
+                "mode": "api", "protocol": "responses", "baseUrl": "https://example.test/v1",
+                "model": "test-model", "contextTokens": 128000, "apiKey": ""})
+            self.assertEqual(activated["mode"], "api")
+            self.assertTrue(activated["api"]["hasKey"])
+            self.assertEqual(self.backend.model_source_activate({"mode": "local"})["mode"], "local")
+            self.assertEqual(self.local_source.status()["path"], str(selected))
+        self.assertEqual(self.legacy.read_bytes(), original)
+        self.assertTrue(self.path.is_file())
+        self.assertTrue(self.local_source.config.is_file())
+        self.assertEqual(self.store.saved_selection()["selectedMode"], "local")
+        self.assertEqual(self.store.resolve_key("responses", "https://example.test/v1", None),
+                         "synthetic-key")
+
+    def test_config_paths_reject_escape(self):
+        outside = self.root.parent / "outside-model-source.json"
+        unsafe = ModelSourceStore(outside, root=self.root, legacy_path=self.legacy)
+        with self.assertRaises(ModelSourceUnavailable):
+            unsafe.saved_selection()
+        with self.assertRaises(ModelSourceUnavailable):
+            unsafe.save_api("responses", "https://example.test/v1", "test-model", None)
+        self.local_source.config = outside
+        with mock.patch("local_model_source.validate_model_dir", return_value=self.root):
+            with self.assertRaises(ModelBundleError):
+                self.local_source.select(str(self.root))
+
+    def test_config_paths_reject_reparse_directory(self):
+        runtime = self.path.parent
+        runtime.mkdir(parents=True)
+        real_lstat = Path.lstat
+        def marked_lstat(path):
+            state = real_lstat(path)
+            if path == runtime:
+                return SimpleNamespace(st_mode=state.st_mode, st_file_attributes=0x400)
+            return state
+        with mock.patch.object(Path, "lstat", marked_lstat):
+            with self.assertRaises(ModelSourceUnavailable):
+                self.store.saved_selection()
+            with mock.patch("local_model_source.validate_model_dir", return_value=self.root):
+                with self.assertRaises(ModelBundleError):
+                    self.local_source.select(str(self.root))
+        self.assertFalse(self.path.exists())
+        self.assertFalse(self.local_source.config.exists())
 
     def test_http_contract_probes_and_activation(self):
         server = self.server()
