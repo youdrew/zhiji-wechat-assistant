@@ -378,7 +378,10 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       void contents.loadURL(url);
     }).catch((error) => {
       process.stderr.write(String(error) + "\n");
-      app.exit(1);
+      dialog.showErrorBox("WechatVibe 启动失败", "客户端窗口初始化失败，请重新解压完整安装包。");
+      // Use normal shutdown so the bridge created before window initialization
+      // is stopped instead of becoming an invisible background process.
+      app.quit();
     });
     app.on("before-quit", event => {
       exiting = true;

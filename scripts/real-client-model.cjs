@@ -12,8 +12,9 @@ const { pipeline } = require("node:stream/promises");
 function modelAsset(root) {
   const file = path.join(root, "scripts", "model-asset.json");
   const asset = JSON.parse(fs.readFileSync(file, "utf8"));
+  // App releases advance independently of this pinned model's file/hash revision.
   if (asset.schema !== 1 || asset.name !== "WechatVibe-Laya-model-v1.zip" ||
-      asset.url !== "https://github.com/tswawa/WechatVibe/releases/download/v1.0.5/WechatVibe-Laya-model-v1.zip" ||
+      !/^https:\/\/github\.com\/tswawa\/WechatVibe\/releases\/download\/v\d+\.\d+\.\d+\/WechatVibe-Laya-model-v1\.zip$/.test(asset.url) ||
       !Number.isSafeInteger(asset.bytes) || asset.bytes < 500_000_000 || asset.bytes > 800_000_000 ||
       !/^[a-f0-9]{64}$/.test(asset.sha256)) throw new Error("invalid pinned model asset");
   return asset;
