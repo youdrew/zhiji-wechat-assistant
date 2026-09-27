@@ -83,8 +83,12 @@ function spawnHelper(helper, operationFile, workDir) {
 
 function createUpdateController({ app, root, port, instanceId, onState, pauseRecovery,
   resumeRecovery, quit, checkImpl = checkForUpdates, stageImpl = downloadAndStageUpdate }) {
-  const installRoot = path.resolve(root, "..", "..");
-  const parent = path.dirname(installRoot);
+  const requestedInstallRoot = path.resolve(root, "..", "..");
+  // Staging uses real paths. Resolve ancestor aliases before comparing or
+  // handing paths to the helper; keep the install directory itself subject
+  // to staging's existing symlink rejection.
+  const parent = fs.realpathSync.native(path.dirname(requestedInstallRoot));
+  const installRoot = path.join(parent, path.basename(requestedInstallRoot));
   const currentVersion = app.getVersion();
   let state = { phase: "idle", currentVersion, rollbackVersion: null };
   let busy = false;
