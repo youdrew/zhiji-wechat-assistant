@@ -115,7 +115,7 @@
 
 ## 下载安装
 
-从 [Releases](https://github.com/tswawa/WechatVibe/releases/tag/v1.2.0) 下载 `WechatVibe-1.2.0-windows-x64.zip`。这是标准运行包，不内置 Laya 模型。解压后保留整个 `win-unpacked` 目录，双击其中的 `WechatVibe.exe`。需要本地分析时，在「设置 → 本地部署」点击下载模型，或选择已有的模型目录。模型以 `WechatVibe-Laya-model-v1.zip` 独立提供，使用 API 时无需下载。
+从 [Releases](https://github.com/tswawa/WechatVibe/releases/tag/v1.2.1) 下载 `WechatVibe-1.2.1-windows-x64.zip`。这是标准运行包，不内置 Laya 模型。解压后保留整个 `win-unpacked` 目录，双击其中的 `WechatVibe.exe`。需要本地分析时，在「设置 → 本地部署」点击下载模型，或选择已有的模型目录。模型以 `WechatVibe-Laya-model-v1.zip` 独立提供，使用 API 时无需下载。
 
 ### 运行要求
 
@@ -144,7 +144,9 @@
 
 ## 软件更新
 
-**从 1.0.4 首次升级到 1.2.0**：旧更新器不支持无模型标准包，请手动下载。完全退出旧版后，将新包 `win-unpacked` 内的文件覆盖到原软件目录，保留 `resources/client/.local` 和 `resources/client/.models` 两个目录；不要先删除旧软件目录。
+**1.2.0 用户**：可通过应用内检查更新升级到 1.2.1，保留已有账号数据、分析结果、配置和模型。
+
+**从 1.0.4 首次升级到 1.2.x**：旧更新器不支持无模型标准包，请手动下载。完全退出旧版后，将新包 `win-unpacked` 内的文件覆盖到原软件目录，保留 `resources/client/.local` 和 `resources/client/.models` 两个目录；不要先删除旧软件目录。
 
 打开「设置 → 关于 → 当前版本」，即可检查更新。发现新版本后，点击「下载并安装」；软件会显示进度，校验下载文件，安装完成后自动重启。Windows 使用系统 HTTP 代理时，更新器会沿用该代理连接 GitHub。
 
@@ -257,6 +259,8 @@ QQ 交流群：**921170374** 对项目有改进建议，或者想交流使用经
 感谢 [china-luo](https://github.com/china-luo) 在 [Issue #1](https://github.com/tswawa/WechatVibe/issues/1) 中反馈 Windows 微信 4.1.15.13 的聊天记录读取异常，并提出对非字符串消息类型进行兼容转换的建议。
 
 感谢 QQ 群友 **溪午不闻钟** 反馈微信数据库密钥不完整、反复读取的问题，并提供排查信息，帮助定位读取兼容性问题。
+
+感谢 [luo785859020（小闹一起）](https://github.com/luo785859020) 通过 [PR #3](https://github.com/tswawa/WechatVibe/pull/3) 和 [PR #4](https://github.com/tswawa/WechatVibe/pull/4) 改进源码模型下载、Python 环境选择与验证流程，并完成后端职责分层。
 
 ## 赞助
 
