@@ -298,6 +298,33 @@ class BatchStateStore:
                 "charOffset": offset, "context": json.loads(context), "state": json.loads(state),
                 "complete": bool(complete)}
 
+    def legacy_known(self, account, session, base_version, subject, ids):
+        """Read only results inside the immutable legacy boundary captured by seed()."""
+        if not ids:
+            return set()
+        scope = _scope(account, session, base_version, subject)
+        with closing(sqlite3.connect(self.path, timeout=15)) as conn:
+            boundary = conn.execute(
+                "SELECT legacy_max_rowid FROM batch_progress_v1 WHERE account=? AND session=? "
+                "AND base_version=? AND subject=? AND batch_version=?", scope).fetchone()
+            if boundary is None:
+                raise RuntimeError("batch scope must be seeded before known lookup")
+            return {row[0] for row in conn.execute(
+                "SELECT id FROM results_v2 WHERE account=? AND session=? AND version=? "
+                "AND rowid<=? AND id IN (" + ",".join("?" for _ in ids) + ")",
+                (account, session, base_version, boundary[0], *ids))}
+
+    def move_cursor(self, account, session, base_version, subject, cursor, context, *, char_offset=0):
+        """Persist a service-approved scan position without manufacturing inference results."""
+        if cursor is None:
+            return
+        scope = _scope(account, session, base_version, subject)
+        with closing(sqlite3.connect(self.path, timeout=15)) as conn, conn:
+            conn.execute("UPDATE batch_progress_v1 SET cursor_seq=?,cursor_shard=?,cursor_local=?,"
+                         "char_offset=?,context_json=?,complete=0 WHERE account=? AND session=? "
+                         "AND base_version=? AND subject=? AND batch_version=?",
+                         (*cursor, char_offset, json.dumps(context, ensure_ascii=False), *scope))
+
     def quoted_backfill_pending(self, account, session, base_version, subject, cursor):
         if cursor is None:
             return False

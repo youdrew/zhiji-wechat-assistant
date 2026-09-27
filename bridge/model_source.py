@@ -15,9 +15,10 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from backend_contracts import LOCAL_SOURCE_ID, ModelSourceUnavailable
+
 
 PROTOCOLS = frozenset({"anthropic", "responses", "chat_completions", "gemini", "ollama"})
-LOCAL_SOURCE_ID = "local:laya"
 MAX_BASE_URL = 2048
 MAX_MODEL_ID = 256
 MAX_API_KEY = 4096
@@ -31,10 +32,6 @@ def _source_fingerprint(protocol, base_url, model):
     identity = json.dumps(["api-source-v1", protocol, base_url, model],
                           ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
-
-
-class ModelSourceUnavailable(RuntimeError):
-    """A source operation could not be completed without changing active inference."""
 
 
 def _text(value, name, maximum):

@@ -309,7 +309,7 @@ class ApiInsightTests(unittest.TestCase):
         self.activate()
         older = {"id": "old", "side": "other", "kind": "text", "text": "上周见面吗？",
                  "senderId": "friend", "_sort": [0, "shard", 0]}
-        with patch("real_backend.browse_history", return_value={"messages": [older, *self.source.rows]}) as browse:
+        with patch("backend_service.browse_history", return_value={"messages": [older, *self.source.rows]}) as browse:
             self.backend.start_model_insights("account-a", "friend", 1, ["old"], "history-anchor")
             done = self.wait_done()
         self.assertEqual(done["job"]["status"], "done")
@@ -317,7 +317,7 @@ class ApiInsightTests(unittest.TestCase):
         self.assertIn("old", self.backend.model_insights("friend", ids=["old"])["results"])
         browse.assert_called_once()
         self.assertEqual(browse.call_args.kwargs["limit"], 80)
-        with patch("real_backend.browse_history", return_value={"messages": self.source.rows}):
+        with patch("backend_service.browse_history", return_value={"messages": self.source.rows}):
             with self.assertRaises(ValueError):
                 self.backend.start_model_insights("account-a", "friend", 1, ["outside"], "history-anchor")
 
@@ -1154,7 +1154,7 @@ class ApiInsightTests(unittest.TestCase):
     def test_portrait_retries_one_invalid_output_without_resetting_progress(self):
         self.activate()
         self.analyzer.fail_portrait_invalid_once = True
-        with patch("real_backend.API_MODEL_RETRY_SECONDS", .01):
+        with patch("backend_service.API_MODEL_RETRY_SECONDS", .01):
             self.backend.start_model_portrait("account-a", "friend")
             done = self.wait_portrait()
         self.assertEqual(done["job"]["status"], "done")
@@ -1166,7 +1166,7 @@ class ApiInsightTests(unittest.TestCase):
     def test_portrait_retry_checks_account_before_another_model_call(self):
         selected = self.activate()
         self.analyzer.fail_portrait_invalid_once = True
-        with patch("real_backend.API_MODEL_RETRY_SECONDS", .5):
+        with patch("backend_service.API_MODEL_RETRY_SECONDS", .5):
             self.backend.start_model_portrait("account-a", "friend")
             job_key = ("account-a", "friend", selected["sourceId"], "friend")
             deadline = time.monotonic() + 2
@@ -1195,7 +1195,7 @@ class ApiInsightTests(unittest.TestCase):
             calls.append(1)
             raise RuntimeError("invalid-output")
         self.analyzer.model_portrait = invalid
-        with patch("real_backend.API_MODEL_RETRY_SECONDS", .001):
+        with patch("backend_service.API_MODEL_RETRY_SECONDS", .001):
             self.backend.start_model_portrait("account-a", "friend")
             failed = self.wait_portrait()
         self.assertEqual(failed["job"]["status"], "error")
@@ -1380,7 +1380,7 @@ class ProfileOverviewCacheTests(unittest.TestCase):
         source = WeChatSource(factory=object())
         source._contacts = lambda _db: {}
         source.db = Reader("synthetic-root-one")
-        with patch("real_backend.contact_display", return_value={"name": "synthetic"}):
+        with patch("wechat_source.contact_display", return_value={"name": "synthetic"}):
             source.profile_overview("room@chatroom")
             source._release_db()
             source.db = Reader("synthetic-root-two")
@@ -1405,7 +1405,7 @@ class ProfileOverviewCacheTests(unittest.TestCase):
         source = WeChatSource(factory=object())
         source._contacts = lambda _db: {}
         source.db = Reader()
-        with patch("real_backend.contact_display", return_value={"name": "synthetic"}):
+        with patch("wechat_source.contact_display", return_value={"name": "synthetic"}):
             first = source.profile_overview("room@chatroom", highwater=(10, "shard", 1))
             source._release_db()
             source.db = Reader()

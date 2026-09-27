@@ -42,10 +42,7 @@ class BatchEngine:
         previous = store.progress(account, user, version)
         cursor, context = previous["cursor"], previous["context"]
         # Old oversized messages were never inferred. The new window protocol can split them.
-        with store.connect() as conn:
-            skipped = conn.execute("SELECT sort_seq,shard,local_id FROM analysis_skips "
-                "WHERE account=? AND session=? AND version=? ORDER BY sort_seq,shard,local_id LIMIT 1",
-                (account, user, version)).fetchone()
+        skipped = store.first_skipped_position(account, user, version)
         if skipped and (cursor is None or tuple(skipped) <= tuple(cursor)):
             cursor = (skipped[0], skipped[1], max(0, skipped[2]-1))
             context = []
@@ -74,18 +71,9 @@ class BatchEngine:
         ids = [item["id"] for item in items]
         if not ids:
             return set()
-        with store.connect() as conn:
-            boundary = conn.execute(
-                "SELECT legacy_max_rowid FROM batch_progress_v1 WHERE account=? AND session=? "
-                "AND base_version=? AND subject=? AND batch_version=?",
-                (account, user, version, subject, BATCH_VERSION)).fetchone()
-            if boundary is None:
-                raise RuntimeError("batch scope must be seeded before known lookup")
-            legacy = {row[0] for row in conn.execute(
-                "SELECT id FROM results_v2 WHERE account=? AND session=? AND version=? "
-                "AND rowid<=? AND id IN (" + ",".join("?" for _ in ids) + ")",
-                (account, user, version, boundary[0], *ids))}
-        return legacy | set(self.store(store).outcomes(account, user, version, subject, ids=ids, limit=500))
+        batches = self.store(store)
+        legacy = batches.legacy_known(account, user, version, subject, ids)
+        return legacy | set(batches.outcomes(account, user, version, subject, ids=ids, limit=500))
 
     def outcomes(self, account, user, version, store, ids=None):
         rows = self.store(store).outcomes(account, user, version, self.subject(user), ids=ids,
@@ -101,12 +89,7 @@ class BatchEngine:
         """Advance only over already-covered or non-text rows; never invent model results."""
         if cursor is None:
             return
-        with store.connect() as conn:
-            conn.execute("UPDATE batch_progress_v1 SET cursor_seq=?,cursor_shard=?,cursor_local=?,"
-                         "char_offset=0,context_json=?,complete=0 WHERE account=? AND session=? "
-                         "AND base_version=? AND subject=? AND batch_version=?",
-                         (*cursor, json.dumps(context, ensure_ascii=False), account, user,
-                          version, subject, BATCH_VERSION))
+        self.store(store).move_cursor(account, user, version, subject, cursor, context)
 
     def infer(self, account, user, version, store, scope, subject, items, context, *, advance):
         batches = self.store(store)
@@ -118,12 +101,8 @@ class BatchEngine:
                  offsets[items[0]["id"]] > snapshot["charOffset"])):
             # A recent-window pass may already have durably consumed more of this fragment.
             self.backend._assert_scope(scope)
-            with store.connect() as conn:
-                conn.execute("UPDATE batch_progress_v1 SET cursor_seq=?,cursor_shard=?,cursor_local=?,"
-                             "char_offset=?,context_json=?,complete=0 WHERE account=? AND session=? "
-                             "AND base_version=? AND subject=? AND batch_version=?",
-                             (*items[0]["_sort"], offsets[items[0]["id"]],
-                              json.dumps(context, ensure_ascii=False), account, user, version, subject, BATCH_VERSION))
+            batches.move_cursor(account, user, version, subject, items[0]["_sort"], context,
+                                char_offset=offsets[items[0]["id"]])
         payload = [{"id": item["id"], "text": item["text"], "side": item["side"],
                     "target": self.target(item, subject) and item["id"] not in known,
                     "offset": offsets.get(item["id"], 0)} for item in items]

@@ -1,6 +1,7 @@
 import hashlib
 import http.client
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -284,8 +285,13 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(len(decoded), first_decode_count, "unchanged snapshot must use cached metadata")
         self.assertEqual(source.stats(room)[:2], (8, 4))
         self.assertEqual(source.stats(room, "member-a")[:2], (4, 2))
+        previous_stat = dbpath.stat()
         with closing(sqlite3.connect(dbpath)) as conn, conn:
             conn.execute(f"INSERT INTO {table} VALUES (9,1,2,1,?,NULL,9,9)", (b"new text",))
+        # Cache invalidation follows a refreshed snapshot's file signature. A fast
+        # in-place synthetic SQLite write may keep both size and filesystem mtime.
+        # Make the fixture's snapshot refresh deterministic instead of sleeping.
+        os.utime(dbpath, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns + 2_000_000_000))
         self.assertEqual(source.profile_metadata(room)["textCount"], 5)
         self.assertGreater(len(decoded), first_decode_count)
 

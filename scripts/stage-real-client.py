@@ -24,7 +24,8 @@ BRIDGE = (
     "batch_state.py", "cache_source.py", "chat_server.py", "history_browser.py",
     "instance_identity.py", "live_source.py", "model_source.py", "model_bundle.py",
     "local_model_source.py", "model_install.py", "profile_signals.py", "profile_state.py",
-    "real_backend.py", "real_http.py", "snapshot_cache.py", "wechat_bridge.py",
+    "backend_contracts.py", "backend_service.py", "node_analysis.py", "result_store.py",
+    "wechat_source.py", "real_backend.py", "real_http.py", "snapshot_cache.py", "wechat_bridge.py",
     "windows_file_owners.py",
 )
 NATIVE_READER = (

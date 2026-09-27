@@ -12,7 +12,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from real_backend import Backend, ForecastRequestError, WeChatSource, ROOT
+from backend_contracts import ForecastRequestError, ROOT
+from backend_service import Backend
+from wechat_source import WeChatSource
 from account_store import AccountConflict, AccountNotFound
 from instance_identity import default_port, instance_id
 from model_source import ModelSourceUnavailable
