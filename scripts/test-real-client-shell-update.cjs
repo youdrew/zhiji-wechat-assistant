@@ -37,6 +37,7 @@ async function main() {
       if (name === "node:fs") return { mkdirSync() {} };
       if (name === "node:path") return path;
       if (name === "node:child_process") return { execFile() { throw new Error("self-test must not stop a bridge"); } };
+      if (name === "./real-client-model.cjs") return { ModelDownload: class { getState() { return { phase: "idle" }; } cancel() {} } };
       if (name === "./real-client-recovery.cjs") return { monitorBridge() {} };
       if (name === "./real-client-update.cjs") return {
         RELEASES_URL: "https://github.com/tswawa/WechatVibe/releases",

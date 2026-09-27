@@ -172,7 +172,20 @@ py -3.14 -m venv .venv
 npm start
 ```
 
-需要本地 Laya 时，可在首次启动前执行 `npm run setup:models`，或进入应用后下载；仅使用 API 时可跳过模型下载。源码方式下载模型约 681 MB，下载后校验 SHA-256。Python 安装时请按锁文件安装并保留 `--no-deps`。
+需要本地 Laya 时，可在首次启动前执行 `npm run setup:models`，或进入应用后下载；仅使用 API 时可跳过模型下载。源码方式下载模型约 681 MB，下载后校验 SHA-256。下载器保留 `.part` 文件供断点续传，网络失败最多尝试三次；完整文件通过大小和 SHA-256 校验后才替换旧文件，强制下载失败不会删除已有模型。默认目录为 `.models/laya`，可通过 `LAYA_MODEL_DIR` 或 `--dir` 指定。Python 安装时请按锁文件安装并保留 `--no-deps`。
+
+### 本地验证
+
+```powershell
+npm test                 # 类型检查 + Node + 桌面/更新脚本 + Python 回归
+npm run test:model       # 真实加载本地 ONNX，执行中文推理（需先下载模型）
+npm run test:recovery    # 桌面、服务恢复、账号存储和启动器测试
+npm run build:portable   # 构建包含模型和运行环境的便携版
+```
+
+`npm ci` 完成后会运行 Electron 官方安装器补全桌面运行时；若跳过了安装脚本，启动或构建前执行 `npm run setup:electron`。
+
+Python 脚本优先使用 `WECHATVIBE_PYTHON` 指定的解释器，其次使用当前虚拟环境，再使用项目 `.venv`，避免测试或构建误用系统 Python。便携构建仍要求 Python 3.14 和 Node 24.11.1，可用 `--python-exe` / `--node-exe` 显式指定。`npm run start:service -- --no-open` 可单独启动 bridge；`npm start` 会启动桌面客户端。CPU/GPU 切换位于「设置 → 通用设置」。
 
 ### 构建运行版
 

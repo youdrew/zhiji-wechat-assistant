@@ -26,6 +26,7 @@ import {
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 export const MODEL_REPO = "mizchi/laya-multilingual-onnx";
 export const MODEL_REVISION = "d9d003d543e63d6d3375c21d44624136bd1e0bad";
@@ -62,6 +63,11 @@ export const PINNED_FILES: PinnedFile[] = [
     path: "onnx_config.json",
     bytes: 332,
     sha256: "13db475255d076da580a3435f28904e3360fe7f6380d7e3c75ee586e966ca5f0",
+  },
+  {
+    path: "README.md",
+    bytes: 2743,
+    sha256: "cc4deb231c7398076c31cef3583785c9fefeb8d154fe386d733bee19e9a969ff",
   },
   {
     path: "tokenizer/tokenizer_config.json",
@@ -123,81 +129,118 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-async function downloadFile(spec: PinnedFile, options: Options): Promise<void> {
+export async function downloadFile(
+  spec: PinnedFile, options: Options, fetchImpl: typeof fetch = fetch,
+  resetPartial = options.force,
+): Promise<void> {
   const dest = path.join(options.dir, spec.path);
   const part = `${dest}.part`;
   const url = `https://huggingface.co/${MODEL_REPO}/resolve/${MODEL_REVISION}/${spec.path}`;
 
   if (!options.force && existsSync(dest)) {
-    const stat = statSync(dest);
-    if (stat.size === spec.bytes) {
-      const existing = await hashFile(dest);
-      if (existing.sha256 === spec.sha256) {
-        console.log(`[ok]   ${spec.path} (已存在，SHA256 校验通过)`);
-        return;
-      }
-      console.log(`[warn] ${spec.path} 校验不匹配，重新下载`);
-    } else {
-      console.log(
-        `[warn] ${spec.path} 大小不一致（${formatBytes(stat.size)} != ${formatBytes(spec.bytes)}），重新下载`,
-      );
+    if (statSync(dest).size === spec.bytes && (await hashFile(dest)).sha256 === spec.sha256) {
+      console.log(`[ok]   ${spec.path} (已存在，SHA256 校验通过)`);
+      return;
     }
+    console.log(`[warn] ${spec.path} 校验不匹配，重新下载`);
   }
-
   mkdirSync(path.dirname(dest), { recursive: true });
-  rmSync(part, { force: true });
+  if (resetPartial) rmSync(part, { force: true });
 
-  console.log(`[get]  ${spec.path} <- ${url}`);
-  const response = await fetch(url, { redirect: "follow" });
+  let offset = 0;
+  if (existsSync(part)) {
+    const size = statSync(part).size;
+    if (size === spec.bytes && (await hashFile(part)).sha256 === spec.sha256) {
+      renameSync(part, dest);
+      return;
+    }
+    if (size > 0 && size < spec.bytes) offset = size;
+    else rmSync(part, { force: true });
+  }
+  const headers = offset > 0 ? { Range: `bytes=${offset}-` } : undefined;
+  console.log(`[get]  ${spec.path}${offset ? ` (续传 ${formatBytes(offset)})` : ""}`);
+  let response = await fetchImpl(url, {
+    redirect: "follow", headers, signal: AbortSignal.timeout(600_000),
+  });
+  if (offset > 0 && response.status === 416) {
+    await response.body?.cancel();
+    offset = 0;
+    rmSync(part, { force: true });
+    response = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.timeout(600_000) });
+  }
   if (!response.ok || !response.body) {
+    await response.body?.cancel();
     throw new Error(`下载 ${spec.path} 失败: HTTP ${response.status} ${response.statusText}`);
   }
-  const contentLength = Number(response.headers.get("content-length"));
-  const total = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : spec.bytes;
+  if (response.status === 206) {
+    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "");
+    if (!match || Number(match[1]) !== offset || Number(match[3]) !== spec.bytes ||
+        Number(match[2]) < offset || Number(match[2]) >= spec.bytes) {
+      await response.body.cancel();
+      throw new Error(`下载 ${spec.path} 失败: Content-Range 不匹配`);
+    }
+  } else if (response.status === 200) {
+    // A server may ignore Range and send the full file. Never append that response.
+    offset = 0;
+  } else {
+    await response.body.cancel();
+    throw new Error(`下载 ${spec.path} 失败: unexpected HTTP ${response.status}`);
+  }
 
   const hash = createHash("sha256");
-  let received = 0;
-  let lastReported = 0;
+  let received = offset;
+  if (offset > 0) for await (const chunk of createReadStream(part)) hash.update(chunk as Buffer);
+  let lastReported = offset;
   const hasher = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
-      hash.update(chunk);
       received += chunk.length;
-      if (received - lastReported >= 32 * 1024 * 1024 || received === total) {
+      if (received > spec.bytes) {
+        callback(new Error(`下载 ${spec.path} 超过期望大小`));
+        return;
+      }
+      hash.update(chunk);
+      if (received - lastReported >= 32 * 1024 * 1024 || received === spec.bytes) {
         lastReported = received;
-        const pct = total > 0 ? ((received / total) * 100).toFixed(1) : "?";
-        process.stdout.write(
-          `\r       ${formatBytes(received)} / ${formatBytes(total)} (${pct}%)`,
-        );
+        process.stdout.write(`\r       ${formatBytes(received)} / ${formatBytes(spec.bytes)}`);
       }
       callback(null, chunk);
     },
   });
-
   try {
     await pipeline(
       Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream),
-      hasher,
-      createWriteStream(part),
+      hasher, createWriteStream(part, { flags: offset > 0 ? "a" : "w" }),
     );
-    process.stdout.write("\n");
   } catch (error) {
-    rmSync(part, { force: true });
+    if (received > spec.bytes) rmSync(part, { force: true });
     throw error;
   }
-
   if (received !== spec.bytes) {
-    rmSync(part, { force: true });
-    throw new Error(
-      `下载 ${spec.path} 被截断: 收到 ${received} 字节，期望 ${spec.bytes} 字节（HTTP ${response.status}）`,
-    );
+    throw new Error(`下载 ${spec.path} 被截断: 收到 ${received} 字节，期望 ${spec.bytes} 字节`);
   }
-  const digest = hash.digest("hex");
-  if (digest !== spec.sha256) {
+  if (hash.digest("hex") !== spec.sha256) {
     rmSync(part, { force: true });
-    throw new Error(`下载 ${spec.path} SHA256 校验失败:\n  期望 ${spec.sha256}\n  实际 ${digest}`);
+    throw new Error(`下载 ${spec.path} SHA256 校验失败`);
   }
+  // Only replace an existing model after the new file has passed every check.
   renameSync(part, dest);
-  console.log(`[done] ${spec.path} (${formatBytes(spec.bytes)})`);
+  console.log(`\n[done] ${spec.path} (${formatBytes(spec.bytes)})`);
+}
+
+export async function downloadWithRetries(
+  spec: PinnedFile, options: Options, fetchImpl: typeof fetch = fetch,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await downloadFile(spec, options, fetchImpl, options.force && attempt === 1);
+      return;
+    } catch (error) {
+      if (attempt === 3) throw error;
+      console.warn(`[retry] ${spec.path} 第 ${attempt} 次失败，将重试（有效片段保留）`);
+      await wait(attempt * 1500);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -205,13 +248,13 @@ async function main(): Promise<void> {
   console.log(`Laya 模型目录: ${options.dir}`);
   console.log(`仓库: ${MODEL_REPO}@${MODEL_REVISION}\n`);
   mkdirSync(options.dir, { recursive: true });
-  for (const spec of PINNED_FILES) {
-    await downloadFile(spec, options);
-  }
+  for (const spec of PINNED_FILES) await downloadWithRetries(spec, options);
   console.log("\n全部模型文件已就绪并校验通过。");
 }
 
-main().catch((error) => {
-  console.error(`\n[error] ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(`\n[error] ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}
