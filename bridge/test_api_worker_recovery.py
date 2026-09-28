@@ -40,6 +40,24 @@ class ApiWorkerRecoveryTests(unittest.TestCase):
         self.assertEqual(worker.running_version, "new")
         self.assertEqual(worker.pending, {})
 
+    def test_stream_delta_is_progress_and_final_reply_stays_pending(self):
+        worker = NodeAnalysis(api_only=True)
+        worker.version = worker.running_version = "synthetic"
+        worker.model = {"state": "ready"}
+        process = Mock()
+        worker.process = process
+        deltas = []
+        worker.stream_callbacks[7] = deltas.append
+        process.stdout = iter([
+            json.dumps({"id": 7, "cmd": "model:insights", "analysisVersion": "synthetic",
+                        "streamDelta": "情感：关切\n"}),
+            json.dumps({"id": 7, "cmd": "model:insights", "analysisVersion": "synthetic",
+                        "insights": []}),
+        ])
+        worker._read(process)
+        self.assertEqual(deltas, ["情感：关切\n"])
+        self.assertEqual(worker.pending[7]["insights"], [])
+
     def test_failed_generation_does_not_delay_next_call_in_real_worker(self):
         calls = []
         class Gateway(BaseHTTPRequestHandler):
@@ -63,9 +81,11 @@ class ApiWorkerRecoveryTests(unittest.TestCase):
         args = ("chat_completions", f"http://127.0.0.1:{server.server_port}/v1", "synthetic-key", "synthetic",
                 [{"id": "synthetic-target", "sender": "OTHER", "text": "周末一起去吗"}], ["synthetic-target"])
         try:
-            with self.assertRaisesRegex(RuntimeError, "invalid-output"):
-                worker.model_insights(*args)
-            # Assert before the second request so a regression never waits 120s.
+            first = worker.model_insights(*args)
+            # A noisy provider response is filtered into an empty label pair; it
+            # does not force a second paid request or poison API readiness.
+            self.assertEqual(first["insights"][0], {
+                "id": "synthetic-target", "status": "ok", "intents": []})
             self.assertEqual(worker.model["state"], "ready")
             start = time.monotonic()
             result = worker.model_insights(*args)

@@ -3,6 +3,7 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { it } = require("node:test");
 const vm = require("node:vm");
+const { seed } = require("./helpers/view-state-harness.cjs");
 
 const source = readFileSync(path.join(__dirname, "../chatui/app.js"), "utf8");
 const html = readFileSync(path.join(__dirname, "../chatui/index.html"), "utf8");
@@ -14,11 +15,11 @@ function section(start, end) {
 }
 const personaCode = section("function profileCacheKey(", "async function clearStoredProfilesForAccount(") +
   section("function updateProfileProgress(", "function renderMembers(") +
-  section("function renderProfile(", "let apiPortraitRequest =") +
-  section("let apiPortraitRequest =", "function applySettings(") +
-  section("function switchSession(", "let activeMember =") +
+  section("function renderProfile(", "portraitState.apiPortraitRequest =") +
+  section("portraitState.apiPortraitRequest =", "function applySettings(") +
+  section("function switchSession(", '\nportraitState.activeMember = "";') +
   "globalThis.ui = { loadProfile, renderApiPortrait, renderMbti, syncPortraitMode, clearProfileView, " +
-  "switchSession, switchView, apiProfileRendered: () => renderedApiProfileScope !== null };";
+  "switchSession, switchView, apiProfileRendered: () => portraitState.renderedApiProfileScope !== null };";
 const incrementalCode = section("function incrementalState(", "async function analyzeRecent(") +
   section("function usingLocalFine(", "function applyActiveModelSource(") +
   "globalThis.ui = { startIncremental, scheduleIncremental, loadAnalysis, canAnalyzeLocal };";
@@ -99,24 +100,28 @@ function personaHarness(apiImpl, storage) {
     setStripStatus: value => { byId("stripStatusText").textContent = value; },
     modelSourceRequestError: () => "连接失败",
     svgIcon: () => node("svg"), isMbtiUnlocked: () => false, unlockMbti: () => {},
-    api: apiImpl, sessions: new Map([["friend", { name: "合成联系人", isGroup: false }]]),
+    api: apiImpl,
+    profileCacheKey: (...args) => JSON.stringify(args),
+    sessionCacheKey: (...args) => JSON.stringify(args),
+    TextEncoder,
+    rememberProfileMember() {},
+    setTimeout: () => 1, clearTimeout() {},
+  });
+  seed(context, {
+    sessions: new Map([["friend", { name: "合成联系人", isGroup: false }]]),
     currentAccount: "acct", currentUser: "friend", activeMember: "",
     view: "persona", modelSourceResolved: true,
     modelSourceSnapshot: { mode: "api", sourceId: "api-a", api: { model: "synthetic", contextTokens: 8192 } },
     controller: new AbortController(), profileGeneration: 0, profilePending: false,
-    profileCacheKey: (...args) => JSON.stringify(args), profileCache: new Map(),
-    profileSnapshotsRequireRefresh: new Set(), sessionCacheKey: (...args) => JSON.stringify(args),
-    TextEncoder,
+    profileCache: new Map(), profileSnapshotsRequireRefresh: new Set(),
     renderedProfileKey: null, renderedProfileSignature: null, memberRenderedScope: null,
-    rememberProfileMember() {},
-    setTimeout: () => 1, clearTimeout() {},
   });
   vm.runInContext(personaCode, context);
   return { ui: context.ui, context, byId, members, avatars };
 }
 function navigationHarness(apiImpl, storage) {
   const harness = personaHarness(apiImpl, storage);
-  Object.assign(harness.context, {
+  seed(harness.context, {
     messageSourceReady: true, sessionCache: new Map(), historyState: null,
     followLatest: true, generation: 0, analysisGeneration: 0, selectedAnalysisTimer: null,
     messagePending: false, messageRefreshQueued: false, emptyMessagePolls: 0,
@@ -126,6 +131,8 @@ function navigationHarness(apiImpl, storage) {
     requestedRecentSignatures: new Set(), activeAnalysisScope: null,
     currentAnalysisJob: null, currentRecentJob: null, messages: [], results: {},
     conversationMood: null, lastChatScrollTop: 0,
+  });
+  Object.assign(harness.context, {
     markSessionAsRead() {}, cacheCurrentSession() {}, cancelApiInsightWork() {},
     clearInlineIntentPending() {}, cancelHistoryRequest() {}, resetHistorySearch() {},
     clearReplyPrediction() {}, setIntentActionState() {}, renderSessions() {},
@@ -292,11 +299,11 @@ it("shows real completed throughput and the ten-second retry countdown in the st
     batchStartedAtMs: Date.now() - 5000, rateTextsPerSecond: 3.25 };
   ui.renderApiPortrait(data);
   assert.match(byId("stripStatusText").textContent, /API 分析中.*3\.3 条\/秒/);
-  data.job.retry = { reason: "invalid-output", attempt: 1, max: 10,
+  data.job.retry = { reason: "invalid-output", attempt: 1, max: 5,
     nextAtMs: Date.now() + 10000 };
   ui.renderApiPortrait(data);
-  assert.match(byId("stripStatusText").textContent, /自动重试 1\/10/);
-  assert.match(byId("apiPortraitStatus").textContent, /模型返回格式不正确.*自动重试 1\/10/);
+  assert.match(byId("stripStatusText").textContent, /自动重试 1\/5/);
+  assert.match(byId("apiPortraitStatus").textContent, /模型返回格式不正确.*自动重试 1\/5/);
 });
 
 it("restores the API portrait synchronously on an A->B->A revisit before the slow GET resolves", async () => {
@@ -736,6 +743,7 @@ it("does not GET or POST local analysis in API mode or before local Laya is read
     modelSourceResolved: true, modelSourceSnapshot: { mode: "api" },
     localModelResolved: true, localModelReady: false,
   });
+  seed(context, {});
   vm.runInContext(incrementalCode, context);
   const state = { pending: false };
   const analysis = { job: { status: "idle" } };
@@ -792,6 +800,7 @@ it("ignores an in-flight local analysis response after switching to API", async 
     localModelResolved: true, localModelReady: true,
     renderJob: () => { rendered++; },
   });
+  seed(context, {});
   vm.runInContext(incrementalCode, context);
   const pending = context.ui.loadAnalysis("friend", 1, null);
   context.modelSourceSnapshot = { mode: "api" };

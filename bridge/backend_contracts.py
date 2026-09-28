@@ -9,6 +9,10 @@ import json
 import math
 from pathlib import Path
 
+from message_contracts import (API_INSIGHT_REVISION, FINE_LABEL_SCHEMA, api_insight_scope,
+                               normalize_api_insight)
+from portrait_contracts import API_PORTRAIT_REVISION, api_portrait_scope
+
 LOCAL_SOURCE_ID = "local:laya"
 
 
@@ -19,12 +23,6 @@ MODEL_CONNECTOR_ERRORS = frozenset({
     "invalid-url", "invalid-request", "context-too-long", "auth", "rate-limit", "timeout", "unsupported",
     "network", "provider-error", "invalid-output", "response-too-large", "empty-response",
 })
-
-
-API_INSIGHT_REVISION = "free-label-v3"
-
-
-API_PORTRAIT_REVISION = "portrait-v2"
 
 
 API_PORTRAIT_PIECE_CHARS = 1000
@@ -49,17 +47,15 @@ API_MODEL_RETRY_SECONDS = 5
 
 
 API_MODEL_RETRYABLE = frozenset({
-    "invalid-output", "invalid-portrait", "invalid-insights", "timeout",
+    "invalid-output", "invalid-portrait", "timeout",
     "empty-response", "response-too-large", "network", "provider-error", "rate-limit",
 })
 
-
-def api_insight_scope(source_id):
-    return source_id + ":" + API_INSIGHT_REVISION
-
-
-def api_portrait_scope(source_id):
-    return source_id + ":" + API_PORTRAIT_REVISION
+# Message insight calls follow OpenCode's shorter transient-error policy. Format
+# and provider-parameter failures terminate immediately instead of looping.
+API_INSIGHT_RETRY_MAX = 5
+API_INSIGHT_RETRY_SECONDS = 2
+API_INSIGHT_RETRYABLE = frozenset({"timeout", "network", "rate-limit"})
 
 
 def valid_api_portrait(value):
@@ -213,13 +209,11 @@ PROFILE_METADATA_CACHE_LIMIT = 64
 API_JOB_CACHE_LIMIT = 256
 
 
-FINE_LABEL_SCHEMA = "generic-v8"
-
-
 GROUNDED_INTENT_EVIDENCE = {
     "greet": {"greeting_phrase"}, "thank": {"thanks_phrase"},
     "confirm": {"short_acknowledgement"}, "inspect": {"first_person_inspection"},
-    "agree": {"explicit_acceptance"}, "reject": {"explicit_refusal"},
+    "agree": {"explicit_acceptance"}, "reject": {"explicit_refusal", "contextual_deferral"},
+    "deny": {"contextual_denial"},
     "invite": {"inclusive_invitation"}, "ask_question": {"answer_seeking_question"},
     "seek_help": {"action_request"},
     "suggest_action": {"advice_marker", "negative_imperative", "imperative_adjustment", "delegated_action"},

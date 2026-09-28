@@ -3,8 +3,11 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { it } = require("node:test");
 const vm = require("node:vm");
+const { installViewState } = require("./helpers/view-state-harness.cjs");
 
 const source = readFileSync(path.join(__dirname, "../chatui/app.js"), "utf8");
+const labelsSource = readFileSync(path.join(__dirname, "../chatui/message-labels.js"), "utf8");
+const adaptersSource = readFileSync(path.join(__dirname, "../chatui/message-insight-adapters.js"), "utf8");
 function section(start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first);
@@ -12,10 +15,12 @@ function section(start, end) {
   return source.slice(first, last);
 }
 const code = section("async function api(", "function status(") +
+  section("labelState.messageLabels = null;", "function messageInsightView(") +
+  section("function messageInsightView(", "function clearInlineIntentPending(") +
   section("function updateLabel(", "function messageNode(") +
   section("const MODEL_SOURCE_PROTOCOLS", "let managedAccounts = [];") +
   section("let analysisCacheRequest = 0;", "async function loadAnalysisCache") +
-  "globalThis.ui = { showModelSource, updateLabel, validApiInsight, renderApiInsightResult, " +
+  "globalThis.ui = { showModelSource, updateLabel, validApiInsight, parseApiPartialLabels, renderApiInsightResult, " +
   "ensureApiInsights, cancelApiInsightWork, activeApiInsightKey, apiInsightCache, " +
   "renderAnalysisCache, suppressedApiSources, suppressedLocalAccounts, " +
   "getSource: () => modelSourceSnapshot };";
@@ -83,6 +88,8 @@ function harness(fetchImpl = async () => response({ account: "acct", sourceId: "
   const context = vm.createContext({
     URL, URLSearchParams, AbortController, element, byId,
     document: { createElement: tag => element(tag) },
+    percent: value => `${value * 100}%`,
+    window: { Kaomoji: { pick: () => "" } },
     text: (id, value) => { byId(id).textContent = value == null ? "" : String(value); },
     fetch: fetchImpl,
     setTimeout: () => 1, clearTimeout() {},
@@ -94,7 +101,7 @@ function harness(fetchImpl = async () => response({ account: "acct", sourceId: "
     localModelResolved: false, localModelReady: false,
     runtimeSnapshot: null, runtimeBusy: false, incrementalFailed: false, recentFailed: false,
     messages: [], results: {}, inlineIntentPending: new Map(),
-    CURRENT_LABEL_SCHEMA: "generic-v8", catalogReady: true, catalogLabelRevision: 0,
+    CURRENT_LABEL_SCHEMA: "generic-v9", catalogReady: true, catalogLabelRevision: 0,
     fineMessageResult: result => result?.state === "done",
     rankedEmotionScores: () => [{ item: { label: "本地情绪", probability: 0.8 } }],
     appendScoreLine: row => row.appendChild(element("span", "intent-pct", "80%")),
@@ -103,11 +110,15 @@ function harness(fetchImpl = async () => response({ account: "acct", sourceId: "
     clearInlineIntentPending() {}, setIntentActionState() {}, refreshLabels() {},
     submitManualRecent() {},
     handleAccountBoundaryError: () => false,
-    hasIntentContent: value => /[\p{L}\p{N}]/u.test(value),
+    hasIntentContent: value => String(value || "").trim().length > 0,
     isIncompleteFragment: () => false,
   });
   context.fineWindow = () => ({ candidates: context.messages.filter(message =>
     message.side === "other" && message.kind === "text") });
+  vm.runInContext(adaptersSource, context);
+  installViewState(context);
+  vm.runInContext(labelsSource, context);
+  context.defaultKaomoji = true;
   vm.runInContext(code, context);
   return { ui: context.ui, byId, context };
 }
@@ -117,11 +128,11 @@ it("switches bubble labels by source without mixing cached Laya and API results"
   const { ui, context } = harness();
   const message = { id: "m1", side: "other", kind: "text", text: "请把文件发给我" };
   context.messages = [message];
-  context.results = { m1: { state: "done", labelSchema: "generic-v8", emotion: [], intent: [] } };
+  context.results = { m1: { state: "done", labelSchema: "generic-v9", emotion: [], intent: [] } };
   const bubble = messageNode();
   ui.showModelSource(localState);
   ui.updateLabel(message, bubble);
-  assert.equal(countClass(bubble, "intent-pct"), 1);
+  assert.equal(countClass(bubble, "intent-pct"), 0);
   ui.showModelSource(apiState());
   ui.updateLabel(message, bubble);
   assert.equal(countClass(bubble, "intent-pct"), 0);
@@ -133,7 +144,7 @@ it("switches bubble labels by source without mixing cached Laya and API results"
   assert.equal(countClass(bubble, "intent-pct"), 0);
   ui.showModelSource(localState);
   ui.updateLabel(message, bubble);
-  assert.equal(countClass(bubble, "intent-pct"), 1);
+  assert.equal(countClass(bubble, "intent-pct"), 0);
 });
 
 it("renders only emotion and intent tags, with no confidence or response suggestions", () => {
@@ -141,10 +152,10 @@ it("renders only emotion and intent tags, with no confidence or response suggest
   assert.equal(ui.validApiInsight(insight, "m1"), true);
   const row = ui.renderApiInsightResult(insight);
   assert.equal(countClass(row, "intent-pct"), 0);
-  assert.equal(countClass(row, "api-insight-tag"), 2);
+  assert.equal(countClass(row, "intent-label"), 2);
   assert.equal(countClass(row, "api-insight-options"), 0);
-  assert.match(textOf(row), /情绪 平静/);
-  assert.match(textOf(row), /意图 请求帮助/);
+  assert.match(textOf(row), /情绪\s+平静/u);
+  assert.match(textOf(row), /意图\s+请求帮助/u);
   assert.doesNotMatch(textOf(row), /下一步|请把文件|发送文件/);
   assert.equal(ui.validApiInsight({ ...insight, emotion: "平静80%" }, "m1"), false);
   assert.equal(ui.validApiInsight({ ...insight, intent: "问" }, "m1"), true);
@@ -162,6 +173,22 @@ it("does not force emotion or intent tags for insufficient evidence", () => {
   ui.updateLabel(message, bubble);
   assert.equal(countClass(bubble, "inline-intent-row"), 0);
   assert.equal(countClass(bubble, "intent-pct"), 0);
+});
+
+it("lands only complete streamed emotion and intent pairs", () => {
+  const { ui } = harness();
+  const parse = (text, ids) => JSON.parse(JSON.stringify(ui.parseApiPartialLabels(text, ids)));
+  assert.deepEqual(parse("姓名：小王\n情感：关", ["m1"]), {});
+  assert.deepEqual(parse("姓名：小王\n情感：关切\n意图：询问\n", ["m1"]), {
+    m1: { id: "m1", status: "ok", affect: { feeling: "关切" }, intents: ["询问"] },
+  });
+  assert.deepEqual(parse(
+    "情感：关切\n意图：询问\n情感：犹豫\n意图：改期\n整体总结：情感：平静 意图：说明",
+    ["m1", "m2"],
+  ), {
+    m1: { id: "m1", status: "ok", affect: { feeling: "关切" }, intents: ["询问"] },
+    m2: { id: "m2", status: "ok", affect: { feeling: "犹豫" }, intents: ["改期"] },
+  });
 });
 
 it("posts only scoped message IDs and a bounded limit; no API key or chat text", async () => {
@@ -189,7 +216,7 @@ it("posts only scoped message IDs and a bounded limit; no API key or chat text",
   assert.equal(JSON.stringify(calls).includes("请把文件"), false);
 });
 
-it("analyzes only visible historical messages using a scoped history anchor", async () => {
+it("analyzes all messages already loaded in the current history window", async () => {
   const calls = [];
   const { ui, context, byId } = harness(async (url, options) => {
     calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
@@ -214,12 +241,12 @@ it("analyzes only visible historical messages using a scoped history anchor", as
   await tick();
   await tick();
   const post = calls.find(call => call.url === "/api/model-insights");
-  assert.deepEqual(post.body.targetIds, ["old"]);
-  assert.equal(post.body.around, "history-anchor");
+  assert.deepEqual(post.body.targetIds, ["old", "hidden"]);
+  assert.equal(post.body.around, "other-anchor");
   assert.equal(JSON.stringify(post.body).includes("上周见面吗"), false);
 });
 
-it("reveals visible API labels in batches of two without losing later messages", async () => {
+it("submits the loaded message window as one serialized batch", async () => {
   const posts = [];
   const { ui, context } = harness(async (url, options) => {
     if (url === "/api/model-insights") {
@@ -236,11 +263,11 @@ it("reveals visible API labels in batches of two without losing later messages",
   });
   context.messages = Array.from({ length: 11 }, (_, index) => ({
     id: `m${index + 1}`, side: "other", kind: "text", text: `请处理第${index + 1}件事`,
-  }));
+  })).concat([{ id: "punct", side: "other", kind: "text", text: "。。" }]);
   ui.showModelSource(apiState());
   for (let i = 0; i < 8; i++) await tick();
-  assert.deepEqual(posts, [["m1", "m2"], ["m3", "m4"], ["m5", "m6"], ["m7", "m8"], ["m9", "m10"], ["m11"]]);
-  assert.equal(Object.keys(ui.apiInsightCache.get(ui.activeApiInsightKey()).results).length, 11);
+  assert.deepEqual(posts, [["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11", "punct"]]);
+  assert.equal(Object.keys(ui.apiInsightCache.get(ui.activeApiInsightKey()).results).length, 12);
 });
 
 it("hydrates completed API results into the current bubble", async () => {
@@ -315,11 +342,44 @@ it("unblocks analysis when a previously suspended source reports active again", 
   assert.equal(ui.suppressedLocalAccounts.has("acct"), false);
 });
 
+const semanticInsight = { id: "m1", status: "ok",
+  affect: { feeling: "犹豫" }, intents: ["婉拒"] };
+
+it("validates the S1 affect/intents shape and routine/uncertain terminals", () => {
+  const { ui } = harness();
+  assert.equal(ui.validApiInsight(semanticInsight, "m1"), true);
+  assert.equal(ui.validApiInsight({ id: "m1", status: "routine" }, "m1"), true);
+  assert.equal(ui.validApiInsight({ id: "m1", status: "uncertain" }, "m1"), true);
+  assert.equal(ui.validApiInsight({ ...semanticInsight, affect: { feeling: "犹豫", tone: "犹豫" } }, "m1"), false);
+  assert.equal(ui.validApiInsight({ ...semanticInsight, intents: ["婉拒", "婉拒"] }, "m1"), false);
+  assert.equal(ui.validApiInsight({ ...semanticInsight, intents: ["一", "二", "三", "四"] }, "m1"), false);
+  assert.equal(ui.validApiInsight({ ...semanticInsight, affect: { tone: "hmm" } }, "m1"), false);
+  const row = ui.renderApiInsightResult(semanticInsight);
+  assert.equal(countClass(row, "intent-pct"), 0);
+  assert.equal(countClass(row, "intent-label"), 2);
+  assert.match(textOf(row), /情绪\s+犹豫/u);
+  assert.match(textOf(row), /意图\s+婉拒/u);
+});
+
+it("renders routine and uncertain as terminal with no labels and no pending", () => {
+  const { ui, context } = harness();
+  const message = { id: "m1", side: "other", kind: "text", text: "嗯" };
+  context.messages = [message];
+  ui.showModelSource(apiState());
+  for (const status of ["routine", "uncertain"]) {
+    ui.apiInsightCache.set(ui.activeApiInsightKey(), { results: { m1: { id: "m1", status } }, job: null, error: "" });
+    const bubble = messageNode();
+    ui.updateLabel(message, bubble);
+    assert.equal(countClass(bubble, "inline-intent-row"), 0);
+    assert.equal(countClass(bubble, "inline-intent-pending"), 0);
+  }
+});
+
 it("reports API failure without falling back to local bubble labels", async () => {
   const { ui, context, byId } = harness(async () => ({ ok: false, status: 503 }));
   const message = { id: "m1", side: "other", kind: "text", text: "请把文件发给我" };
   context.messages = [message];
-  context.results = { m1: { state: "done", labelSchema: "generic-v8", emotion: [], intent: [] } };
+  context.results = { m1: { state: "done", labelSchema: "generic-v9", emotion: [], intent: [] } };
   ui.showModelSource(apiState());
   await tick();
   const bubble = messageNode();

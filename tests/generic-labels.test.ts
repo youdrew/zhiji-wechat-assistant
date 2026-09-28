@@ -26,8 +26,8 @@ it("fine labels use direct broad emotion and generic intent model probabilities"
         model: "synthetic",
         usage: { input_tokens: 0, output_tokens: 0 },
         answers: {
-          emotion: choice({ happy: 0, affectionate: 0, neutral: 0.21, amused: 0,
-            sad: 0, anxious: 0, angry: 0.79 }),
+          emotion: choice({ "亲昵俏皮": 0, "犹豫纠结": 0, "坦诚自然": 0.21,
+            "客套防守": 0, "无奈低能": 0, "敏感上头": 0.79 }),
           intent: choice({ "分享": 0.61, "提问": 0.39 }),
         },
       };
@@ -37,7 +37,7 @@ it("fine labels use direct broad emotion and generic intent model probabilities"
   try {
     const result = await analyzeObservedText("文件已上传到共享盘。");
     assert.equal(calls.length, 1, "expression/social and leaf routing must not run");
-    assert.deepEqual(result.emotion[0], { label: "angry", probability: 0.79 });
+    assert.deepEqual(result.emotion[0], { label: "敏感上头", probability: 0.79 });
     assert.deepEqual(result.intent[0], { label: "share_news", probability: 0.61 });
     assert.deepEqual(result.intentBroad, result.intent);
     assert.deepEqual(result.playfulIntent, []);
@@ -56,7 +56,7 @@ it("an uncertain focused result keeps the model's generic answer without a force
         model: "synthetic",
         usage: { input_tokens: 0, output_tokens: 0 },
         answers: {
-          emotion: choice({ happy: 1 }),
+          emotion: choice({ "坦诚自然": 1 }),
           intent: choice({ "建议或指令": 0.2, "求助": 0.1, "计划": 0, "一般交流": 0.7 }),
         },
       };
@@ -85,7 +85,7 @@ it("fine targets carry evidence only where target text supports it, without chan
         model: "synthetic",
         usage: { input_tokens: 0, output_tokens: 0 },
         answers: {
-          emotion: choice({ neutral: 0.8, angry: 0.2 }),
+          emotion: choice({ "坦诚自然": 0.8, "敏感上头": 0.2 }),
           intent: choice({ "状态报告": 0.64, "一般交流": 0.36 }),
           relationship: choice({ neutral: 1 }),
         },
@@ -112,7 +112,7 @@ it("fine targets carry evidence only where target text supports it, without chan
       { label: "explain", evidenceKind: "process_explanation" },
     ]);
     assert.deepEqual(result.messages[0]!.intent[0], { label: "status_report", probability: 0.64 });
-    assert.deepEqual(result.messages[0]!.emotion[0], { label: "neutral", probability: 0.8 });
+    assert.deepEqual(result.messages[0]!.emotion[0], { label: "坦诚自然", probability: 0.8 });
   } finally {
     __setAnalysisEngineForTest(null);
   }
@@ -125,8 +125,8 @@ it("every grounded label has a generic Chinese display label", () => {
   assert.equal(Object.prototype.hasOwnProperty.call(GROUNDED_INTENT_LABELS, "喊老板"), false);
 });
 
-it("generic-v8 offers bounded, readable candidate menus instead of the same four defaults", () => {
-  assert.equal(GENERAL_LABEL_SCHEMA, "generic-v8");
+it("generic-v9 offers bounded, readable candidate menus instead of the same four defaults", () => {
+  assert.equal(GENERAL_LABEL_SCHEMA, "generic-v9");
   assert.ok(INTENTS.length >= 35 && INTENTS.length <= 50);
   const cases: Array<[string, string[]]> = [
     ["截图", ["展示内容"]],

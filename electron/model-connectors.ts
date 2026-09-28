@@ -32,7 +32,15 @@ export interface ModelUsage {
 export interface GenerationRequest {
   system: string;
   prompt: string;
-  maxOutputTokens: number;
+  /** Optional provider output cap. Omit to let the selected model use its default. */
+  maxOutputTokens?: number;
+  /** Reuse a provider Responses session when the gateway supports it. */
+  previousResponseId?: string;
+  /** Persist the provider response so a later batch can reference it. */
+  store?: boolean;
+  /** Consume provider SSE chunks when available and expose firstBodyMs. */
+  stream?: boolean;
+  onTextDelta?: (delta: string) => void;
   signal?: AbortSignal;
   /** A bounded per-request timeout; larger portrait batches may need longer than a probe. */
   timeoutMs?: number;
@@ -44,6 +52,8 @@ export interface GenerationResult {
   /** Provider text, without parsing or assigning application scores. */
   text: string;
   usage?: ModelUsage;
+  responseId?: string;
+  timings?: { firstBodyMs?: number; connectorMs?: number };
 }
 
 export type ConnectorErrorCode =
@@ -62,7 +72,9 @@ export class ModelConnectorError extends Error {
   }
 }
 
-const REQUEST_TIMEOUT_MS = 30_000;
+// OpenCode leaves generation timeout to the provider/stream lifecycle unless a
+// caller explicitly supplies one. Probes and model discovery remain bounded.
+const REQUEST_TIMEOUT_MS: number | undefined = undefined;
 const LIST_TIMEOUT_MS = 12_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PROMPT_BYTES = 3 * 1024 * 1024;
@@ -127,10 +139,12 @@ export function validateModelConfig(config: ModelConfig, requireModel = true): S
 }
 
 function checkedSignal(requestSignal?: AbortSignal, callerSignal?: AbortSignal,
-                       timeoutMs = REQUEST_TIMEOUT_MS): AbortSignal {
-  const signals = [AbortSignal.timeout(timeoutMs)];
+                       timeoutMs?: number): AbortSignal {
+  const signals: AbortSignal[] = [];
+  if (typeof timeoutMs === "number" && timeoutMs > 0) signals.push(AbortSignal.timeout(timeoutMs));
   if (requestSignal) signals.push(requestSignal);
   if (callerSignal) signals.push(callerSignal);
+  if (!signals.length) return new AbortController().signal;
   return AbortSignal.any(signals);
 }
 
@@ -168,7 +182,8 @@ async function boundedResponse(response: Response): Promise<Response> {
 }
 
 function guardedFetch(config: SafeConfig, callerSignal?: AbortSignal,
-                      timeoutMs = REQUEST_TIMEOUT_MS): typeof fetch {
+                      timeoutMs = REQUEST_TIMEOUT_MS, bounded = true,
+                      streamProtocol?: "responses" | "chat_completions"): typeof fetch {
   const base = new URL(config.baseUrl);
   const basePath = base.pathname.replace(/\/+$/u, "");
   return async (input, init) => {
@@ -180,7 +195,46 @@ function guardedFetch(config: SafeConfig, callerSignal?: AbortSignal,
     const signal = checkedSignal(init?.signal ?? (input instanceof Request ? input.signal : undefined),
       callerSignal, timeoutMs);
     const response = await globalThis.fetch(input, { ...init, redirect: "error", signal });
-    return boundedResponse(response);
+    if (!bounded && response.ok && streamProtocol &&
+        !/text\/event-stream|application\/x-ndjson/iu.test(response.headers.get("content-type") || "")) {
+      // Some compatible gateways ignore stream:true but still return a complete
+      // JSON completion. Turn that one body into a local SSE envelope so the
+      // caller observes one request and the normal incremental parser can run.
+      const raw = await response.text();
+      const headers = new Headers(response.headers);
+      headers.set("content-type", "text/event-stream");
+      headers.delete("content-length");
+      let body = raw;
+      try {
+        const parsed = JSON.parse(raw) as Record<string, any>;
+        if (streamProtocol === "chat_completions") {
+          const content = parsed.choices?.[0]?.message?.content;
+          if (typeof content === "string") {
+            body = `data: ${JSON.stringify({
+              id: parsed.id, object: "chat.completion.chunk",
+              choices: [{ index: 0, delta: { content }, finish_reason: "stop" }],
+            })}\n\ndata: [DONE]\n\n`;
+          }
+        } else {
+          const content = typeof parsed.output_text === "string" ? parsed.output_text : "";
+          if (content) {
+            body = `event: response.output_text.delta\ndata: ${JSON.stringify({
+              type: "response.output_text.delta", delta: content,
+            })}\n\n` +
+              `event: response.completed\ndata: ${JSON.stringify({
+                type: "response.completed", response: {
+                  id: parsed.id, output_text: content, usage: parsed.usage,
+                },
+              })}\n\n`;
+          }
+        }
+      } catch {
+        // Preserve the body. The connector will make its single compatibility
+        // fallback only when the provider response is not parseable at all.
+      }
+      return new Response(body, { status: response.status, statusText: response.statusText, headers });
+    }
+    return bounded ? boundedResponse(response) : response;
   };
 }
 
@@ -199,6 +253,22 @@ function errorStatus(error: unknown): number | undefined {
   const value = error as Record<string, unknown>;
   const status = value.status ?? value.statusCode ?? value.status_code;
   return typeof status === "number" && Number.isInteger(status) ? status : undefined;
+}
+
+function streamFormatError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    if ((current as { streamFormat?: boolean }).streamFormat) return true;
+    if (current instanceof Error && /stream response is not an event stream/iu.test(current.message)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+function streamFormatFailure(): Error {
+  const error = new Error("stream response is not an event stream");
+  (error as Error & { streamFormat?: boolean }).streamFormat = true;
+  return error;
 }
 
 function safeError(error: unknown, signal?: AbortSignal): never {
@@ -336,10 +406,13 @@ export async function generateStructured(
   config: ModelConfig, request: GenerationRequest,
 ): Promise<GenerationResult> {
   const safe = validateModelConfig(config);
+  const outputLimit = request?.maxOutputTokens;
   if (!request || typeof request.system !== "string" || typeof request.prompt !== "string" ||
-      !request.prompt.trim() || !Number.isInteger(request.maxOutputTokens) ||
-      request.maxOutputTokens < 1 || request.maxOutputTokens > 8192 ||
+      !request.prompt.trim() ||
+      (outputLimit !== undefined && (!Number.isInteger(outputLimit) ||
+        outputLimit < 1 || outputLimit > 8192)) ||
       (request.jsonMode !== undefined && typeof request.jsonMode !== "boolean") ||
+      (request.stream !== undefined && typeof request.stream !== "boolean") ||
       (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) ||
         request.timeoutMs < 1000 || request.timeoutMs > 120_000)) ||
       Buffer.byteLength(request.system, "utf8") + Buffer.byteLength(request.prompt, "utf8") > MAX_PROMPT_BYTES) {
@@ -347,6 +420,9 @@ export async function generateStructured(
   }
   if (request.signal?.aborted) throw new ModelConnectorError("cancelled", "请求已取消");
   const timeoutMs = request.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const connectorStarted = performance.now();
+  let firstBodyMs: number | undefined;
+  const markFirstBody = () => { firstBodyMs ??= performance.now() - connectorStarted; };
   try {
     let result: GenerationResult;
     switch (safe.protocol) {
@@ -354,10 +430,15 @@ export async function generateStructured(
         const { default: OpenAI } = await import("openai");
         const client = new OpenAI({ apiKey: safe.apiKey || NO_KEY, baseURL: safe.baseUrl,
           organization: null, project: null, adminAPIKey: null,
-          fetch: guardedFetch(safe, request.signal, timeoutMs), maxRetries: 0,
+          fetch: guardedFetch(safe, request.signal, timeoutMs, !request.stream,
+            safe.protocol === "responses" ? "responses" : undefined), maxRetries: 0,
           timeout: timeoutMs, logLevel: "off" });
         const params = { model: safe.model, input: request.prompt,
-          instructions: request.system, max_output_tokens: request.maxOutputTokens, store: false as const };
+          instructions: request.system, store: request.store ?? false,
+          ...(request.previousResponseId ?
+            { previous_response_id: request.previousResponseId } : {}),
+          ...(request.maxOutputTokens !== undefined ?
+            { max_output_tokens: request.maxOutputTokens } : {}) };
         // DeepSeek's official Responses API enables thinking by default, and its
         // output cap includes reasoning tokens. Structured analysis needs room
         // for the final JSON rather than spending the cap before any text appears.
@@ -365,19 +446,50 @@ export async function generateStructured(
           new URL(safe.baseUrl).hostname.toLowerCase() === "api.deepseek.com";
         let response;
         try {
-          response = await client.responses.create({ ...params,
+          const requestBody = { ...params,
             ...(request.jsonMode ? { text: { format: { type: "json_object" as const } } } : {}),
-            ...(officialDeepSeekJson ? { reasoning: { effort: "none" as const } } : {}) },
-          { signal: request.signal });
+            ...(officialDeepSeekJson ? { reasoning: { effort: "none" as const } } : {}) };
+          if (!request.stream) {
+            response = await client.responses.create(requestBody, { signal: request.signal });
+          } else {
+            const stream = await client.responses.create({ ...requestBody, stream: true },
+              { signal: request.signal });
+            let text = "";
+            let responseId: string | undefined;
+            let responseUsage: any;
+            for await (const event of stream as AsyncIterable<any>) {
+              if (event?.type === "response.output_text.delta" && typeof event.delta === "string") {
+                markFirstBody();
+                text += event.delta;
+                request.onTextDelta?.(event.delta);
+              }
+              if (event?.type === "response.created" || event?.type === "response.completed") {
+                responseId = typeof event.response?.id === "string" ? event.response.id : responseId;
+                responseUsage = event.response?.usage ?? responseUsage;
+                if (!text && typeof event.response?.output_text === "string") {
+                  text = event.response.output_text;
+                }
+              }
+              if (event?.type === "error") throw new Error(String(event.message || "provider stream error"));
+            }
+            if (!text.trim()) throw streamFormatFailure();
+            response = { output_text: text, id: responseId, usage: responseUsage };
+          }
         } catch (error) {
-          // Some compatible gateways omit JSON mode. Remove only that format hint;
-          // official DeepSeek must not re-enter its default thinking mode on fallback.
-          if (!request.jsonMode || ![400, 422].includes(errorStatus(error) ?? -1)) throw error;
+          // Compatible gateways may support the non-stream Responses endpoint but
+          // reject SSE. Fall back once without the stream flag; do not loop it.
+          const status = errorStatus(error);
+          const streamFormat = streamFormatError(error);
+          const streamRejected = request.stream && [400, 404, 405, 422].includes(status ?? -1);
+          const jsonRejected = request.jsonMode && [400, 422].includes(status ?? -1);
+          if (!streamFormat && !streamRejected && !jsonRejected) throw error;
           response = await client.responses.create({ ...params,
             ...(officialDeepSeekJson ? { reasoning: { effort: "none" as const } } : {}) },
           { signal: request.signal });
         }
+        if (response.output_text) markFirstBody();
         result = { text: response.output_text || "",
+          responseId: typeof response.id === "string" ? response.id : undefined,
           usage: usage(response.usage?.input_tokens, response.usage?.output_tokens) };
         break;
       }
@@ -385,21 +497,42 @@ export async function generateStructured(
         const { default: OpenAI } = await import("openai");
         const client = new OpenAI({ apiKey: safe.apiKey || NO_KEY, baseURL: safe.baseUrl,
           organization: null, project: null, adminAPIKey: null,
-          fetch: guardedFetch(safe, request.signal, timeoutMs), maxRetries: 0,
+          fetch: guardedFetch(safe, request.signal, timeoutMs, !request.stream,
+            safe.protocol === "chat_completions" ? "chat_completions" : undefined), maxRetries: 0,
           timeout: timeoutMs, logLevel: "off" });
         const params = { model: safe.model,
           messages: [{ role: "system" as const, content: request.system },
             { role: "user" as const, content: request.prompt }],
-          max_tokens: request.maxOutputTokens };
+          ...(request.maxOutputTokens !== undefined ?
+            { max_tokens: request.maxOutputTokens } : {}) };
         let response;
         try {
-          response = await client.chat.completions.create({ ...params,
-            ...(request.jsonMode ? { response_format: { type: "json_object" as const } } : {}) },
-          { signal: request.signal });
+          const requestBody = { ...params,
+            ...(request.jsonMode ? { response_format: { type: "json_object" as const } } : {}) };
+          if (!request.stream) {
+            response = await client.chat.completions.create(requestBody, { signal: request.signal });
+          } else {
+            const stream = await client.chat.completions.create({ ...requestBody, stream: true },
+              { signal: request.signal });
+            let text = "";
+            for await (const chunk of stream as AsyncIterable<any>) {
+              const delta = chunk?.choices?.[0]?.delta?.content;
+              if (typeof delta === "string") {
+                markFirstBody(); text += delta; request.onTextDelta?.(delta);
+              }
+            }
+            if (!text.trim()) throw streamFormatFailure();
+            response = { choices: [{ message: { content: text } }] };
+          }
         } catch (error) {
-          if (!request.jsonMode || ![400, 422].includes(errorStatus(error) ?? -1)) throw error;
+          const status = errorStatus(error);
+          const streamFormat = streamFormatError(error);
+          const streamRejected = request.stream && [400, 404, 405, 422].includes(status ?? -1);
+          const jsonRejected = request.jsonMode && [400, 422].includes(status ?? -1);
+          if (!streamFormat && !streamRejected && !jsonRejected) throw error;
           response = await client.chat.completions.create(params, { signal: request.signal });
         }
+        if (response.choices[0]?.message.content) markFirstBody();
         result = { text: response.choices[0]?.message.content ?? "",
           usage: usage(response.usage?.prompt_tokens, response.usage?.completion_tokens) };
         break;
@@ -408,11 +541,16 @@ export async function generateStructured(
         const { default: Anthropic } = await import("@anthropic-ai/sdk");
         const client = new Anthropic({ apiKey: safe.apiKey || NO_KEY, authToken: null,
           credentials: null, config: null, profile: null, baseURL: anthropicSdkBase(safe),
-          fetch: guardedFetch(safe, request.signal, timeoutMs), maxRetries: 0,
+          fetch: guardedFetch(safe, request.signal, timeoutMs, !request.stream), maxRetries: 0,
           timeout: timeoutMs, logLevel: "off" });
-        const response = await client.messages.create({ model: safe.model,
-          system: request.system, max_tokens: request.maxOutputTokens,
-          messages: [{ role: "user", content: request.prompt }] }, { signal: request.signal });
+        const params = { model: safe.model,
+          system: request.system,
+          ...(request.maxOutputTokens !== undefined ?
+            { max_tokens: request.maxOutputTokens } : {}),
+          messages: [{ role: "user", content: request.prompt }] };
+        // Anthropic's SDK type requires max_tokens even when a compatible gateway
+        // accepts the provider default. Keep the field absent on the wire.
+        const response = await client.messages.create(params as any, { signal: request.signal });
         result = { text: response.content.filter((item) => item.type === "text")
           .map((item) => item.text).join("\n"),
           usage: usage(response.usage.input_tokens, response.usage.output_tokens) };
@@ -422,11 +560,13 @@ export async function generateStructured(
         const { GoogleGenAI } = await import("@google/genai");
         const client = new GoogleGenAI({ apiKey: safe.apiKey || NO_KEY, vertexai: false,
           httpOptions: { baseUrl: safe.baseUrl, apiVersion: "", timeout: timeoutMs,
-            fetch: guardedFetch(safe, request.signal, timeoutMs) } });
+            fetch: guardedFetch(safe, request.signal, timeoutMs, !request.stream) } });
         const response = await client.models.generateContent({ model: safe.model,
           contents: request.prompt, config: { systemInstruction: request.system,
             ...(request.jsonMode ? { responseMimeType: "application/json" } : {}),
-            maxOutputTokens: request.maxOutputTokens, abortSignal: request.signal } });
+            ...(request.maxOutputTokens !== undefined ?
+              { maxOutputTokens: request.maxOutputTokens } : {}),
+            abortSignal: request.signal } });
         result = { text: response.text ?? "",
           usage: usage(response.usageMetadata?.promptTokenCount,
             response.usageMetadata?.candidatesTokenCount) };
@@ -435,20 +575,21 @@ export async function generateStructured(
       case "ollama": {
         const { Ollama } = await import("ollama");
         const client = new Ollama({ host: ollamaSdkBase(safe),
-          fetch: guardedFetch(safe, request.signal, timeoutMs),
+          fetch: guardedFetch(safe, request.signal, timeoutMs, !request.stream),
           headers: safe.apiKey ? { Authorization: `Bearer ${safe.apiKey}` } : undefined });
         const response = await client.chat({ model: safe.model, stream: false,
           ...(request.jsonMode ? { format: "json" } : {}),
           messages: [{ role: "system", content: request.system },
             { role: "user", content: request.prompt }],
-          options: { num_predict: request.maxOutputTokens } });
+          options: { ...(request.maxOutputTokens !== undefined ?
+            { num_predict: request.maxOutputTokens } : {}) } });
         result = { text: response.message?.content ?? "",
           usage: usage(response.prompt_eval_count, response.eval_count) };
         break;
       }
     }
     if (!result.text.trim()) throw new ModelConnectorError("empty-response", "模型没有返回文本");
-    return result;
+    return { ...result, timings: { firstBodyMs, connectorMs: performance.now() - connectorStarted } };
   } catch (error) {
     return safeError(error, request.signal);
   }

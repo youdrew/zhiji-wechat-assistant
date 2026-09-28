@@ -39,7 +39,8 @@ import { toInternal } from "./laya/questions";
 import { renderOptions } from "./laya/questions";
 import { CATALOG_VERSION, routeEmotion, routeIntent } from "./laya/catalog";
 import { GENERAL_LABEL_SCHEMA, generalIntentQuestion, generalIntentScores } from "./laya/general-intent";
-import { groundedIntent, type GroundedIntent } from "./laya/grounded-intent";
+import { generateFineMessageInsight } from "./local-message-insights";
+import { groundedIntentWithContext, type GroundedIntent } from "./laya/grounded-intent";
 import { classifyNextReply, REPLY_FORECAST_QUESTION, type ReplyForecastCandidate, type ForecastBudget } from "./laya/forecast";
 import { MBTI_QUESTION_VERSION, PERSONALITY_QUESTIONS, personalityEvidenceFromAnswers, type PersonalityEvidence } from "./laya/personality";
 import { STYLE_QUESTIONS, styleEvidenceFromAnswers } from "./laya/style";
@@ -70,8 +71,18 @@ export const MODEL_FILES = {
   tokenizerConfig: path.join("tokenizer", "tokenizer_config.json"),
 } as const;
 
-/** One local model instance, batch size 2. */
-const BATCH_SIZE = 2;
+/**
+ * One local model instance; questions per forward pass.
+ *
+ * Raised 2 -> 8 from the isolated release-model benchmark
+ * (`docs/plans/2026-09-28-laya-performance.md`): WebGPU reaches ~91 decisions/s at batch 8
+ * and ~99 at 16/32, while the 14-question portrait set peaks near batch 8 (~106/s) and
+ * regresses at 16. Batch 8 keeps the peak without the larger activation/VRAM footprint of
+ * 16/32, and CPU throughput is flat at ~11.6-11.9 either way. This only changes how many
+ * prepared questions are collated per `runner.run`; questions, ordering and cache keys are
+ * unchanged.
+ */
+const BATCH_SIZE = 8;
 export const MAX_PORTRAIT_CONTEXT_CODEPOINTS = 120;
 const MAX_PORTRAIT_CONTEXT_TOKENS = 40;
 /** Bounded analysis cache (per cached message / self-quality entry). */
@@ -547,42 +558,59 @@ async function predictChecked(
   return engine.predict(fittedState, questions);
 }
 
+/** Bounded preceding-message slice for fine candidate retrieval; never scans history. */
+const FINE_HINT_MESSAGES = 3;
+const FINE_HINT_CODEPOINTS = 240;
+function fineContextHint(messages: readonly Message[], index: number): string {
+  const parts: string[] = [];
+  for (let i = Math.max(0, index - FINE_HINT_MESSAGES); i < index; i++) {
+    const text = messages[i]?.text;
+    if (typeof text === "string" && text.trim()) parts.push(sanitizeContextText(text));
+  }
+  return Array.from(parts.join("\n")).slice(0, FINE_HINT_CODEPOINTS).join("");
+}
+
 async function classifyMessage(engine: AnalysisEngine, state: State, side: Message["side"], targetText: string,
-  _batchIndependentExpression = false, hasPortrait = false, messageLabelsOnly = false): Promise<CachedMessageAnalysis> {
+  _batchIndependentExpression = false, hasPortrait = false, messageLabelsOnly = false,
+  contextHint = ""): Promise<CachedMessageAnalysis> {
   const predictForState = (questions: Record<string, Question>) =>
     predictChecked(engine, state, questions, hasPortrait);
-  const intentQuestion = messageLabelsOnly ? generalIntentQuestion(targetText) : null;
-  const questions = side === "other"
-    ? { ...ANALYSIS_QUESTIONS, ...(intentQuestion ? { intent: intentQuestion.question } : {}),
-        ...(messageLabelsOnly ? {} : PERSONALITY_QUESTIONS), ...(messageLabelsOnly ? {} : STYLE_QUESTIONS) }
-    : { ...DISPLAY_QUESTIONS, ...(intentQuestion ? { intent: intentQuestion.question } : {}) };
-  const prediction = await predictForState(questions);
-  let emotion: LabelScore[];
-  let intent: LabelScore[];
-  let intentBroad: LabelScore[];
-  if (intentQuestion) {
-    emotion = toLabelScores(prediction.answers.emotion);
-    intent = generalIntentScores(prediction.answers.intent);
-    intentBroad = intent;
-  } else {
-    // Portrait state is already persisted under this analysis version. Preserve its 40-emotion /
-    // 547-intent dimensions so new portrait batches merge with old ones without mixing schemas.
-    const routed = await routeIntent(prediction.answers.intent, (detailQuestions) =>
-      predictForState(detailQuestions).then((detail) => detail.answers));
-    emotion = await routeEmotion(prediction.answers.emotion, (detailQuestions) =>
-      predictForState(detailQuestions).then((detail) => detail.answers));
-    intent = routed.scores;
-    intentBroad = toLabelScores(prediction.answers.intent);
+  if (messageLabelsOnly) {
+    // The fine label path is its own module. analysis.ts only adapts its result back to the
+    // existing CachedMessageAnalysis DTO; model/runtime/cache ownership stays here.
+    const fine = await generateFineMessageInsight(
+      (questions) => predictForState(questions).then((prediction) => prediction.answers),
+      side, targetText, contextHint);
+    return {
+      emotion: fine.emotion,
+      intent: fine.intent,
+      intentBroad: fine.intentBroad,
+      expression: [],
+      playfulIntent: [],
+      styleEvidence: null,
+      relationship: fine.relationship,
+      personalityEvidence: null,
+    };
   }
+  const questions = side === "other"
+    ? { ...ANALYSIS_QUESTIONS, ...PERSONALITY_QUESTIONS, ...STYLE_QUESTIONS }
+    : { ...DISPLAY_QUESTIONS };
+  const prediction = await predictForState(questions);
+  // Portrait state is already persisted under this analysis version. Preserve its 40-emotion /
+  // 547-intent dimensions so new portrait batches merge with old ones without mixing schemas.
+  const routed = await routeIntent(prediction.answers.intent, (detailQuestions) =>
+    predictForState(detailQuestions).then((detail) => detail.answers));
+  const emotion = await routeEmotion(prediction.answers.emotion, (detailQuestions) =>
+    predictForState(detailQuestions).then((detail) => detail.answers));
   return {
     emotion,
-    intent,
-    intentBroad,
+    intent: routed.scores,
+    intentBroad: toLabelScores(prediction.answers.intent),
     expression: [],
     playfulIntent: [],
-    styleEvidence: side === "other" && !messageLabelsOnly ? styleEvidenceFromAnswers(prediction.answers) : null,
+    styleEvidence: side === "other" ? styleEvidenceFromAnswers(prediction.answers) : null,
     relationship: side === "other" ? toLabelScores(prediction.answers.relationship) : [],
-    personalityEvidence: side === "other" && !messageLabelsOnly ? personalityEvidenceFromAnswers(prediction.answers) : null,
+    personalityEvidence: side === "other" ? personalityEvidenceFromAnswers(prediction.answers) : null,
   };
 }
 
@@ -948,8 +976,9 @@ export async function analyzeMessageTargets(
     let cached = messageCache.get(key);
     if (!cached) {
       const state = buildTargetState(messages, index, DEFAULT_CONTEXT_WINDOW, portraitContext);
+      const contextHint = messageLabelsOnly ? fineContextHint(messages, index) : "";
       cached = await classifyMessage(engine, state, message.side, message.text,
-        false, !!portraitContext, messageLabelsOnly);
+        false, !!portraitContext, messageLabelsOnly, contextHint);
       if (epoch === cacheEpoch) messageCache.set(key, cached);
     }
     entries.push({
@@ -958,7 +987,7 @@ export async function analyzeMessageTargets(
         emotion: cached.emotion,
         intent: cached.intent,
         intentBroad: cached.intentBroad,
-        ...(messageLabelsOnly ? { groundedIntent: groundedIntent(message.text) } : {}),
+        ...(messageLabelsOnly ? { groundedIntent: groundedIntentWithContext(message.text, fineContextHint(messages, index)) } : {}),
         expression: cached.expression,
         playfulIntent: cached.playfulIntent,
         styleEvidence: cached.styleEvidence,
@@ -980,6 +1009,41 @@ export async function analyzeMessageTargets(
       : request.previousSelfQuality ?? noSelfQuality();
 
   return buildOutcome(sessionId, startedAt, entries, selfQuality, previousAffinity);
+}
+
+/**
+ * Experiment-only multi-judgment entry: keep the current Laya engine/state builder,
+ * but let a local reference rule library provide the emotion/intent choice criteria.
+ * It does not write caches or relationship/portrait state.
+ */
+export type CustomLabelQuestions = Record<string, Question>;
+
+export interface CustomMessageLabelResult {
+  messageId: string;
+  answers: Record<string, LabelScore[]>;
+}
+
+export async function analyzeMessageTargetsWithQuestions(
+  request: TargetAnalysisRequest,
+  questions: CustomLabelQuestions,
+): Promise<{ analysisVersion: string; durationMs: number; messages: CustomMessageLabelResult[] }> {
+  const startedAt = Date.now();
+  const messages = validateRequest(request);
+  const targetSet = assertTargetIds(request);
+  const targetIndices = messages.flatMap((message, index) => targetSet.has(message.id) ? [index] : []);
+  if (targetIndices.length === 0) {
+    return { analysisVersion: ANALYSIS_VERSION, durationMs: Date.now() - startedAt, messages: [] };
+  }
+  const engine = await resolveEngine();
+  const results: CustomMessageLabelResult[] = [];
+  for (const index of targetIndices) {
+    const state = buildTargetState(messages, index, DEFAULT_CONTEXT_WINDOW);
+    const prediction = await predictChecked(engine, state, questions);
+    const answers: Record<string, LabelScore[]> = {};
+    for (const key of Object.keys(questions)) answers[key] = toLabelScores(prediction.answers[key]);
+    results.push({ messageId: messages[index]!.id, answers });
+  }
+  return { analysisVersion: ANALYSIS_VERSION, durationMs: Date.now() - startedAt, messages: results };
 }
 
 /** Coarse character guard; the real limit is the model token budget below. */

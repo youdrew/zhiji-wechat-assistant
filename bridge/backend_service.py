@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import inspect
 import itertools
 import json
 import math
@@ -18,24 +19,27 @@ from collections import OrderedDict, deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
+import message_input
+from api_tasks import ApiTaskCoordinator
 from backend_contracts import (
+    API_INSIGHT_RETRYABLE, API_INSIGHT_RETRY_MAX, API_INSIGHT_RETRY_SECONDS,
     API_JOB_CACHE_LIMIT, API_MODEL_RETRYABLE, API_MODEL_RETRY_MAX,
     API_MODEL_RETRY_SECONDS, API_PORTRAIT_COUNT_KEYS, API_PORTRAIT_INVENTORY_CACHE_BYTES,
     API_PORTRAIT_PIECE_CHARS, AccountChangedError, AccountUnavailableError,
-    FINE_LABEL_SCHEMA, FORECAST_CACHE_LIMIT, FORECAST_SOURCE_WINDOW,
-    ForecastRequestError, GROUNDED_INTENT_EVIDENCE, MAX_ISSUED_IMAGES,
+    FORECAST_CACHE_LIMIT, FORECAST_SOURCE_WINDOW,
+    ForecastRequestError, MAX_ISSUED_IMAGES,
     MODEL_CONNECTOR_ERRORS, ROOT, affinity_from_progress,
     api_insight_scope, api_portrait_add_counts, api_portrait_plan,
     api_portrait_resume_anchor, api_portrait_scope, api_portrait_tail_hashes,
     api_portrait_wire_chars, mbti_from_totals, model_source_failure,
-    mood_from_progress, scope_rank, valid_api_portrait,
-    validate_personality_evidence,
+    mood_from_progress, normalize_api_insight, scope_rank, valid_api_portrait,
 )
 from conversation_selection import ConversationSelectionStore, _session_id
 from history_browser import browse as browse_history, saved_results as saved_history_results, search as search_history
+from message_results import validate_fine_result, validate_portrait_result
 from model_source import LOCAL_SOURCE_ID, ModelSourceStore, ModelSourceUnavailable, connection_values
 from node_analysis import NodeAnalysis
-from profile_signals import keywords_from_counts, summary_from_aggregate, validate_style_evidence
+from profile_signals import keywords_from_counts, summary_from_aggregate
 from profile_state import empty_state as empty_profile_state, traits_from_state
 from result_store import project_result_store
 from wechat_source import WeChatSource
@@ -56,14 +60,16 @@ class Backend:
             legacy_path=ROOT / ".local" / "real-client-runtime" / "model-source.json")
         # API chat insights have their own source-scoped cache. The local Laya
         # portrait/affinity worker keeps its existing analysis version.
-        self.api_lock = threading.RLock()
-        self.api_condition = threading.Condition(self.api_lock)
-        self.api_inflight = 0
-        self.api_jobs = {}
-        self.api_portrait_jobs = {}
-        self.api_portrait_inventory_jobs = {}
-        # One short-lived, bounded in-memory handoff; never persists raw messages.
-        self.api_portrait_inventory_pieces = None
+        # One ApiTaskCoordinator owns the lock/condition, the three registries and
+        # the inflight count. The legacy attributes below proxy the same objects
+        # (never copies); model_source_revision stays a model-selection version and
+        # is never used as an API cancellation epoch.
+        self.api_tasks = ApiTaskCoordinator()
+        self.api_lock = self.api_tasks.lock
+        self.api_condition = self.api_tasks.condition
+        self.api_jobs = self.api_tasks.insight_jobs
+        self.api_portrait_jobs = self.api_tasks.portrait_jobs
+        self.api_portrait_inventory_jobs = self.api_tasks.inventory_jobs
         self.model_source_revision = 0
         self.active_model_source_mode = "local"
         self.active_model_source_id = LOCAL_SOURCE_ID
@@ -134,7 +140,7 @@ class Backend:
         # touching this account's SQLite file.
         with self.api_condition:
             self._cancel_api_source_work_locked()
-            if not self.api_condition.wait_for(lambda: self.api_inflight == 0, timeout=200):
+            if not self.api_tasks.wait_for_idle(200):
                 raise RuntimeError("API insight requests did not finish")
         self.tasks.put((99, next(self.task_serial), None))
         with self.request_condition:
@@ -175,7 +181,7 @@ class Backend:
         self.forecast_cache.clear()
         self.forecast_flights.clear()
         with self.api_lock:
-            self.api_jobs.clear()
+            self.api_tasks.clear_insight_jobs()
         self.focused_key = None
         self.tasks = queue.PriorityQueue()
         self.task_serial = itertools.count()
@@ -197,7 +203,7 @@ class Backend:
             self.account_clear_paused = False
         with self.api_condition:
             self._cancel_api_source_work_locked()
-            if not self.api_condition.wait_for(lambda: self.api_inflight == 0, timeout=200):
+            if not self.api_tasks.wait_for_idle(200):
                 raise RuntimeError("API insight requests did not finish")
         if first or paused:
             if account is not None:
@@ -449,11 +455,26 @@ class Backend:
             raise ModelSourceUnavailable("model connection failed")
         return {"ok": True, "latencyMs": latency}
 
+    @property
+    def api_inflight(self):
+        return self.api_tasks.inflight
+
+    @api_inflight.setter
+    def api_inflight(self, value):
+        self.api_tasks.inflight = value
+
+    @property
+    def api_portrait_inventory_pieces(self):
+        return self.api_tasks.inventory_pieces
+
+    @api_portrait_inventory_pieces.setter
+    def api_portrait_inventory_pieces(self, value):
+        self.api_tasks.inventory_pieces = value
+
     def _cancel_api_source_work_locked(self):
-        """Stop old-source model calls; saved portraits and cursors remain intact."""
-        self.api_jobs.clear()
-        self.api_portrait_jobs.clear()
-        self.api_condition.notify_all()
+        """Stop old-source model calls; saved portraits, cursors and the source-independent
+        inventory stay intact. Only insight/portrait jobs are cancelled."""
+        self.api_tasks.invalidate_models()
         seen = set()
         for analyzer in (self.api_analyzer, self.api_portrait_analyzer,
                          self.api_probe_analyzer):
@@ -518,9 +539,7 @@ class Backend:
             if changed_source:
                 self._cancel_api_source_work_locked()
             if previous_context != values["contextTokens"]:
-                for job_key, job in list(self.api_portrait_jobs.items()):
-                    if job_key[2] == source_id and job.get("status") == "error":
-                        del self.api_portrait_jobs[job_key]
+                self.api_tasks.drop_portrait_error(source_id)
             self.model_source_revision += 1
             return self.model_source()
 
@@ -539,7 +558,7 @@ class Backend:
             return self.model_source()
 
     def model_insights(self, user, ids=None):
-        if ids is not None and (not isinstance(ids, list) or len(ids) > 80 or
+        if ids is not None and (not isinstance(ids, list) or len(ids) > 500 or
                 any(not isinstance(item, str) or not 1 <= len(item) <= 200 or
                     any(ord(char) < 32 or ord(char) == 127 for char in item) for item in ids) or
                 len(set(ids)) != len(ids)):
@@ -553,13 +572,14 @@ class Backend:
         suspended = store.cache_suspended(account, source_id) if mode == "api" else False
         if mode == "api":
             results = store.api_insight_view(account, user, api_insight_scope(source_id),
-                                             ids=ids, limit=80)
+                                             ids=ids, limit=500)
             self._assert_scope((account, workdir))
         return {"account": account, "sourceId": source_id, "results": results, "job": job,
                 "suspended": suspended}
 
     def start_model_insights(self, requested_account, user, limit, target_ids=None, around=None):
-        if type(limit) is not int or not 1 <= limit <= 2:
+        started = time.perf_counter()
+        if type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid API insight limit")
         if target_ids is not None and (not isinstance(target_ids, list) or
                 not 1 <= len(target_ids) <= limit or
@@ -579,9 +599,9 @@ class Backend:
             source_id = self.active_model_source_id
             config = dict(self.active_api_config)
             api_key = self.model_source_store.resolve_key(config["protocol"], config["baseUrl"], None)
-        window = (browse_history(self.source, account, user, around=around, limit=80,
+        window = (browse_history(self.source, account, user, around=around, limit=500,
                                  max_issued_images=MAX_ISSUED_IMAGES)["messages"]
-                  if around is not None else self.source.messages(user, 80))
+                  if around is not None else self.source.messages(user, 500))
         self._assert_scope((account, workdir))
         with self.api_lock:
             if (self.closing or self.active_model_source_mode != "api" or
@@ -601,16 +621,44 @@ class Backend:
                 if any(item not in by_id for item in target_ids):
                     raise ValueError("API insight target is no longer recent")
                 selected = [by_id[item] for item in target_ids]
+            # Keep the local result store as the session history.  A new batch
+            # carries the current message window, but only ids without a saved
+            # result are sent to the provider.  This is the same separation as
+            # OpenCode's message history: the client owns history, while the
+            # provider decides how much of it fits its context window.
             known = store.api_insight_known(account, user, api_insight_scope(source_id),
                                             [item["id"] for item in selected])
-            pending = [item for item in selected if item["id"] not in known]
             job_key = (account, user, source_id)
             current = self.api_jobs.get(job_key)
             if current and current["status"] in ("queued", "running"):
                 return {"account": account, "sourceId": source_id, "job": dict(current)}
+            pending = [item for item in selected if item["id"] not in known]
+            wire = []
+            if pending:
+                pending_ids = {item["id"] for item in pending}
+                # Every submitted batch includes the current local message history;
+                # only targetIds are incremental. There is no previous_response_id
+                # or application-side context slicing.
+                batch_window = text_window
+                prepared = {item["id"]: message_input.prepare_item(
+                    item, account_id=account, conversation_id=user, source_kind="wechat")
+                    for item in pending}
+                wire = []
+                for item in batch_window:
+                    entry = {"id": item["id"],
+                             "sender": "SELF" if item["side"] == "self" else "OTHER",
+                             "text": item["text"]}
+                    if item["id"] in prepared:
+                        entry["inputMeta"] = prepared[item["id"]]["inputMeta"]
+                    wire.append(entry)
             job = {"id": uuid.uuid4().hex, "status": "queued",
                    "total": len(selected), "processed": len(selected) - len(pending),
-                   "startedAtMs": int(time.time() * 1000)}
+                   "startedAtMs": int(time.time() * 1000),
+                   # The partial response exists only in this in-memory job. It is
+                   # never written to SQLite or included in a persisted result.
+                   "targetIds": [item["id"] for item in pending],
+                   "partialText": "",
+                   "timings": {"firstBodyMs": None}}
             self.api_jobs[job_key] = job
             if len(self.api_jobs) > API_JOB_CACHE_LIMIT:
                 for old_key, old_job in list(self.api_jobs.items()):
@@ -618,32 +666,21 @@ class Backend:
                         break
                     if old_key != job_key and old_job["status"] not in ("queued", "running"):
                         del self.api_jobs[old_key]
+            job["timings"]["prepareMs"] = round((time.perf_counter() - started) * 1000, 3)
             if not pending:
                 job["status"] = "done"
+                job["timings"]["totalMs"] = round((time.perf_counter() - started) * 1000, 3)
                 return {"account": account, "sourceId": source_id, "job": dict(job)}
-            target_ids = {item["id"] for item in pending}
-            positions = {item["id"]: index for index, item in enumerate(text_window)}
-            included = set()
-            for item in pending:
-                index = positions[item["id"]]
-                included.update(range(max(0, index - 3), index + 1))
-            window_budget = 10000 // len(pending)
-            target_cap = min(1800, max(180, window_budget * 3 // 5))
-            context_cap = min(400, max(80, (window_budget - target_cap) // 3))
-            wire = [{"id": item["id"], "sender": "SELF" if item["side"] == "self" else "OTHER",
-                     "text": item["text"][:target_cap if item["id"] in target_ids else context_cap]}
-                    for index, item in enumerate(text_window) if index in included]
-            self.api_inflight += 1
+            self.api_tasks.begin()
             thread = threading.Thread(target=self._run_model_insights,
                                       args=(job_key, job, (account, workdir), store, config,
                                             api_key, wire, pending), daemon=True)
             try:
                 thread.start()
             except Exception:
-                self.api_inflight -= 1
+                self.api_tasks.finish()
                 job["status"] = "error"
                 job["error"] = "model-analysis-failed"
-                self.api_condition.notify_all()
                 raise
             return {"account": account, "sourceId": source_id, "job": dict(job)}
 
@@ -656,6 +693,10 @@ class Backend:
                     job["error"] = "model-source-changed"
                     return
                 job["status"] = "running"
+                queued_at_ms = job.get("startedAtMs")
+                if isinstance(queued_at_ms, (int, float)):
+                    job.setdefault("timings", {})["queueMs"] = max(
+                        0.0, round(time.time() * 1000 - queued_at_ms, 3))
             contexts = {}
             for message in pending:
                 subject = message.get("senderId") if job_key[1].endswith("@chatroom") else job_key[1]
@@ -674,29 +715,82 @@ class Backend:
                     raise RuntimeError("model-source-changed")
             self._assert_scope(scope)
             target_ids = [item["id"] for item in pending]
-            for attempt in range(API_MODEL_RETRY_MAX + 1):
+            for attempt in range(API_INSIGHT_RETRY_MAX + 1):
                 try:
-                    response = self.api_analyzer.model_insights(config["protocol"], config["baseUrl"],
-                                                            api_key, config["model"], wire, target_ids)
+                    with self.api_lock:
+                        if self.api_jobs.get(job_key) is job:
+                            # A retry is a fresh provider turn. Do not let a
+                            # failed turn's labels remain visible beside the
+                            # newest streamed text.
+                            job["partialText"] = ""
+                            job.setdefault("timings", {})["firstBodyMs"] = None
+                    provider_started = time.perf_counter()
+                    stream_parts = []
+
+                    def on_delta(delta):
+                        if not isinstance(delta, str) or not delta:
+                            return
+                        with self.api_lock:
+                            if (self.api_jobs.get(job_key) is not job or
+                                    job.get("status") not in ("queued", "running")):
+                                return
+                            stream_parts.append(delta)
+                            job["partialText"] = "".join(stream_parts)
+                            timings = job.setdefault("timings", {})
+                            if timings.get("firstBodyMs") is None:
+                                timings["firstBodyMs"] = round(
+                                    (time.perf_counter() - provider_started) * 1000, 3)
+
+                    # Test doubles and legacy analyzers may keep their six-argument
+                    # contract. Pass the optional callback whenever the adapter
+                    # explicitly exposes it, including streaming test doubles.
+                    model_insights = self.api_analyzer.model_insights
+                    try:
+                        supports_delta = ("on_delta" in
+                                          inspect.signature(model_insights).parameters)
+                    except (TypeError, ValueError):
+                        supports_delta = isinstance(self.api_analyzer, NodeAnalysis)
+                    if supports_delta:
+                        response = model_insights(
+                            config["protocol"], config["baseUrl"], api_key, config["model"],
+                            wire, target_ids, on_delta=on_delta)
+                    else:
+                        response = model_insights(
+                            config["protocol"], config["baseUrl"], api_key, config["model"],
+                            wire, target_ids)
+                    job.setdefault("timings", {})["providerMs"] = round(
+                        (time.perf_counter() - provider_started) * 1000, 3)
+                    response_timings = response.get("timings") if isinstance(response, dict) else None
+                    if isinstance(response_timings, dict):
+                        for key in ("firstBodyMs", "connectorMs", "parseMs"):
+                            value = response_timings.get(key)
+                            if isinstance(value, (int, float)) and math.isfinite(value):
+                                job["timings"][key] = round(float(value), 3)
                     insights = response["insights"]
                     if (len(insights) != len(pending) or
                             {item.get("id") for item in insights if isinstance(item, dict)} != set(target_ids)):
                         raise RuntimeError("invalid-insights")
-                    by_id = {item["id"]: item for item in insights}
-                    for message in pending:
-                        item = by_id[message["id"]]
-                        if item.get("status") not in ("ok", "insufficient"):
+                    # Validate the new affect/intents shape (with legacy scalar ok
+                    # compat) and store only the normalized result.
+                    validate_started = time.perf_counter()
+                    by_id = {}
+                    for item in insights:
+                        try:
+                            normalized = normalize_api_insight(item)
+                        except ValueError:
                             raise RuntimeError("invalid-insights")
-                        if item["status"] == "ok" and (not isinstance(item.get("emotion"), str) or
-                                not isinstance(item.get("intent"), str)):
-                            raise RuntimeError("invalid-insights")
+                        by_id[normalized["id"]] = normalized
+                    job["timings"]["validateMs"] = round(
+                        (time.perf_counter() - validate_started) * 1000, 3)
                 except Exception as exc:
                     code = str(exc)
-                    if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
+                    if attempt >= API_INSIGHT_RETRY_MAX or code not in API_INSIGHT_RETRYABLE:
                         raise
                     self._assert_scope(scope)
                     self._wait_api_model_retry(self.api_jobs, job_key, job, store,
-                                               code, attempt + 1)
+                                               code, attempt + 1,
+                                               retry_seconds=API_INSIGHT_RETRY_SECONDS,
+                                               retry_max=API_INSIGHT_RETRY_MAX)
                     continue
                 break
             with self.api_lock:
@@ -708,9 +802,17 @@ class Backend:
                 source_lock = getattr(self.source, "lock", None)
                 with source_lock if source_lock is not None else nullcontext():
                     self._assert_scope(scope)
+                    save_started = time.perf_counter()
                     store.save_api_insights(job_key[0], job_key[1], api_insight_scope(job_key[2]),
                                             [(message, by_id[message["id"]]) for message in pending])
+                    job.setdefault("timings", {})["saveMs"] = round(
+                        (time.perf_counter() - save_started) * 1000, 3)
                 job["processed"] = job["total"]
+                # prepareMs covers method entry -> job creation; add the wall clock since
+                # creation so the total still starts before the job existed.
+                job["timings"]["totalMs"] = max(0.0, round(
+                    job["timings"].get("prepareMs", 0.0) +
+                    time.time() * 1000 - job["startedAtMs"], 3))
                 job["status"] = "done"
         except Exception as exc:
             code = str(exc)
@@ -720,9 +822,7 @@ class Backend:
                     "invalid-insights", "model-source-changed"} else "model-analysis-failed"
                 job["status"] = "error"
         finally:
-            with self.api_condition:
-                self.api_inflight -= 1
-                self.api_condition.notify_all()
+            self.api_tasks.finish()
 
     def _api_portrait_history(self, user, subject, highwater, scope, after=None,
                               piece_limit_bytes=None, cancel_check=None, start_after=None,
@@ -837,16 +937,11 @@ class Backend:
                         self.api_portrait_inventory_pieces = (key, pieces, available,
                                                               fingerprint, time.monotonic() + 60,
                                                               _rows)
-                self.api_portrait_inventory_jobs.pop(key, None)
-                self.api_condition.notify_all()
+                self.api_tasks.finish_inventory(key)
         except Exception:
-            with self.api_condition:
-                self.api_portrait_inventory_jobs[key] = ("error", time.monotonic() + 10)
-                self.api_condition.notify_all()
+            self.api_tasks.error_inventory(key, time.monotonic() + 10)
         finally:
-            with self.api_condition:
-                self.api_inflight -= 1
-                self.api_condition.notify_all()
+            self.api_tasks.finish()
 
     def model_portrait(self, user, member=None):
         account, workdir, store = self._scoped_identity()
@@ -926,30 +1021,24 @@ class Backend:
             if inventory is None:
                 available = None
                 key = (account, workdir, user, subject, highwater)
+                # Reservation and inflight accounting are one critical section,
+                # including thread-start rollback. Per-method locking alone races.
                 with self.api_condition:
-                    inventory_status = self.api_portrait_inventory_jobs.get(key)
-                    if isinstance(inventory_status, tuple):
-                        if inventory_status[1] <= time.monotonic():
-                            self.api_portrait_inventory_jobs.pop(key, None)
-                            inventory_status = None
-                        else:
-                            inventory_status = inventory_status[0]
+                    inventory_status = self.api_tasks.inventory_status(key, time.monotonic())
                     if inventory_status is None:
                         inventory_status = "running"
                         # Rapid session switching must not start unlimited history readers.
-                        if not any(state == "running" for state in
-                                   self.api_portrait_inventory_jobs.values()):
-                            self.api_portrait_inventory_jobs[key] = inventory_status
-                            self.api_inflight += 1
+                        if not self.api_tasks.has_running_inventory():
+                            self.api_tasks.register_inventory(key)
+                            self.api_tasks.begin()
                             thread = threading.Thread(target=self._run_api_portrait_inventory,
                                                       args=(key, (account, workdir), store), daemon=True)
                             try:
                                 thread.start()
                             except Exception:
-                                self.api_inflight -= 1
-                                self.api_portrait_inventory_jobs[key] = ("error", time.monotonic() + 10)
+                                self.api_tasks.finish()
+                                self.api_tasks.error_inventory(key, time.monotonic() + 10)
                                 inventory_status = "error"
-                                self.api_condition.notify_all()
             else:
                 available = inventory["available"]
                 inventory_status = "ready"
@@ -1071,15 +1160,8 @@ class Backend:
                 # makes its writers refuse to save, so unrelated inflight inventory or
                 # other sources must not be waited on here.
                 with self.api_condition:
-                    snapshot = self.api_portrait_inventory_pieces
-                    if snapshot is not None and snapshot[0][0] == account:
-                        self.api_portrait_inventory_pieces = None
-                    for key in list(self.api_jobs):
-                        if key[0] == account and key[2] == source_id:
-                            del self.api_jobs[key]
-                    for key in list(self.api_portrait_jobs):
-                        if key[0] == account and key[2] == source_id:
-                            del self.api_portrait_jobs[key]
+                    snapshot = self.api_tasks.drop_inventory_pieces_for(account)
+                    self.api_tasks.invalidate_source(account, source_id)
             self._assert_scope((account, workdir))
             store.clear_analysis_cache(account, source_id)
             if source_id == LOCAL_SOURCE_ID and hasattr(self.source, "profile_metadata_cache"):
@@ -1150,16 +1232,15 @@ class Backend:
                        "startedAtMs": int(time.time() * 1000),
                        "_axesRefresh": True, "_contextTokens": config.get("contextTokens")}
                 self.api_portrait_jobs[job_key] = job
-                self.api_inflight += 1
+                self.api_tasks.begin()
                 thread = threading.Thread(target=self._run_model_portrait_axes,
                                           args=(job_key, job, (account, workdir), store, config,
                                                 api_key, saved), daemon=True)
                 try:
                     thread.start()
                 except Exception:
-                    self.api_inflight -= 1
+                    self.api_tasks.finish()
                     job.update(status="error", error="portrait-analysis-failed")
-                    self.api_condition.notify_all()
                     raise
                 return {"account": account, "sourceId": source_id,
                         "job": {key: value for key, value in job.items() if not key.startswith("_")}}
@@ -1171,16 +1252,15 @@ class Backend:
                    "startedAtMs": int(time.time() * 1000),
                    "_contextTokens": config.get("contextTokens")}
             self.api_portrait_jobs[job_key] = job
-            self.api_inflight += 1
+            self.api_tasks.begin()
             thread = threading.Thread(target=self._run_model_portrait,
                                       args=(job_key, job, (account, workdir), store, config, api_key),
                                       daemon=True)
             try:
                 thread.start()
             except Exception:
-                self.api_inflight -= 1
+                self.api_tasks.finish()
                 job.update(status="error", error="portrait-analysis-failed")
-                self.api_condition.notify_all()
                 raise
             return {"account": account, "sourceId": source_id,
                     "job": {key: value for key, value in job.items() if not key.startswith("_")}}
@@ -1373,25 +1453,25 @@ class Backend:
                 job["status"] = "running"
         return saved, pieces, piece_offset, tails
 
-    def _wait_api_model_retry(self, jobs, job_key, job, store, code, attempt):
-        """Expose one retryable error and wait without holding the API lock."""
-        with self.api_condition:
-            deadline = time.monotonic() + API_MODEL_RETRY_SECONDS
-            job["retry"] = {"reason": code, "attempt": attempt,
-                            "max": API_MODEL_RETRY_MAX,
-                            "nextAtMs": int((time.time() + API_MODEL_RETRY_SECONDS) * 1000)}
-            self.api_condition.notify_all()
-            while True:
-                if (self.closing or self.active_model_source_mode != "api" or
-                        self.active_model_source_id != job_key[2] or
-                        jobs.get(job_key) is not job or
-                        store.cache_suspended(job_key[0], job_key[2])):
-                    raise RuntimeError("model-source-changed")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    job.pop("retry", None)
-                    return
-                self.api_condition.wait(timeout=min(1, remaining))
+    def _wait_api_model_retry(self, jobs, job_key, job, store, code, attempt,
+                              retry_seconds=None, retry_max=None):
+        """Expose one retryable error and wait without holding the API lock.
+
+        The per-call ``check`` preserves the source/closing/registry-identity/suspension
+        checks; the retry window and cap are read per call so tests can patch them.
+        """
+        retry_seconds = API_MODEL_RETRY_SECONDS if retry_seconds is None else retry_seconds
+        retry_max = API_MODEL_RETRY_MAX if retry_max is None else retry_max
+
+        def check():
+            if (self.closing or self.active_model_source_mode != "api" or
+                    self.active_model_source_id != job_key[2] or
+                    jobs.get(job_key) is not job or
+                    store.cache_suspended(job_key[0], job_key[2])):
+                raise RuntimeError("model-source-changed")
+
+        self.api_tasks.wait_api_model_retry(jobs, job_key, job, code, attempt,
+                                            retry_seconds, retry_max, check)
 
     def _run_model_portrait(self, job_key, job, scope, store, config, api_key):
         """Keep the verified source reader pinned through generation and commit."""
@@ -1406,11 +1486,9 @@ class Backend:
                 job.pop("phase", None)
                 job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
                            code in {"invalid-portrait", "model-source-changed"} else
-                           "portrait-analysis-failed")
+                            "portrait-analysis-failed")
         finally:
-            with self.api_condition:
-                self.api_inflight -= 1
-                self.api_condition.notify_all()
+            self.api_tasks.finish()
 
     def _run_model_portrait_scoped(self, job_key, job, scope, store, config, api_key):
         account, user, source_id, subject = job_key
@@ -1510,11 +1588,9 @@ class Backend:
                 job.pop("retry", None)
                 job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
                            code in {"invalid-portrait", "model-source-changed"} else
-                           "portrait-analysis-failed")
+                            "portrait-analysis-failed")
         finally:
-            with self.api_condition:
-                self.api_inflight -= 1
-                self.api_condition.notify_all()
+            self.api_tasks.finish()
 
     def _run_model_portrait_axes_scoped(self, job_key, job, scope, store, config, api_key, saved):
         account, user, source_id, subject = job_key
@@ -1783,11 +1859,15 @@ class Backend:
     def _analyze_item(self, account, user, version, store, context, item, scope=None, defer=False,
                       fine=False, portrait_context=None):
         started = time.perf_counter()
+        # Attach the local unified-input metadata at the one point where the trusted
+        # account/conversation scope is known. Legacy fields stay untouched.
+        wire_context = message_input.prepare_messages(context, account_id=account,
+                                                      conversation_id=user, source_kind="wechat")
         try:
             session = account + ":" + str(store.path) + ":" + user
-            response = (self.analyzer.analyze(session, context, item["id"],
+            response = (self.analyzer.analyze(session, wire_context, item["id"],
                                               portraitContext=portrait_context, messageLabelsOnly=True)
-                        if fine else self.analyzer.analyze(session, context, item["id"]))
+                        if fine else self.analyzer.analyze(session, wire_context, item["id"]))
         except RuntimeError as exc:
             if str(exc) != "ObservedTextTooLongError":
                 raise
@@ -1799,77 +1879,8 @@ class Backend:
                                                        "ObservedTextTooLongError")
             return
         inferred = time.perf_counter()
-        if response.get("analysisVersion") != version:
-            raise RuntimeError("analysis response version mismatch")
-        label_schema = response.get("labelSchema")
-        if fine and label_schema != FINE_LABEL_SCHEMA:
-            raise RuntimeError("fine label schema mismatch")
-        if label_schema is not None and not isinstance(label_schema, str):
-            raise RuntimeError("invalid label schema")
-        if fine:
-            if "groundedIntent" not in response:
-                raise RuntimeError("missing grounded intent")
-            grounded_intent = response["groundedIntent"]
-            if grounded_intent is not None and (
-                not isinstance(grounded_intent, dict) or
-                set(grounded_intent) != {"label", "evidenceKind"} or
-                not isinstance(grounded_intent.get("label"), str) or
-                not isinstance(grounded_intent.get("evidenceKind"), str) or
-                grounded_intent["evidenceKind"] not in
-                GROUNDED_INTENT_EVIDENCE.get(grounded_intent["label"], set())
-            ):
-                raise RuntimeError("invalid grounded intent")
-        elif "groundedIntent" in response:
-            raise RuntimeError("grounded intent in portrait result")
-        for field in ("emotion", "intent"):
-            distribution = response.get(field)
-            if not isinstance(distribution, list) or not distribution or any(
-                not isinstance(entry, dict) or not isinstance(entry.get("label"), str) or
-                not isinstance(entry.get("probability"), (int, float)) or
-                not math.isfinite(entry["probability"]) or not 0 <= entry["probability"] <= 1
-                for entry in distribution
-            ):
-                raise RuntimeError("invalid model " + field)
-        broad = response.get("intentBroad") or []
-        if not isinstance(broad, list) or any(
-            not isinstance(entry, dict) or not isinstance(entry.get("label"), str) or
-            not isinstance(entry.get("probability"), (int, float)) or
-            not math.isfinite(entry["probability"]) or not 0 <= entry["probability"] <= 1
-            for entry in broad
-        ):
-            raise RuntimeError("invalid broad intent")
-        expression = response.get("expression", [])
-        if not isinstance(expression, list) or any(
-            not isinstance(entry, dict) or not isinstance(entry.get("label"), str) or
-            not isinstance(entry.get("probability"), (int, float)) or
-            not math.isfinite(entry["probability"]) or not 0 <= entry["probability"] <= 1
-            for entry in expression
-        ):
-            raise RuntimeError("invalid expression distribution")
-        playful_intent = response.get("playfulIntent", [])
-        if not isinstance(playful_intent, list) or any(
-            not isinstance(entry, dict) or not isinstance(entry.get("label"), str) or
-            not entry["label"].startswith("playful:") or
-            not isinstance(entry.get("probability"), (int, float)) or isinstance(entry["probability"], bool) or
-            not math.isfinite(entry["probability"]) or not 0 <= entry["probability"] <= 1
-            for entry in playful_intent
-        ):
-            raise RuntimeError("invalid playful intent distribution")
-        result = {field: response[field] for field in
-                  ("emotion", "intent", "emotionLabel", "intentLabel", "emotionP", "intentP", "analysisVersion")}
-        result["intentBroad"] = broad
-        if label_schema is not None:
-            result["labelSchema"] = label_schema
-        if fine:
-            result["groundedIntent"] = grounded_intent
-        result["expression"] = expression
-        result["playfulIntent"] = playful_intent
-        result["styleEvidence"] = validate_style_evidence(response.get("styleEvidence"))
-        result["personalityEvidence"] = validate_personality_evidence(response.get("personalityEvidence"))
-        score = response.get("score")
-        if item["side"] == "other" and (not isinstance(score, (float, int)) or not -1 <= score <= 1):
-            raise RuntimeError("missing relationship score")
-        result.update({"state": "done", "score": score if item["side"] == "other" else None})
+        result = (validate_fine_result if fine else validate_portrait_result)(
+            response, version, item["side"])
         if defer:
             # The incremental caller must scope-verify the whole pending batch before saving.
             return {"result": result, "started": started, "inferred": inferred,
@@ -1939,6 +1950,17 @@ class Backend:
             parts.append(f"情绪{str(mood['label'])[:4]}")
         return "；".join(parts)[:60]
 
+    def _analyze_fine_item(self, account, user, version, store, context, item, scope=None,
+                           portrait_context=None):
+        """Explicit local fine entry point; delegates to the shared analyze/save protocol.
+
+        The fine path never takes the defer branch, so this only names the intent. The
+        parameters, model call, validation, skip, persistence and metrics stay in
+        ``_analyze_item``; this is not a task-lifecycle redesign.
+        """
+        return self._analyze_item(account, user, version, store, context, item, scope,
+                                  fine=True, portrait_context=portrait_context)
+
     def _run_fine_recent(self, account, user, version, store, job, scope, limit):
         self._assert_scope(scope)
         window = self.source.messages(user, limit + 3)
@@ -1957,9 +1979,9 @@ class Backend:
             subject = item.get("senderId") if user.endswith("@chatroom") else user
             if subject not in contexts:
                 contexts[subject] = self._fine_portrait_context(account, user, version, store, item)
-            self._analyze_item(account, user, version, store,
-                               window[max(0, index - 3):index + 1], item, scope,
-                               fine=True, portrait_context=contexts[subject])
+            self._analyze_fine_item(account, user, version, store,
+                                    window[max(0, index - 3):index + 1], item, scope,
+                                    portrait_context=contexts[subject])
             known.add(item["id"])
             job["processed"] += 1
             since_yield += 1

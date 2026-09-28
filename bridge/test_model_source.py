@@ -18,6 +18,7 @@ from local_model_source import ModelSource
 from model_bundle import ModelBundleError
 from model_source import LOCAL_SOURCE_ID, ModelSourceStore, ModelSourceUnavailable, connection_values
 from real_backend import Backend
+from api_tasks import ApiTaskCoordinator
 from real_http import make_handler
 
 
@@ -63,10 +64,11 @@ class ModelSourceTests(unittest.TestCase):
         self.backend.api_analyzer = self.backend.analyzer
         self.backend.api_portrait_analyzer = self.backend.analyzer
         self.backend.api_probe_analyzer = self.backend.analyzer
-        self.backend.api_portrait_jobs = {}
-        self.backend.api_lock = threading.RLock()
-        self.backend.api_condition = threading.Condition(self.backend.api_lock)
-        self.backend.api_jobs = {}
+        self.backend.api_tasks = ApiTaskCoordinator()
+        self.backend.api_portrait_jobs = self.backend.api_tasks.portrait_jobs
+        self.backend.api_lock = self.backend.api_tasks.lock
+        self.backend.api_condition = self.backend.api_tasks.condition
+        self.backend.api_jobs = self.backend.api_tasks.insight_jobs
         self.backend.model_source_revision = 0
         self.backend.closing = False
         self.backend.model_source_store = self.store

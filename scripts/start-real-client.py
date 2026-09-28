@@ -232,6 +232,7 @@ def write_control_record(config, process, log_path, stamp, control_token):
         raise LauncherError(f"Bridge PID {process.pid} started but PID record failed: {error}; log: {log_path}") from error
     finally:
         pending_path.unlink(missing_ok=True)
+    return metadata
 
 
 def stop_new_child_after_record_failure(process):
@@ -307,6 +308,15 @@ def ensure_service(config, starter=start_service, *, recovery=False):
         previous = previous_live_bridge(config)
         if previous:
             raise LauncherError(f"Earlier bridge PID {previous['pid']} is still running without health; no duplicate started; log: {previous['log']}")
+        stale_records = [(path, record) for path, record in
+                         owned_bridge_records(config, include_dead=True)
+                         if record.get("_live") is False]
+        if stale_records:
+            cleanup_errors = []
+            for _, record in stale_records:
+                cleanup_errors.extend(abort_owned_launch(config, record))
+            if cleanup_errors:
+                raise LauncherError("Earlier bridge cleanup failed: " + "; ".join(cleanup_errors))
         bridge = config.root / "bridge" / "chat_server.py"
         if not bridge.is_file():
             raise LauncherError(f"Bridge script not found: {bridge}")
@@ -322,31 +332,43 @@ def ensure_service(config, starter=start_service, *, recovery=False):
         except OSError as error:
             raise LauncherError(f"Could not launch bridge: {error}; log: {log_path}") from error
         try:
-            write_control_record(config, process, log_path, stamp, control_token)
+            record = write_control_record(config, process, log_path, stamp, control_token)
         except Exception as error:
             try:
                 stop_new_child_after_record_failure(process)
             except LauncherError as cleanup_error:
                 raise LauncherError(f"Bridge record failed ({error}); {cleanup_error}") from error
             raise
+
+        def abort(message):
+            # The PID record exists, so this launch owns exactly one bridge. Clean only that
+            # verified process and its workers; a cleanup failure is reported, never hidden.
+            cleanup_errors = abort_owned_launch(config, record)
+            if cleanup_errors:
+                raise LauncherError(f"{message}; cleanup failed: {'; '.join(cleanup_errors)}")
+            raise LauncherError(message)
+
         deadline = time.monotonic() + config.timeout
         while time.monotonic() < deadline:
             state = health(config)
             if state == "ready":
                 if recovery and config.no_auto_recovery_marker.exists():
-                    raise LauncherError("Automatic recovery is disabled after clearing the current account")
+                    abort("Automatic recovery is disabled after clearing the current account")
                 if not recovery:
-                    clear_no_auto_recovery(config)
+                    try:
+                        clear_no_auto_recovery(config)
+                    except LauncherError as error:
+                        abort(str(error))
                 return True, log_path
             if state != "unavailable":
-                raise LauncherError(f"Port {config.port} now has a different service ({state}); log: {log_path}")
+                abort(f"Port {config.port} now has a different service ({state}); log: {log_path}")
             if process.poll() is not None:
-                raise LauncherError(f"Bridge exited with code {process.returncode}; log: {log_path}")
+                abort(f"Bridge exited with code {process.returncode}; log: {log_path}")
             time.sleep(min(0.2, max(0, deadline - time.monotonic())))
-        raise LauncherError(f"Bridge did not report {VERSION} within {config.timeout:g}s; log: {log_path}")
+        abort(f"Bridge did not report {VERSION} within {config.timeout:g}s; log: {log_path}")
 
 
-def owned_bridge_records(config):
+def owned_bridge_records(config, *, include_dead=False):
     runtime_dir = checked_runtime_dir(config)
     if not runtime_dir.is_dir():
         return []
@@ -363,6 +385,15 @@ def owned_bridge_records(config):
                 raise LauncherError(f"Invalid bridge record: {path}")
             alive, created = process_identity(pid)
             if not alive:
+                if include_dead:
+                    if type(record.get("created_filetime")) is not int:
+                        raise LauncherError(f"Cannot verify bridge PID {pid} creation time")
+                    if record.get("instance_id") != config.instance_id:
+                        raise LauncherError(f"Dead bridge PID {pid} has another installation identity")
+                    token = record.get("control_token")
+                    if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{64}", token) is None:
+                        raise LauncherError(f"Dead bridge PID {pid} has no valid control token")
+                    records.append((path, {**record, "_live": False}))
                 continue
             if type(created) is not int or type(record.get("created_filetime")) is not int:
                 raise LauncherError(f"Cannot verify bridge PID {pid} creation time")
@@ -373,7 +404,7 @@ def owned_bridge_records(config):
             token = record.get("control_token")
             if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{64}", token) is None:
                 raise LauncherError(f"Live bridge PID {pid} has no valid control token")
-            records.append((path, record))
+            records.append((path, {**record, "_live": True} if include_dead else record))
         except (OSError, ValueError, UnicodeError) as error:
             raise LauncherError(f"Cannot inspect bridge record {path}: {error}") from error
     return records
@@ -507,23 +538,129 @@ def finish_owned_shutdown(config, record, children, timeout=STOP_CLEANUP_TIMEOUT
         raise LauncherError(f"Owned bridge PID {record['pid']} did not exit after bounded cleanup")
 
 
+def orphan_analysis_children(config, record):
+    """Verified analysis workers for this launch when the bridge already exited.
+
+    A dead parent cannot enumerate children, so this matches only ``node.exe`` running
+    ``--import tsx <this root>/bridge/analysis_server.ts`` and created after this launch's
+    recorded start. It never matches a process name/port alone or another installation.
+    """
+    import psutil
+    expected_script = (config.root / "bridge" / "analysis_server.ts").resolve()
+    try:
+        started_after = datetime.strptime(record["started_at"], "%Y%m%dT%H%M%S%fZ").replace(
+            tzinfo=timezone.utc).timestamp()
+    except (KeyError, ValueError, TypeError):
+        return []
+    found = []
+    for process in psutil.process_iter(["pid", "name", "create_time"]):
+        try:
+            info = process.info or {}
+            name = str(info.get("name") or "").casefold()
+            created = info.get("create_time")
+            if name != "node.exe" or not isinstance(created, (int, float)):
+                continue
+            if created < started_after - 2:
+                continue
+            command = process.cmdline()
+            image = Path(process.exe()).resolve(strict=True)
+            if (image.name.casefold() == "node.exe" and len(command) >= 4 and
+                    command[1:3] == ["--import", "tsx"] and
+                    Path(command[3]).resolve() == expected_script):
+                found.append(process)
+        except psutil.AccessDenied as error:
+            # A recent node process is a possible worker for this launch, but its
+            # command line cannot be verified.  Refuse to delete the record and
+            # surface the ambiguity instead of claiming cleanup succeeded.
+            info = getattr(process, "info", {}) or {}
+            if (str(info.get("name") or "").casefold() == "node.exe" and
+                    isinstance(info.get("create_time"), (int, float)) and
+                    info["create_time"] >= started_after - 2):
+                raise LauncherError(f"Cannot verify possible analysis worker PID {info.get('pid')}") from error
+        except (psutil.NoSuchProcess, OSError, ValueError):
+            continue
+    return found
+
+
+def abort_owned_launch(config, record, timeout=STOP_CLEANUP_TIMEOUT):
+    """Bounded cleanup of the exact bridge this launch just created and recorded.
+
+    Never taskkills and never matches by process name or port: it re-reads the recorded
+    PID creation time, verifies the bridge image/argv/identity/token and stops only that
+    process plus its verified ``analysis_server`` children. The record is removed only
+    after the process is confirmed gone; any failure is returned as an explicit error so
+    the caller can report it instead of claiming a clean stop.
+    """
+    try:
+        import psutil  # noqa: F401  (finish_owned_shutdown requires a real process check)
+    except ImportError as error:
+        return [f"Cannot verify owned bridge cleanup: {error}"]
+    errors = []
+    children = []
+    try:
+        if bridge_exited(record):
+            # The parent is gone, so reclaim this launch's verified orphan workers by
+            # exact script path + launch window instead of a process-name sweep.
+            children = orphan_analysis_children(config, record)
+    except Exception as error:  # noqa: BLE001 - report the failure, never swallow it
+        errors.append(str(error))
+    try:
+        finish_owned_shutdown(config, record, children, timeout=timeout)
+    except Exception as error:  # noqa: BLE001 - report the verified failure, never swallow it
+        errors.append(str(error))
+    # The bridge can exit between the first ownership check and
+    # ``finish_owned_shutdown``.  In that race the normal shutdown helper sees a
+    # dead parent and returns before it can enumerate children, leaving a worker
+    # that was created by this launch behind.  Re-scan once after the parent is
+    # gone; the same script-path and launch-window checks keep this bounded to
+    # this installation and this launch.
+    try:
+        if bridge_exited(record):
+            late_children = orphan_analysis_children(config, record)
+            if late_children:
+                finish_owned_shutdown(config, record, late_children, timeout=timeout)
+    except Exception as error:  # noqa: BLE001 - report the failure, never swallow it
+        errors.append(str(error))
+    if not errors and not bridge_exited(record):
+        errors.append("Owned bridge did not exit")
+    if not errors:
+        try:
+            (config.runtime_dir / f"bridge-{record['pid']}.json").unlink(missing_ok=True)
+        except OSError as error:
+            errors.append(f"Cannot remove failed-launch bridge record: {error}")
+    return errors
+
+
 def stop_owned_bridge(config, timeout=STOP_TIMEOUT):
     with launch_mutex(config):
         state = health(config)
         if state not in ("ready", "unavailable"):
             raise LauncherError(f"Port {config.port} has a wrong service ({state}); nothing was stopped")
-        records = owned_bridge_records(config)
-        if state == "unavailable" and not records:
+        records = owned_bridge_records(config, include_dead=True)
+        live_records = []
+        dead_records = []
+        for path, record in records:
+            (live_records if record.get("_live", True) else dead_records).append((path, record))
+        if state == "unavailable" and not live_records:
             if port_occupied(config.port):
                 raise LauncherError("Port is occupied without matching health; nothing was stopped")
-            return {"stopped": False, "alreadyStopped": True}
-        if len(records) != 1:
-            raise LauncherError(f"Expected one owned bridge record; found {len(records)}; nothing was stopped")
-        _, record = records[0]
+            cleanup_errors = []
+            for _, record in dead_records:
+                cleanup_errors.extend(abort_owned_launch(config, record))
+            if cleanup_errors:
+                raise LauncherError("Owned bridge cleanup failed: " + "; ".join(cleanup_errors))
+            return ({"stopped": True, "alreadyStopped": True} if dead_records else
+                    {"stopped": False, "alreadyStopped": True})
+        if len(live_records) != 1:
+            raise LauncherError(f"Expected one owned bridge record; found {len(live_records)}; nothing was stopped")
+        _, record = live_records[0]
         try:
             process = verify_owned_process(config, record)
         except LauncherError:
             if bridge_exited(record):
+                cleanup_errors = abort_owned_launch(config, record, timeout=timeout)
+                if cleanup_errors:
+                    raise LauncherError("Owned bridge cleanup failed: " + "; ".join(cleanup_errors))
                 return {"stopped": True, "pid": record["pid"]}
             raise
         children = owned_model_children(config, process)

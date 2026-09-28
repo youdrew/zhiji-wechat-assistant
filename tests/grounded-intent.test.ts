@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 
-import { groundedIntent, type GroundedIntentLabel, type IntentEvidenceKind } from "../electron/laya/grounded-intent";
+import { groundedIntent, groundedIntentWithContext, type GroundedIntentLabel, type IntentEvidenceKind } from "../electron/laya/grounded-intent";
 
 const positive: Array<[string, GroundedIntentLabel, IntentEvidenceKind]> = [
   ["早上好！", "greet", "greeting_phrase"],
@@ -136,3 +136,12 @@ for (const message of abstain) {
     assert.equal(groundedIntent(message), null);
   });
 }
+
+it("uses invitation context to ground a deferral without changing target-only rules", () => {
+  assert.deepEqual(groundedIntentWithContext("改天吧", "周六一起去看展吗？"),
+    { label: "reject", evidenceKind: "contextual_deferral" });
+  assert.equal(groundedIntentWithContext("改天吧", "今天忙吗？"), null);
+  assert.deepEqual(groundedIntentWithContext("木有", "你是不是生气了？"),
+    { label: "deny", evidenceKind: "contextual_denial" });
+  assert.equal(groundedIntentWithContext("木有", "今天吃什么？"), null);
+});

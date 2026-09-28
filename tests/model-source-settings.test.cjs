@@ -3,6 +3,7 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { it } = require("node:test");
 const vm = require("node:vm");
+const { seed } = require("./helpers/view-state-harness.cjs");
 
 const root = path.join(__dirname, "..");
 const script = readFileSync(path.join(root, "chatui/app.js"), "utf8");
@@ -17,8 +18,8 @@ const settingsCode = section("async function api(", "function status(") +
   section("const MODEL_SOURCE_PROTOCOLS", "let managedAccounts = [];") +
   "globalThis.ui = { showModelSource, loadModelSource, fetchApiModels, testApiModel, " +
   "activateModelSource, clearStoredApiKey, invalidateModelDiscovery, invalidateModelTest, " +
-  "syncRuntimeControl, syncSavedApiKeyHint, getSnapshot: () => modelSourceSnapshot, " +
-  "markDirty: () => { modelSourceDraftDirty = true; } };";
+  "syncRuntimeControl, syncSavedApiKeyHint, getSnapshot: () => settingsState.modelSourceSnapshot, " +
+  "markDirty: () => { settingsState.modelSourceDraftDirty = true; } };";
 
 function makeNode() {
   return {
@@ -47,22 +48,11 @@ function harness(fetchImpl) {
     document: { createElement: () => makeNode() },
     byId,
     text: (id, value) => { byId(id).textContent = value == null ? "" : String(value); },
-    runtimeSnapshot: { requestedProvider: "gpu" },
-    runtimeBusy: false,
     settings: { intent: true },
-    currentAccount: null,
-    currentUser: null,
-    view: "chat",
-    apiPortraitSnapshot: null,
     syncPortraitMode() {},
     cancelApiPortraitPoll() {},
     clearApiPortraitView() {},
     loadProfile() {},
-    controller: null,
-    generation: 0,
-    incrementalFailed: false,
-    recentFailed: false,
-    localModelResolved: false, localModelReady: false,
     clearInlineIntentPending() {},
     setIntentActionState() {},
     refreshLabels() {},
@@ -70,8 +60,14 @@ function harness(fetchImpl) {
     fetch: fetchImpl,
     localStorage: { setItem() { throw new Error("provider settings must not use browser storage"); } },
   });
+  seed(context, {
+    runtimeSnapshot: { requestedProvider: "gpu" }, runtimeBusy: false,
+    currentAccount: null, currentUser: null, view: "chat", controller: null, generation: 0,
+    apiPortraitSnapshot: null, incrementalFailed: false, recentFailed: false,
+    localModelResolved: false, localModelReady: false,
+  });
   vm.runInContext(settingsCode, context);
-  return { ui: context.ui, byId, cardClasses };
+  return { ui: context.ui, byId, cardClasses, context };
 }
 const response = body => ({ ok: true, json: async () => body });
 const localState = { mode: "local", api: null, sourceId: "local", status: "ready" };

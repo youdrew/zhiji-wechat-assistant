@@ -24,7 +24,9 @@ BRIDGE = (
     "batch_state.py", "cache_source.py", "chat_server.py", "history_browser.py",
     "instance_identity.py", "live_source.py", "model_source.py", "model_bundle.py",
     "local_model_source.py", "model_install.py", "profile_signals.py", "profile_state.py",
-    "backend_contracts.py", "backend_service.py", "node_analysis.py", "result_store.py",
+    "backend_contracts.py", "backend_service.py", "message_results.py", "message_contracts.py",
+    "message_input.py", "portrait_contracts.py", "api_tasks.py", "node_analysis.py",
+    "result_store.py",
     "wechat_source.py", "real_backend.py", "real_http.py", "snapshot_cache.py", "wechat_bridge.py",
     "windows_file_owners.py",
 )
@@ -52,11 +54,14 @@ if _model_manifest.get("schema") != 1 or set(MODEL_FILES) != set(MODEL_PINS):
     raise RuntimeError("pinned model manifest differs from stage allowlist")
 PUBLIC_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "chatui/index.html",
-    "chatui/app.js", "chatui/style.css", "chatui/kaomoji.js",
+    "chatui/app.js", "chatui/message-labels.js", "chatui/message-insight-adapters.js", "chatui/view-state.js", "chatui/style.css", "chatui/kaomoji.js",
     "chatui/data/analysis-catalog.json", "chatui/assets/wechatvibe-icon.png",
     "chatui/assets/wechatvibe-icon.ico", "electron/analysis.ts",
     "electron/model-connectors.ts", "electron/api-insights.ts",
-    "shared/contracts.ts", "src/lib/labels.ts", "native-reader/THIRD_PARTY_NOTICES.md",
+    "electron/api-message-insights.ts", "electron/api-portrait.ts", "electron/api-analysis-json.ts",
+    "electron/local-message-insights.ts",
+    "shared/contracts.ts", "shared/message-input.ts", "src/lib/labels.ts",
+    "native-reader/THIRD_PARTY_NOTICES.md",
 )
 
 

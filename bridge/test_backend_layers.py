@@ -26,7 +26,9 @@ from profile_state import empty_state
 
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / "bridge"
-LAYER_MODULES = ("backend_contracts", "backend_service", "node_analysis", "result_store", "wechat_source")
+LAYER_MODULES = ("backend_contracts", "backend_service", "message_results", "message_contracts",
+                 "message_input", "portrait_contracts", "api_tasks", "node_analysis",
+                 "result_store", "wechat_source")
 
 
 def parsed(name):
@@ -66,13 +68,43 @@ class LayerBoundaryTests(unittest.TestCase):
                              for node in ast.walk(parsed("real_backend"))))
 
     def test_contracts_have_no_application_layer_dependencies(self):
-        self.assertFalse(imports(parsed("backend_contracts")) - sys.stdlib_module_names - {"__future__"})
+        self.assertFalse(imports(parsed("backend_contracts")) - sys.stdlib_module_names -
+                         {"__future__", "message_contracts", "portrait_contracts"})
+        for name in ("message_contracts", "portrait_contracts"):
+            with self.subTest(module=name):
+                self.assertFalse(imports(parsed(name)) - sys.stdlib_module_names - {"__future__"})
 
     def test_repositories_and_adapters_never_import_services_or_facade(self):
-        for name in ("backend_contracts", "result_store", "batch_state", "wechat_source", "node_analysis"):
+        for name in ("backend_contracts", "message_results", "result_store", "batch_state",
+                     "wechat_source", "node_analysis"):
             with self.subTest(module=name):
                 self.assertFalse(imports(parsed(name)) & {"real_backend", "backend_service", "real_http", "batch_engine"})
         self.assertFalse(imports(parsed("result_store")) & {"wechat_source", "node_analysis", "model_source"})
+
+    def test_message_results_depends_only_on_contracts_and_profile_signals(self):
+        found = imports(parsed("message_results"))
+        self.assertTrue(found <= sys.stdlib_module_names | {"__future__", "backend_contracts", "profile_signals"})
+        self.assertFalse(found & {"real_backend", "backend_service", "real_http", "batch_engine",
+                                  "result_store", "node_analysis", "wechat_source", "model_source"})
+
+    def test_message_input_depends_only_on_the_standard_library(self):
+        found = imports(parsed("message_input"))
+        self.assertTrue(found <= sys.stdlib_module_names | {"__future__"})
+        self.assertFalse(found & {"backend_service", "real_backend", "backend_contracts",
+                                  "node_analysis", "wechat_source", "model_source", "batch_engine",
+                                  "result_store", "message_contracts", "portrait_contracts"})
+
+    def test_api_tasks_depends_only_on_the_standard_library(self):
+        found = imports(parsed("api_tasks"))
+        self.assertTrue(found <= sys.stdlib_module_names | {"__future__"})
+        self.assertFalse(found & {"backend_service", "real_backend", "result_store",
+                                  "node_analysis", "wechat_source", "model_source", "batch_engine"})
+
+    def test_message_results_exposes_only_the_two_pure_validators(self):
+        import message_results
+        self.assertTrue(callable(message_results.validate_fine_result))
+        self.assertTrue(callable(message_results.validate_portrait_result))
+        self.assertNotIn("Backend", vars(message_results))
 
     def test_services_issue_no_sql_or_raw_database_connections(self):
         for name in ("backend_service", "batch_engine"):
@@ -94,7 +126,7 @@ with patch.object(sqlite3, 'connect', side_effect=AssertionError('database on im
      patch.object(subprocess, 'Popen', side_effect=AssertionError('process on import')), \
      patch.object(threading.Thread, 'start', side_effect=AssertionError('thread on import')), \
      patch.object(socket.socket, 'connect', side_effect=AssertionError('network on import')):
-    for name in ('result_store', 'node_analysis', 'wechat_source', 'backend_service', 'real_backend'):
+    for name in ('result_store', 'node_analysis', 'wechat_source', 'backend_service', 'real_backend', 'message_results', 'message_contracts', 'portrait_contracts', 'api_tasks'):
         importlib.import_module(name)
 print('IMPORTS_HAVE_NO_RUNTIME_SIDE_EFFECTS')
 """
@@ -119,7 +151,7 @@ import importlib, pathlib, sys
 root = pathlib.Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root))
 import chat_server, real_http, real_backend
-for name in ('backend_contracts', 'backend_service', 'result_store', 'node_analysis', 'wechat_source'):
+for name in ('backend_contracts', 'backend_service', 'message_results', 'message_contracts', 'message_input', 'portrait_contracts', 'api_tasks', 'result_store', 'node_analysis', 'wechat_source'):
     module = importlib.import_module(name)
     assert pathlib.Path(module.__file__).resolve().parent == root, name
 assert real_http.Backend is real_backend.Backend
@@ -130,6 +162,36 @@ print('STAGED_BRIDGE_IMPORTS_OK')
                                        cwd=temporary, capture_output=True, text=True, timeout=30)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn("STAGED_BRIDGE_IMPORTS_OK", completed.stdout)
+
+
+class MessageInputBoundaryTests(unittest.TestCase):
+    def test_analyze_item_attaches_trusted_scope_without_changing_legacy_fields(self):
+        captured = {}
+
+        class Analyzer:
+            def analyze(self, session, messages, target, **_kwargs):
+                captured["messages"] = messages
+                return {}
+
+        backend = backend_service.Backend.__new__(backend_service.Backend)
+        backend.analyzer = Analyzer()
+        store = Mock()
+        store.path = "synthetic.sqlite3"
+        item = {"id": "m1", "side": "other", "kind": "text", "text": "hi",
+                "senderId": "member-a", "senderName": "阿甲", "time": 1.5}
+        with self.assertRaises(RuntimeError):
+            backend._analyze_item("acct", "friend", "synthetic-version", store, [item], item,
+                                  defer=True)
+        [prepared] = captured["messages"]
+        self.assertEqual({key: prepared[key] for key in item}, item)
+        self.assertNotIn("inputMeta", item)
+        meta = prepared["inputMeta"]
+        self.assertEqual((meta["accountId"], meta["conversationId"]), ("acct", "friend"))
+        self.assertEqual((meta["senderId"], meta["senderName"]), ("member-a", "阿甲"))
+        self.assertEqual(meta["sentAtMs"], 1.5)
+        self.assertEqual(meta["source"]["kind"], "wechat")
+        store.save.assert_not_called()
+        store.save_fine.assert_not_called()
 
 
 class RepositoryBoundaryTests(unittest.TestCase):

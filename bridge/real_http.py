@@ -33,6 +33,21 @@ def app_version():
 
 
 APP_VERSION = app_version()
+JAVASCRIPT_SUFFIXES = {".js", ".mjs"}
+JAVASCRIPT_MIME = "text/javascript; charset=utf-8"
+
+
+def static_content_type(name):
+    """Return a stable MIME type for files served to the browser.
+
+    On Windows, ``mimetypes.guess_type`` can inherit a registry mapping that
+    incorrectly reports JavaScript as ``text/plain``.  With ``nosniff`` that
+    prevents the browser from executing the application bundle, so script
+    types must be selected independently of the host registry.
+    """
+    if Path(name).suffix.lower() in JAVASCRIPT_SUFFIXES:
+        return JAVASCRIPT_MIME
+    return mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
 def integer(value, default, maximum):
@@ -169,7 +184,7 @@ def make_handler(backend, accounts=None, control_token=None):
                 target = (CHATUI / (parsed.path.lstrip("/") or "index.html")).resolve()
                 if not target.is_relative_to(CHATUI.resolve()) or not target.is_file():
                     return self.send(404, {"error": "not found"})
-                mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+                mime = static_content_type(target.name)
                 return self.send(200, target.read_bytes(), mime)
             except ValueError as exc:
                 return self.send(400, {"error": str(exc)})
@@ -254,7 +269,11 @@ def make_handler(backend, accounts=None, control_token=None):
                 if endpoint == "/api/model-insights":
                     account = user_value(request.get("account"))
                     user = user_value(request.get("user"))
-                    limit = integer(request.get("limit"), 2, 2)
+                    # API insight experiments send the bounded sample as one provider
+                    # request. Keep this transport cap aligned with the analyzer's
+                    # per-request target cap instead of silently forcing two-target
+                    # batches.
+                    limit = integer(request.get("limit"), 500, 500)
                     around = request.get("around")
                     return self.send(202, backend.start_model_insights(
                         account, user, limit, request.get("targetIds"), around))

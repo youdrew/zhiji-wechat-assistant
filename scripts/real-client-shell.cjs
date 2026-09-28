@@ -57,6 +57,10 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   let loadRetries = 0;
   let validationTimer = null;
   let exiting = false;
+  // Set by desktop-main: only the launch that created the bridge may stop it on a
+  // startup failure. A reused ready bridge must survive a failed shell start.
+  const bridgeCreated = process.env.WECHATVIBE_BRIDGE_CREATED === "1";
+  let startupFailed = false;
   let updateHandoff = "none";
   let quitRequestedDuringHandoff = false;
   let bridgeExitState = "idle";
@@ -241,6 +245,54 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       return true;
     });
 
+    // Register the ownership-aware quit path before any ready-time initialization
+    // can throw.  A proxy/model/window setup failure must still reclaim a bridge
+    // created by this launch; a reused bridge remains untouched.
+    app.on("before-quit", event => {
+      exiting = true;
+      modelDownload?.cancel();
+      if (validationTimer) clearTimeout(validationTimer);
+      const recoveryDrain = stopBridgeMonitor?.() || Promise.resolve();
+      if (updateHandoff === "preparing") {
+        quitRequestedDuringHandoff = true;
+        event.preventDefault();
+        return;
+      }
+      if (selfTest || updateValidation || updateHandoff === "ready" || bridgeExitState === "done") return;
+      if (startupFailed && !bridgeCreated) return; // A reused bridge is not ours to stop.
+      event.preventDefault();
+      if (bridgeExitState === "running") return;
+      bridgeExitState = "running";
+      const bundledPython = path.join(ROOT, "runtime", "python", "python.exe");
+      const python = process.env.WECHATVIBE_PYTHON ||
+        (fs.existsSync(bundledPython) ? bundledPython : "python");
+      const launcher = path.join(ROOT, "scripts", "start-real-client.py");
+      const finish = (error, stdout) => {
+        bridgeExitState = "done";
+        let stopped = false;
+        try {
+          const result = JSON.parse(stdout);
+          stopped = !error && (result.stopped === true || result.alreadyStopped === true);
+        } catch (_) { /* A missing result is a shutdown failure. */ }
+        if (!stopped) {
+          dialog.showErrorBox("WechatVibe 退出提示",
+            "本地分析服务未能安全关闭，程序文件可能仍被占用。请在任务管理器中检查此安装目录的后台进程。");
+        }
+        app.quit();
+      };
+      void Promise.resolve(recoveryDrain).catch(() => {}).then(() => {
+        try {
+          execFile(python, [launcher, "--stop-owned-bridge", "--json"], {
+            cwd: ROOT, windowsHide: true, timeout: 90000, maxBuffer: 65536,
+            env: { ...process.env, CHATUI_PORT: String(new URL(url).port),
+              WECHATVIBE_CLIENT_ROOT: ROOT, WECHATVIBE_PYTHON: python },
+          }, finish);
+        } catch (error) {
+          finish(error, "");
+        }
+      });
+    });
+
     app.whenReady().then(() => {
       updateNetwork = createUpdateProxyFetch({
         session: session.defaultSession,
@@ -378,53 +430,12 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       void contents.loadURL(url);
     }).catch((error) => {
       process.stderr.write(String(error) + "\n");
+      startupFailed = true;
       dialog.showErrorBox("WechatVibe 启动失败", "客户端窗口初始化失败，请重新解压完整安装包。");
       // Use normal shutdown so the bridge created before window initialization
-      // is stopped instead of becoming an invisible background process.
+      // is stopped instead of becoming an invisible background process. A reused
+      // bridge is left alone by the before-quit guard.
       app.quit();
-    });
-    app.on("before-quit", event => {
-      exiting = true;
-      modelDownload?.cancel();
-      if (validationTimer) clearTimeout(validationTimer);
-      const recoveryDrain = stopBridgeMonitor?.() || Promise.resolve();
-      if (updateHandoff === "preparing") {
-        quitRequestedDuringHandoff = true;
-        event.preventDefault();
-        return;
-      }
-      if (selfTest || updateValidation || updateHandoff === "ready" || bridgeExitState === "done") return;
-      event.preventDefault();
-      if (bridgeExitState === "running") return;
-      bridgeExitState = "running";
-      const bundledPython = path.join(ROOT, "runtime", "python", "python.exe");
-      const python = process.env.WECHATVIBE_PYTHON ||
-        (fs.existsSync(bundledPython) ? bundledPython : "python");
-      const launcher = path.join(ROOT, "scripts", "start-real-client.py");
-      const finish = (error, stdout) => {
-        bridgeExitState = "done";
-        let stopped = false;
-        try {
-          const result = JSON.parse(stdout);
-          stopped = !error && (result.stopped === true || result.alreadyStopped === true);
-        } catch (_) { /* A missing result is a shutdown failure. */ }
-        if (!stopped) {
-          dialog.showErrorBox("WechatVibe 退出提示",
-            "本地分析服务未能安全关闭，程序文件可能仍被占用。请在任务管理器中检查此安装目录的后台进程。");
-        }
-        app.quit();
-      };
-      void Promise.resolve(recoveryDrain).catch(() => {}).then(() => {
-        try {
-          execFile(python, [launcher, "--stop-owned-bridge", "--json"], {
-            cwd: ROOT, windowsHide: true, timeout: 90000, maxBuffer: 65536,
-            env: { ...process.env, CHATUI_PORT: String(new URL(url).port),
-              WECHATVIBE_CLIENT_ROOT: ROOT, WECHATVIBE_PYTHON: python },
-          }, finish);
-        } catch (error) {
-          finish(error, "");
-        }
-      });
     });
     app.on("window-all-closed", () => app.quit());
   }

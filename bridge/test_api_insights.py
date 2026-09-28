@@ -266,7 +266,7 @@ class ApiInsightTests(unittest.TestCase):
         self.assertEqual(done["job"]["status"], "done")
         self.assertEqual(set(done["results"]), {"o1", "o2"})
         self.assertEqual(done["results"]["o1"],
-                         {"id": "o1", "status": "ok", "emotion": "期待", "intent": "邀约"})
+                         {"id": "o1", "status": "ok", "affect": {"feeling": "期待"}, "intents": ["邀约"]})
         self.assertEqual(len(self.analyzer.calls), 1)
         self.backend.model_source_activate({"mode": "local"})
         self.assertEqual(self.backend.model_insights("friend")["results"], {})
@@ -281,6 +281,81 @@ class ApiInsightTests(unittest.TestCase):
         self.source.account = "account-b"
         self.assertEqual(self.backend.model_insights("friend")["results"], {})
 
+    def test_insight_job_records_application_timing_segments_without_chat_text(self):
+        self.activate()
+        self.backend.start_model_insights("account-a", "friend", 2)
+        done = self.wait_done()
+        self.assertEqual(done["job"]["status"], "done")
+        timings = done["job"]["timings"]
+        for field in ("prepareMs", "queueMs", "providerMs", "validateMs", "saveMs", "totalMs"):
+            with self.subTest(field=field):
+                self.assertIsInstance(timings[field], (int, float))
+                self.assertFalse(isinstance(timings[field], bool))
+                self.assertGreaterEqual(timings[field], 0)
+        self.assertIsNone(timings["firstBodyMs"],
+                          "first body is unobservable with buffered connectors and never fabricated")
+        self.assertGreaterEqual(timings["totalMs"], timings["prepareMs"])
+        self.assertGreaterEqual(timings["totalMs"], timings["providerMs"])
+        encoded = json.dumps(timings)
+        self.assertNotIn(self.source.rows[1]["text"], encoded)
+        self.assertNotIn("test-key", encoded)
+
+    def test_streaming_labels_are_visible_in_job_before_final_save(self):
+        self.activate()
+        original = self.analyzer.model_insights
+        delta_seen = threading.Event()
+        release = threading.Event()
+
+        def streaming(protocol, base_url, api_key, model, messages, target_ids, on_delta=None):
+            if on_delta:
+                on_delta("姓名：朋友\n情感：关切\n意图：询问\n")
+            delta_seen.set()
+            release.wait(timeout=3)
+            return original(protocol, base_url, api_key, model, messages, target_ids)
+
+        self.analyzer.model_insights = streaming
+        self.backend.start_model_insights("account-a", "friend", 1)
+        self.assertTrue(delta_seen.wait(timeout=2))
+        running = self.backend.model_insights("friend")["job"]
+        self.assertEqual(running["status"], "running")
+        self.assertEqual(running["targetIds"], ["o2"])
+        self.assertIn("情感：关切", running["partialText"])
+        self.assertIsInstance(running["timings"]["firstBodyMs"], (int, float))
+        release.set()
+        done = self.wait_done()
+        self.assertEqual(done["job"]["status"], "done")
+        self.assertEqual(done["results"]["o2"]["status"], "ok")
+
+    def test_slow_provider_is_reflected_in_provider_timing(self):
+        self.activate()
+        original = self.analyzer.model_insights
+
+        def slow(protocol, base_url, api_key, model, messages, target_ids):
+            time.sleep(.15)
+            return original(protocol, base_url, api_key, model, messages, target_ids)
+
+        self.analyzer.model_insights = slow
+        self.backend.start_model_insights("account-a", "friend", 1)
+        done = self.wait_done()
+        self.assertEqual(done["job"]["status"], "done")
+        self.assertEqual(set(done["results"]), {"o2"})
+        self.assertGreaterEqual(done["job"]["timings"]["providerMs"], 100)
+
+    def test_same_session_repeat_returns_the_running_job_unchanged(self):
+        self.activate()
+        self.analyzer.entered = threading.Event()
+        self.analyzer.release = threading.Event()
+        self.backend.start_model_insights("account-a", "friend", 2)
+        self.assertTrue(self.analyzer.entered.wait(timeout=2))
+        running = self.backend.model_insights("friend")["job"]
+        self.assertEqual(running["status"], "running")
+        repeat = self.backend.start_model_insights("account-a", "friend", 2)["job"]
+        self.assertEqual(repeat["id"], running["id"])
+        self.assertEqual(repeat["status"], "running")
+        self.assertEqual(len(self.analyzer.calls), 1)
+        self.analyzer.release.set()
+        self.wait_done()
+
     def test_recent_other_is_not_skipped_by_newer_self_messages(self):
         self.source.rows.append({"id": "s2", "side": "self", "kind": "text",
                                  "text": "我到了。", "senderId": "me", "_sort": [4, "shard", 4]})
@@ -294,7 +369,7 @@ class ApiInsightTests(unittest.TestCase):
     def test_client_targets_are_resolved_against_the_current_conversation(self):
         self.activate()
         with self.assertRaises(ValueError):
-            self.backend.start_model_insights("account-a", "friend", 3)
+            self.backend.start_model_insights("account-a", "friend", 501)
         self.assertEqual(self.analyzer.calls, [])
         self.backend.start_model_insights("account-a", "friend", 1, ["o1"])
         done = self.wait_done()
@@ -316,7 +391,7 @@ class ApiInsightTests(unittest.TestCase):
         self.assertEqual(self.analyzer.calls[-1][3], ("old",))
         self.assertIn("old", self.backend.model_insights("friend", ids=["old"])["results"])
         browse.assert_called_once()
-        self.assertEqual(browse.call_args.kwargs["limit"], 80)
+        self.assertEqual(browse.call_args.kwargs["limit"], 500)
         with patch("backend_service.browse_history", return_value={"messages": self.source.rows}):
             with self.assertRaises(ValueError):
                 self.backend.start_model_insights("account-a", "friend", 1, ["outside"], "history-anchor")

@@ -329,7 +329,7 @@ class ResultStore:
     def api_insight_known(self, account, user, source_id, ids):
         if not ids:
             return set()
-        if len(ids) > 80:
+        if len(ids) > 500:
             raise ValueError("too many API insight ids")
         marks = ",".join("?" for _ in ids)
         with self.connect() as conn:
@@ -337,10 +337,10 @@ class ResultStore:
                 f"SELECT id FROM api_insights_v1 WHERE account=? AND session=? AND source_id=? AND id IN ({marks})",
                 (account, user, source_id, *ids))}
 
-    def api_insight_view(self, account, user, source_id, ids=None, limit=80):
+    def api_insight_view(self, account, user, source_id, ids=None, limit=500):
         if ids is not None and not ids:
             return {}
-        if ids is not None and len(ids) > 80:
+        if ids is not None and len(ids) > 500:
             raise ValueError("too many API insight ids")
         where = "account=? AND session=? AND source_id=?"
         args = [account, user, source_id]

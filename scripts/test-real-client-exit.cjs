@@ -16,7 +16,7 @@ async function settle() {
   await new Promise(resolve => setImmediate(resolve));
 }
 
-async function startShell(extraEnv = {}, extraArgs = [], monitorDrain) {
+async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options = {}) {
   const appEvents = new Map();
   const windowEvents = new Map();
   const ipcHandlers = new Map();
@@ -90,8 +90,11 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain) {
         checkForUpdates: async () => ({ status: "current" }),
       };
       if (name === "./real-client-update-proxy.cjs") return {
-        createUpdateProxyFetch: () => ({ fetchImpl: async () => ({}),
-          enableSavedLoopbackFallback: async () => false }),
+        createUpdateProxyFetch: () => {
+          if (options.readyThrow) throw new Error("synthetic ready initialization failure");
+          return { fetchImpl: async () => ({}),
+            enableSavedLoopbackFallback: async () => false };
+        }
       };
       if (name === "./real-client-model.cjs") return {
         ModelDownload: class { cancel() {} getState() { return { phase: "idle" }; } },
@@ -188,6 +191,14 @@ async function testFailedStopShowsErrorAndFinishesQuit() {
   assert.equal(shell.stopCalls.length, 1, "failure must not retry an uncontrolled stop");
 }
 
+async function testReadyInitializationFailureStillStopsCreatedBridge() {
+  const shell = await startShell({ WECHATVIBE_BRIDGE_CREATED: "1" }, [], undefined,
+    { readyThrow: true });
+  assert.equal(shell.stopCalls.length, 1,
+    "a ready-time initialization failure must still stop the bridge created by this launch");
+  assertOwnedStop(shell.stopCalls[0]);
+}
+
 async function testQuitWaitsForRecoveryDrain() {
   let finishRecovery;
   const pendingRecovery = new Promise(resolve => { finishRecovery = resolve; });
@@ -276,6 +287,7 @@ async function testSelfTestSkipsStop() {
 async function main() {
   await testNormalQuitWaitsForOwnedBridge();
   await testFailedStopShowsErrorAndFinishesQuit();
+  await testReadyInitializationFailureStillStopsCreatedBridge();
   await testQuitWaitsForRecoveryDrain();
   await testUpdateHandoffWaitsUntilReady();
   await testAbortedHandoffResumesNormalExit();

@@ -24,6 +24,10 @@ class NodeAnalysis:
         self.process = None
         self.reader_thread = None
         self.pending = {}
+        # Streaming model output is delivered as an out-of-band JSONL event.  Keep
+        # callbacks separate from ``pending`` so a partial event can never satisfy
+        # the request before the final validated reply arrives.
+        self.stream_callbacks = {}
         self.expired_request_ids = set()
         self.model = {"state": "idle"}
         self.serial = 0
@@ -70,6 +74,7 @@ class NodeAnalysis:
             return
         self.model = {"state": "loading"}
         self.pending.clear()
+        self.stream_callbacks.clear()
         self.expired_request_ids.clear()
         command = ["node", "--import", "tsx", str(ROOT / "bridge/analysis_server.ts")]
         command += ["--api-only"] if self.api_only else ["--provider", self.requested_provider]
@@ -171,6 +176,8 @@ class NodeAnalysis:
                 reply = json.loads(line)
             except ValueError:
                 continue
+            stream_callback = None
+            stream_delta = reply.get("streamDelta")
             with self.condition:
                 if self.process is not process:
                     continue
@@ -179,6 +186,12 @@ class NodeAnalysis:
                     self.running_version = reply.get("analysisVersion")
                     if self.running_version != self.version:
                         self.model = {"state": "error", "message": "analysis version changed; restart service"}
+                elif reply.get("id") is not None and "streamDelta" in reply:
+                    # A stream delta is progress only.  The final reply with the
+                    # same id is still required before _request() can complete.
+                    candidate = self.stream_callbacks.get(reply["id"])
+                    if callable(candidate) and isinstance(stream_delta, str) and stream_delta:
+                        stream_callback = candidate
                 elif reply.get("id") is not None:
                     status = reply.get("modelStatus")
                     # API-only workers have no Laya runtime. An API error used to
@@ -192,12 +205,19 @@ class NodeAnalysis:
                     else:
                         self.pending[reply["id"]] = reply
                 self.condition.notify_all()
+            if stream_callback is not None:
+                try:
+                    stream_callback(stream_delta)
+                except Exception:
+                    # Progress reporting must never kill the reader or turn a
+                    # valid final provider response into a failed request.
+                    pass
         with self.condition:
             if self.process is process:
                 self.model = {"state": "error", "message": "analysis process exited"}
                 self.condition.notify_all()
 
-    def _request(self, payload, *, require_model=True):
+    def _request(self, payload, *, require_model=True, on_stream_delta=None):
         version = self.analysis_version()
         with self.condition:
             self._launch_locked()
@@ -226,14 +246,21 @@ class NodeAnalysis:
                 raise RuntimeError("analysis version changed; restart service")
             self.serial += 1
             request_id = self.serial
-            process.stdin.write(json.dumps({"id": request_id, **payload}, ensure_ascii=False) + "\n")
-            process.stdin.flush()
+            if on_stream_delta is not None:
+                self.stream_callbacks[request_id] = on_stream_delta
+            try:
+                process.stdin.write(json.dumps({"id": request_id, **payload}, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except Exception:
+                self.stream_callbacks.pop(request_id, None)
+                raise
             response_timeout = (16 if payload.get("cmd") == "model:list" else
                                 18 if payload.get("cmd") == "model:test" else 180)
             deadline = time.monotonic() + response_timeout
             while request_id not in self.pending and time.monotonic() < deadline and process.poll() is None:
                 self.condition.wait(timeout=1)
             response = self.pending.pop(request_id, None)
+            self.stream_callbacks.pop(request_id, None)
             if not response:
                 self.expired_request_ids.add(request_id)
                 if len(self.expired_request_ids) > 256:
@@ -267,15 +294,17 @@ class NodeAnalysis:
             raise RuntimeError("empty-response")
         return {"text": text, "usage": response.get("usage")}
 
-    def model_insights(self, protocol, base_url, api_key, model, messages, target_ids):
+    def model_insights(self, protocol, base_url, api_key, model, messages, target_ids,
+                       on_delta=None):
         response, _ = self._request({"cmd": "model:insights", "protocol": protocol,
                                      "baseUrl": base_url, "apiKey": api_key, "model": model,
                                      "messages": messages, "targetIds": target_ids},
-                                    require_model=False)
+                                    require_model=False, on_stream_delta=on_delta)
         insights = response.get("insights")
         if not isinstance(insights, list) or len(insights) != len(target_ids):
             raise RuntimeError("invalid-insights")
-        return {"insights": insights, "usage": response.get("usage")}
+        return {"insights": insights, "usage": response.get("usage"),
+                "responseId": response.get("responseId"), "timings": response.get("timings")}
 
     def model_portrait(self, protocol, base_url, api_key, model, previous, messages):
         response, _ = self._request({"cmd": "model:portrait", "protocol": protocol,
@@ -299,8 +328,17 @@ class NodeAnalysis:
 
     @staticmethod
     def _wire_messages(messages):
-        return [{"id": item["id"], "side": item["side"], "text": item["text"],
-                 **({"time": item["time"]} if "time" in item else {})} for item in messages]
+        # The legacy four fields stay byte-identical; inputMeta is local-only metadata
+        # that the analysis server validates and projects away before the model call.
+        wire = []
+        for item in messages:
+            entry = {"id": item["id"], "side": item["side"], "text": item["text"]}
+            if "time" in item:
+                entry["time"] = item["time"]
+            if "inputMeta" in item:
+                entry["inputMeta"] = item["inputMeta"]
+            wire.append(entry)
+        return wire
 
     def analyze(self, session, messages, target, portraitContext=None, messageLabelsOnly=False):
         if portraitContext is not None and not isinstance(portraitContext, str):

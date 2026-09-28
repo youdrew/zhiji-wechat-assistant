@@ -2,7 +2,7 @@ import type { LabelScore } from "../../shared/contracts";
 import type { Answer, Question } from "./types";
 
 /** Stable wire marker. A saved legacy fine result can be refreshed one message at a time. */
-export const GENERAL_LABEL_SCHEMA = "generic-v8";
+export const GENERAL_LABEL_SCHEMA = "generic-v9";
 
 export const INTENTS = [
   { id: "small_talk", zh: "闲聊", en: "small talk" },
@@ -17,6 +17,7 @@ export const INTENTS = [
   { id: "apologize", zh: "道歉", en: "apologize" },
   { id: "joke", zh: "玩笑", en: "joke" },
   { id: "reject", zh: "拒绝", en: "reject or decline" },
+  { id: "deny", zh: "否认", en: "deny or disavow" },
   { id: "distance", zh: "保持距离", en: "create distance" },
   { id: "thank", zh: "感谢", en: "thank" },
   { id: "greet", zh: "问候", en: "greet" },
@@ -61,11 +62,19 @@ const FILLERS: readonly IntentId[] = ["status_report", "explain", "share_feeling
 const MAX_OPTIONS = 10;
 const MIN_OPTIONS = 8;
 const QUOTED = /“[^”]*”|「[^」]*」|『[^』]*』|‘[^’]*’|"[^"]*"|`[^`]*`/gu;
-const QUESTION_CUE = /[？?]|(?:怎么|为什么|如何|是否|是不是|能否|多少|几点|几号|几(?:个人|位|楼|件|份|次|辆|本|条|张)|什么|咋(?:样|办|回事|了)|啥(?:时候|情况|意思)|干嘛|哪(?:个|家|里|儿))[^。！!？?]{0,20}(?:[。！!，,\s]|$)|(?:吗|呢)(?:[。！!，,\s]|$)|^(?:谁|什么|哪里|哪儿|何时|什么时候|几|多少)/u;
+const QUESTION_CUE = /[？?]|(?:怎么|为什么|如何|是否|是不是|能否|能不能|多少|几点|几号|几(?:个人|位|楼|件|份|次|辆|本|条|张)|什么|咋(?:样|办|回事|了)|啥(?:时候|情况|意思)|干嘛|哪(?:个|家|里|儿))[^。！!？?]{0,20}(?:[。！!，,\s]|$)|(?:吗|呢)(?:[。！!，,\s]|$)|^(?:谁|什么|哪里|哪儿|何时|什么时候|几|多少)/u;
 const RHETORICAL_CORRECTION = /^(?:[^。！？?]{0,12})?这不[^。！？?]{1,50}(?:了|过)吗[？?]?$/u;
 const NONQUESTION_SHORT = /^(?:没什么|没啥)(?:事|意思|好说的)?[。！!\s]*$/u;
 const CARE_CONTINUATION = /[？?].{0,60}(?:早点休息|好好休息|注意身体|照顾好自己|别太累)/u;
 const DIRECTED_CONFIDING = /想跟你说|想找你聊|想聊聊|说说心里话|能不能听我说/u;
+const DENY_CONTEXT = /喜欢|爱|在乎|想我|暧昧|关系|要不要|是不是|会不会|是否/u;
+// Bounded invitation context hint: only brings the relevant candidates into the question.
+const INVITE_CONTEXT = /(?:要不要|一起|约|有空|安排|见面|出来|吃饭|看展|看电影|逛街|聚|来我家|请你|请我|周六|周日|周末|明天|后天|下周|下个月)/u;
+// "下次见/下次聊" are farewells, not deferrals of an invitation.
+const DEFERRAL = /改天|下次(?!见|聊|再聊|说)|以后再说|再说吧|再约|看情况|看(?:看)?再说|过(?:几|两)天|有空再说|回头(?:再)?(?:说|约)|晚点再说/u;
+const CONCRETE_TIME = /今天|明天|后天|明早|今晚|这周|本周|下周|周末|周[一二三四五六日天]|下个月|月底|月初|\d{1,2}[号日]/u;
+const CONCRETE_PLAN = /请你|请我|请客|我请|一起|约你|约我|见面|来找我|来找你/u;
+const MAX_HINT_CODEPOINTS = 240;
 
 /** Literal wording only retrieves candidates; Laya supplies every displayed probability. */
 const CUES: ReadonlyArray<{ pattern: RegExp; ids: readonly IntentId[] }> = [
@@ -89,6 +98,7 @@ const CUES: ReadonlyArray<{ pattern: RegExp; ids: readonly IntentId[] }> = [
   { pattern: /我帮你|需要我帮|我来帮|我可以帮|交给我/u, ids: ["offer_help"] },
   { pattern: /给你看|发你|截图|照片|图片|视频|文件|链接|资料|附件|录屏/u, ids: ["show_material", "share_news"] },
   { pattern: /真无语|太离谱|受不了|烦死|讨厌|怎么.{0,8}还|等了.{0,12}还没/u, ids: ["complain", "share_feeling"] },
+  { pattern: /不理我|不回我|不搭理我/u, ids: ["complain", "seek_comfort"] },
   { pattern: /哈哈|笑死|逗你|开个玩笑|闹着玩|别当真|骗你的/u, ids: ["tease", "joke"] },
   { pattern: /^(?:谢谢|谢了|感谢|多谢)|(?:谢谢|谢了|感谢|多谢)(?:你|您|你们|大家|各位|老师|同学|朋友|宝贝|啦|了|啊|呀|哦|哈|[，,。！!\s]|$)|辛苦(?:了|大家|各位|你们|老师)|感激不尽/u, ids: ["thank", "show_care"] },
   { pattern: /^(?:你好|嗨|哈喽|早安|早上好|晚安|晚上好|hello|hi)(?:[，,!！。\s]|$)/iu, ids: ["greet", "close_chat"] },
@@ -116,8 +126,18 @@ export interface GeneralIntentQuestion {
   focused: boolean;
 }
 
-/** A bounded choice question; Laya still scores emotion and intent in the same predict call. */
-export function generalIntentQuestion(targetText: string): GeneralIntentQuestion {
+/**
+ * A bounded choice question; Laya still scores emotion and intent in the same predict call.
+ *
+ * `contextHint` is a bounded, already-sanitized slice of preceding messages. It only adds
+ * candidate options, so an invitation followed by "改天/下次" can surface a decline while a
+ * concrete reschedule keeps plan/invite; it never sets a probability and quoted text is
+ * never attributed to the current speaker.
+ */
+export function generalIntentQuestion(targetText: string, contextHint = ""): GeneralIntentQuestion {
+  const hint = Array.from(String(contextHint || "").replace(QUOTED, " ").trim())
+    .slice(0, MAX_HINT_CODEPOINTS).join("");
+  const inviteContext = INVITE_CONTEXT.test(hint);
   const text = targetText.replace(QUOTED, " ").trim();
   const options: IntentId[] = [...ANCHORS];
   const add = (id: IntentId): void => {
@@ -132,6 +152,22 @@ export function generalIntentQuestion(targetText: string): GeneralIntentQuestion
   if (RHETORICAL_CORRECTION.test(text)) {
     add("correct");
     add("clarify");
+    matched = true;
+  }
+  // A concrete future time plus a plan/invitation verb is a reschedule, never a decline.
+  if (CONCRETE_TIME.test(text) && CONCRETE_PLAN.test(text)) {
+    add("plan");
+    add("invite");
+    matched = true;
+  } else if (inviteContext && DEFERRAL.test(text)) {
+    // Invitation context + deferral: offer the decline candidate, do not decide it.
+    add("reject");
+    matched = true;
+  }
+  // “木有/没有” is only a denial when the bounded context contains a proposition
+  // to deny. Without that context it remains ordinary wording and must not be tagged.
+  if (/^(?:木有|没有)[。！!？?\s]*$/u.test(text) && DENY_CONTEXT.test(hint)) {
+    add("deny");
     matched = true;
   }
   for (const cue of CUES) {

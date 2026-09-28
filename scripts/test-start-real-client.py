@@ -193,6 +193,156 @@ class LauncherTests(unittest.TestCase):
                 launcher.ensure_service(self.config, starter=starter)
         self.assertEqual(len(calls), 1)
 
+    def test_dead_record_is_reclaimed_before_a_new_bridge_starts(self):
+        stale = self.owned_record()
+        cleanup = []
+        config = launcher.Config(self.config.root, self.config.python_exe, self.config.port, 0.0)
+
+        def reclaim(_config, record, **_kwargs):
+            cleanup.append(record["pid"])
+            return []
+
+        launched_record = {"pid": 47231, "port": config.port, "instance_id": config.instance_id,
+                          "created_filetime": 42, "control_token": "b" * 64}
+        with patch.object(launcher, "process_identity", return_value=(False, None)), \
+             patch.object(launcher, "abort_owned_launch", side_effect=reclaim), \
+             patch.object(launcher, "write_control_record", return_value=launched_record), \
+             patch.object(launcher, "clear_no_auto_recovery"), \
+             patch.object(launcher.time, "sleep"):
+            with self.assertRaisesRegex(launcher.LauncherError, "did not report"):
+                launcher.ensure_service(config, starter=lambda *_: FakeProcess())
+        self.assertEqual(cleanup, [47231, 47231])
+        self.assertTrue(stale.exists(), "the test double leaves record deletion to the cleanup helper")
+
+
+    def test_health_timeout_aborts_only_the_started_bridge_and_removes_record(self):
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch.object(launcher, "bridge_exited", return_value=True), \
+             patch.object(launcher, "orphan_analysis_children", return_value=[]), \
+             patch.object(launcher, "finish_owned_shutdown") as finish:
+            with self.assertRaisesRegex(launcher.LauncherError, "did not report.*log:"):
+                launcher.ensure_service(self.config, starter=lambda *_: FakeProcess())
+        self.assertEqual(finish.call_count, 1)
+        self.assertEqual(finish.call_args.args[1]["pid"], 47231)
+        self.assertEqual(list(self.config.runtime_dir.glob("bridge-*.json")), [],
+                         "the failed launch must not leave an orphan record")
+
+    def test_early_exit_aborts_owned_tree_and_removes_record(self):
+        class ExitedProcess(FakeProcess):
+            returncode = 19
+
+            def poll(self):
+                return self.returncode
+
+        worker = object()
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch.object(launcher, "bridge_exited", return_value=True), \
+             patch.object(launcher, "orphan_analysis_children", return_value=[worker]) as orphans, \
+             patch.object(launcher, "finish_owned_shutdown") as finish:
+            with self.assertRaisesRegex(launcher.LauncherError, "exited with code 19.*log:"):
+                launcher.ensure_service(self.config, starter=lambda *_: ExitedProcess())
+        self.assertEqual(orphans.call_count, 2,
+                         "cleanup rechecks after the bridge exit race")
+        self.assertEqual(finish.call_count, 2)
+        self.assertEqual(finish.call_args_list[-1].args[2], [worker],
+                         "workers of an early-exit bridge are reclaimed")
+        self.assertEqual(list(self.config.runtime_dir.glob("bridge-*.json")), [])
+
+    def test_parent_exit_race_rechecks_workers_after_initial_cleanup(self):
+        late_worker = object()
+        bridge_dead = False
+        finish_children = []
+
+        def exited(_record):
+            return bridge_dead
+
+        def finish(_config, _record, children, timeout=None):
+            nonlocal bridge_dead
+            finish_children.append(children)
+            # Simulate the bridge dying after the first ownership check but before
+            # the shutdown helper can inspect its children.
+            if not children:
+                bridge_dead = True
+
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch.object(launcher, "bridge_exited", side_effect=exited), \
+             patch.object(launcher, "orphan_analysis_children", return_value=[late_worker]), \
+             patch.object(launcher, "finish_owned_shutdown", side_effect=finish):
+            with self.assertRaisesRegex(launcher.LauncherError, "did not report.*log:"):
+                launcher.ensure_service(self.config, starter=lambda *_: FakeProcess())
+
+        self.assertEqual(finish_children, [[], [late_worker]],
+                         "a worker created during parent exit must be reclaimed")
+        self.assertEqual(list(self.config.runtime_dir.glob("bridge-*.json")), [])
+
+    def test_orphan_worker_match_is_scoped_to_script_and_launch_window(self):
+        from datetime import datetime, timezone
+        from unittest.mock import Mock
+        node = self.root / "node.exe"
+        node.write_bytes(b"fixture")
+        script = self.root / "bridge" / "analysis_server.ts"
+        script.write_text("fixture only", encoding="utf-8")
+        started = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+        young = Mock()
+        young.info = {"pid": 900, "name": "node.exe", "create_time": time.time() + 1}
+        young.exe.return_value = str(node)
+        young.cmdline.return_value = [str(node), "--import", "tsx", str(script)]
+        old = Mock()
+        old.info = {"pid": 901, "name": "node.exe", "create_time": time.time() - 3600}
+        old.exe.return_value = str(node)
+        old.cmdline.return_value = [str(node), "--import", "tsx", str(script)]
+        foreign = Mock()
+        foreign.info = {"pid": 902, "name": "node.exe", "create_time": time.time() + 1}
+        foreign.exe.return_value = str(node)
+        foreign.cmdline.return_value = [str(node), "--import", "tsx", str(self.root / "other.ts")]
+        python_worker = Mock()
+        python_worker.info = {"pid": 903, "name": "python.exe", "create_time": time.time() + 1}
+        python_worker.exe.return_value = str(self.config.python_exe)
+        python_worker.cmdline.return_value = [str(self.config.python_exe), str(script)]
+
+        record = {"pid": 47231, "created_filetime": 42, "started_at": started}
+        with patch("psutil.process_iter", return_value=[young, old, foreign, python_worker]):
+            self.assertEqual(launcher.orphan_analysis_children(self.config, record), [young])
+
+    def test_unreadable_recent_node_worker_blocks_false_cleanup_success(self):
+        import psutil
+        from datetime import datetime, timezone
+        from unittest.mock import Mock
+        started = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        denied = Mock()
+        denied.info = {"pid": 904, "name": "node.exe", "create_time": time.time() + 1}
+        denied.cmdline.side_effect = psutil.AccessDenied()
+        record = {"pid": 47231, "created_filetime": 42, "started_at": started}
+        with patch("psutil.process_iter", return_value=[denied]):
+            with self.assertRaisesRegex(launcher.LauncherError, "possible analysis worker PID 904"):
+                launcher.orphan_analysis_children(self.config, record)
+
+    def test_failed_cleanup_keeps_record_and_is_reported_not_silently_claimed(self):
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch.object(launcher, "finish_owned_shutdown",
+                          side_effect=launcher.LauncherError("Owned analysis worker did not exit")):
+            with self.assertRaisesRegex(launcher.LauncherError,
+                                        "did not report.*cleanup failed: Owned analysis worker did not exit"):
+                launcher.ensure_service(self.config, starter=lambda *_: FakeProcess())
+        self.assertTrue((self.config.runtime_dir / "bridge-47231.json").is_file(),
+                        "an unverified cleanup must keep the record for a later retry")
+
+    def test_wrong_service_after_start_never_contacts_a_foreign_service(self):
+        def starter(*_):
+            self.server("old-version")
+            return FakeProcess()
+
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch.object(launcher, "bridge_exited", return_value=True), \
+             patch.object(launcher, "orphan_analysis_children", return_value=[]), \
+             patch.object(launcher, "request_owned_shutdown") as request, \
+             patch.object(launcher, "finish_owned_shutdown") as finish:
+            with self.assertRaisesRegex(launcher.LauncherError, "different service"):
+                launcher.ensure_service(self.config, starter=starter)
+        self.assertEqual(finish.call_count, 1)
+        request.assert_not_called()
+
     def owned_record(self, token="a" * 64, created=42):
         self.config.runtime_dir.mkdir(parents=True, exist_ok=True)
         record = {"pid": 47231, "port": self.config.port,
@@ -465,6 +615,25 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         with patch.object(launcher, "process_identity", return_value=(True, 42)):
             with self.assertRaisesRegex(launcher.LauncherError, "Cannot verify bridge process ownership"):
                 launcher.stop_owned_bridge(self.config, timeout=0.05)
+
+    def test_stop_without_service_reclaims_dead_record_and_workers(self):
+        self.owned_record()
+        with patch.object(launcher, "process_identity", return_value=(False, None)), \
+             patch.object(launcher, "abort_owned_launch", return_value=[]) as reclaim:
+            self.assertEqual(launcher.stop_owned_bridge(self.config),
+                             {"stopped": True, "alreadyStopped": True})
+        reclaim.assert_called_once()
+
+    def test_stop_parent_exit_race_uses_bounded_abort_cleanup(self):
+        self.server("real-ui-1")
+        self.owned_record()
+        with patch.object(launcher, "process_identity", side_effect=[(True, 42), (False, None)]), \
+             patch.object(launcher, "verify_owned_process",
+                          side_effect=launcher.LauncherError("process exited")), \
+             patch.object(launcher, "abort_owned_launch", return_value=[]) as reclaim:
+            self.assertEqual(launcher.stop_owned_bridge(self.config, timeout=0.5),
+                             {"stopped": True, "pid": 47231})
+        reclaim.assert_called_once()
 
     def test_stop_json_command_reports_outcome(self):
         with patch.object(launcher, "PROJECT_ROOT", self.root), \

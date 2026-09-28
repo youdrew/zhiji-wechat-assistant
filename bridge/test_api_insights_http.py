@@ -44,14 +44,13 @@ class FakeProvider(BaseHTTPRequestHandler):
         self.prompts.append(prompt)
         if prompt == 'Reply with JSON {"ok":true}.':
             answer = '{"ok":true}'
+        elif prompt.startswith("CHAT_BATCH_JSON:\n"):
+            payload = json.loads(prompt.removeprefix("CHAT_BATCH_JSON:\n"))
+            answer = json.dumps({"items": [{
+                "id": target_id, "status": "ok", "emotion": "期待", "intent": "邀约",
+            } for target_id in payload["targetIds"]]}, ensure_ascii=False)
         else:
-            payload = json.loads(prompt.removeprefix("INPUT_JSON:\n"))
-            if "windows" in payload:
-                answer = json.dumps({"items": [{
-                    "id": row["target"]["id"], "status": "ok", "emotion": "期待", "intent": "邀约",
-                } for row in payload["windows"]]}, ensure_ascii=False)
-            else:
-                answer = json.dumps({"summary": "常讨论周末见面", "communication": "表达简洁",
+            answer = json.dumps({"summary": "常讨论周末见面", "communication": "表达简洁",
                                      "emotionExpression": "", "interactionPreferences": "",
                                      "topics": ["周末"], "patterns": [], "boundaries": [],
                                      "uncertain": [], "affinity": None,
@@ -151,7 +150,7 @@ class ApiInsightHttpTests(unittest.TestCase):
                     time.sleep(.05)
                 self.assertEqual(result["job"]["status"], "done", result["job"])
                 self.assertEqual(result["results"]["o1"],
-                                 {"id": "o1", "status": "ok", "emotion": "期待", "intent": "邀约"})
+                                 {"id": "o1", "status": "ok", "affect": {"feeling": "期待"}, "intents": ["邀约"]})
                 self.assertEqual(len(FakeProvider.prompts), 3)  # test, activate, insight
                 status, portrait_job = call("/api/model-portrait", {
                     "account": "synthetic-account", "user": "friend"})

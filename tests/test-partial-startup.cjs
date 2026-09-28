@@ -3,6 +3,7 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
+const { seed } = require("./helpers/view-state-harness.cjs");
 
 const source = readFileSync(path.join(__dirname, "../chatui/app.js"), "utf8");
 const start = source.indexOf("async function loadSessions(");
@@ -16,17 +17,9 @@ const loadSelectionSource = source.slice(selectionStart, selectionEnd);
 
 function harness(responses, selectedByAccount = {}) {
   const context = vm.createContext({ responses: [...responses], selectedByAccount, AbortController });
+  seed(context, { messages: [{ id: "stale" }], results: { stale: true }, conversationMood: "stale" });
   vm.runInContext(`
-    let accountClearedExiting = false, sessionLoading = false, sessionRefreshQueued = false;
-    let sessionRequest = 0, currentAccount = null, currentUser = null;
-    let selectionLoadedAccount = null;
-    const selectedConversations = new Set();
-    let messageSourceReady = false, accountUnavailable = false;
-    let startupAccountRetryTimer = null, sessionSignature = null, self = null;
-    let messages = [{ id: "stale" }], results = { stale: true }, conversationMood = "stale";
-    let view = "chat", activeMember = "", preloadDone = 0, preloadTotal = 0;
-    const sessions = new Map(), storedProfileSnapshots = new Map();
-    const profileSnapshotsRequireRefresh = new Set();
+    let accountClearedExiting = false, accountUnavailable = false, startupAccountRetryTimer = null;
     const elements = new Map(), events = [];
     const byId = id => {
       if (!elements.has(id)) elements.set(id, { scrollTop: 0 });

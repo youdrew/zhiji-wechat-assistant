@@ -62,7 +62,8 @@ async function worker(t) {
       buffer = buffer.slice(end + 1);
       const value = JSON.parse(line);
       if ('ready' in value) ready();
-      else replies.push(value);
+      // Stream deltas are progress events, not terminal replies.
+      else if (!('streamDelta' in value)) replies.push(value);
     }
   });
   child.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -149,7 +150,7 @@ test('insights and portrait axes use independent lanes, and one gateway error le
   const baseUrl = await gateway(t, async ({ prompt, tag }) => {
     if (tag === 1) await wait(550);
     if (tag === 4) return { status: 429, body: { error: { message: 'synthetic limit' } } };
-    if (prompt.includes('"windows"'))
+    if (prompt.includes('CHAT_BATCH_JSON:\n'))
       return { body: completion({ items: [{ id: `m-${tag}`, status: 'ok',
         emotion: '开心', intent: '分享' }] }) };
     if (prompt.includes('"portrait"'))

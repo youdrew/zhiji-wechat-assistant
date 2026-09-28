@@ -18,6 +18,47 @@
 import type { Question } from "./types";
 import { EMOTION_QUESTION, INTENT_GROUP_QUESTION, EMOTIONS, INTENT_FAMILIES } from "./catalog";
 
+/**
+ * Fine per-message emotion/stance buckets.  These are deliberately separate from the
+ * seven broad emotions used by the portrait route: a short message often communicates
+ * a social stance (for example, polite guardedness or playful closeness) rather than a
+ * clinical mood.  Keep this question on DISPLAY_QUESTIONS only; portrait analysis must
+ * continue to use EMOTION_QUESTION + routeEmotion so its saved state is not mixed with
+ * the fine-message cache.
+ */
+export const FINE_EMOTION_OPTIONS = [
+  "俏皮",
+  "娇嗔",
+  "傲娇",
+  "犹豫",
+  "纠结",
+  "试探",
+  "客套",
+  "尴尬",
+  "戒备",
+  "无奈",
+  "敷衍",
+  "疲惫",
+  "委屈",
+  "烦躁",
+  "吃醋",
+  "坦诚",
+  "随和",
+  "自然",
+] as const;
+
+export const FINE_EMOTION_QUESTION: Question = {
+  type: "choice",
+  instructions:
+    "判断 TARGET 发送者在当前语境呈现的情绪或语气，从具体词中选最贴切的一项。" +
+    "可用具体词：俏皮、娇嗔、傲娇、犹豫、纠结、试探、客套、尴尬、戒备、无奈、敷衍、疲惫、" +
+    "委屈、烦躁、吃醋、坦诚、随和、自然；优先选择最贴切的一个，不要把多个近义词一起输出。" +
+    "这些是情感表达，不是交流意图；不要把拒绝、拖延、试探、状态报告、分享、邀约等动作当成情绪。" +
+    "结合前文和表情的语用作用判断：表情只能强化、缓和或反讽已有语气，不能单独证明开心。" +
+    "普通事实或确认没有明显情绪时可选自然，但不要为了凑标签虚构负面情绪；前端会按显著性留白。",
+  criteria: [...FINE_EMOTION_OPTIONS],
+};
+
 /** 7 emotion options, display only. */
 export const EMOTION_OPTIONS = EMOTIONS.map((emotion) => emotion.modelLabel);
 
@@ -103,6 +144,12 @@ export const ANALYSIS_QUESTIONS: Record<string, Question> = {
 /** Two questions run for SELF-side target messages (display only; relationship is not needed). */
 export const DISPLAY_QUESTIONS: Record<string, Question> = {
   emotion: EMOTION_QUESTION,
+  intent: INTENT_GROUP_QUESTION,
+};
+
+/** Fine message labels use concrete social-emotion words; portrait/self-quality paths keep DISPLAY_QUESTIONS. */
+export const FINE_DISPLAY_QUESTIONS: Record<string, Question> = {
+  emotion: FINE_EMOTION_QUESTION,
   intent: INTENT_GROUP_QUESTION,
 };
 

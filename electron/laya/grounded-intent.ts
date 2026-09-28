@@ -10,6 +10,7 @@ export type GroundedIntentLabel =
   | "inspect"
   | "agree"
   | "reject"
+  | "deny"
   | "invite"
   | "ask_question"
   | "seek_help"
@@ -28,6 +29,8 @@ export type IntentEvidenceKind =
   | "first_person_inspection"
   | "explicit_acceptance"
   | "explicit_refusal"
+  | "contextual_deferral"
+  | "contextual_denial"
   | "inclusive_invitation"
   | "answer_seeking_question"
   | "action_request"
@@ -54,6 +57,9 @@ function result(label: GroundedIntentLabel, evidenceKind: IntentEvidenceKind): G
 
 // A quoted speech act belongs to its quoted speaker, not necessarily to this sender.
 const QUOTED = /“[^”]*”|「[^」]*」|『[^』]*』|‘[^’]*’|"[^"]*"|`[^`]*`/gu;
+const INVITATION_CONTEXT = /(?:要不要|一起|约|有空|安排|见面|出来|吃饭|看展|看电影|周六|周日|周末|明天|后天|下周)/u;
+const DEFERRAL_TEXT = /改天|以后再说|再说吧|再约|看情况|过(?:几|两)天|有空再说|晚点再说/u;
+const DENIAL_CONTEXT = /喜欢|爱|在乎|想我|暧昧|关系|要不要|是不是|会不会|是否/u;
 
 /** Return an evidenced generic intent, or abstain. This is deliberately a pure function. */
 export function groundedIntent(targetText: string): GroundedIntent | null {
@@ -196,4 +202,19 @@ export function groundedIntent(targetText: string): GroundedIntent | null {
     return result("thank", "thanks_phrase");
   }
   return courtesy;
+}
+
+/** Context-aware fine-message evidence. Portrait analysis remains target-only. */
+export function groundedIntentWithContext(targetText: string, contextHint = ""): GroundedIntent | null {
+  const target = typeof targetText === "string" ? targetText.replace(QUOTED, " ").trim() : "";
+  const context = String(contextHint || "").replace(QUOTED, " ").trim();
+  if (!target || !context) return groundedIntent(targetText);
+  if (INVITATION_CONTEXT.test(context) && DEFERRAL_TEXT.test(target) &&
+      !/(?:今天|明天|后天|周[一二三四五六日天]|周末|下周).{0,12}(?:请|一起|约|见面)/u.test(target)) {
+    return result("reject", "contextual_deferral");
+  }
+  if (/^(?:木有|没有)[。！!？?\s]*$/u.test(target) && DENIAL_CONTEXT.test(context)) {
+    return result("deny", "contextual_denial");
+  }
+  return groundedIntent(targetText);
 }

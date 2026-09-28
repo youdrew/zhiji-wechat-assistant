@@ -21,6 +21,8 @@ import {
   ANALYSIS_VERSION,
   analyzeMessageBatch,
   analyzeMessageTargets,
+  analyzeMessageTargetsWithQuestions,
+  type CustomLabelQuestions,
   analyzeObservedText,
   configureAnalysisRuntime,
   configureModelDir,
@@ -39,8 +41,11 @@ import {
   generateStructured, listModels, ModelConnectorError, testConnection,
   type ModelConfig, type Protocol,
 } from "../electron/model-connectors";
-import { analyzeApiInsights, refreshApiPortraitAxes, updateApiPortrait,
-  type ApiInsightMessage, type ApiPortrait, type ApiPortraitMessage } from "../electron/api-insights";
+import { analyzeApiInsights, type ApiInsightMessage } from "../electron/api-message-insights";
+import { refreshApiPortraitAxes, updateApiPortrait,
+  type ApiPortrait, type ApiPortraitMessage } from "../electron/api-portrait";
+import { buildUnifiedInput, projectLegacyWire,
+  type UnifiedMessageInput } from "../shared/message-input";
 
 // Observed, unattributed text has model-only generic labels; v3 is reserved for fine targets.
 const OBSERVED_LABEL_SCHEMA = "generic-v3";
@@ -96,7 +101,7 @@ async function handleApiGeneration(id: unknown, cmd: ApiGenerationCommand,
     const result = await analyzeApiInsights(connectorConfig(req, true), {
       messages: req.messages as ApiInsightMessage[],
       targetIds: req.targetIds as string[],
-    });
+    }, undefined, (delta) => emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, streamDelta: delta }));
     emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
     return;
   }
@@ -127,6 +132,7 @@ function emitRequestError(id: unknown, error: unknown, apiOnly: boolean): void {
   emit({ id, error: error instanceof ModelConnectorError ? error.code :
     error instanceof MessageBatchInputError ? "bad-request:batch" :
     error instanceof Error ? error.name : "error",
+    ...(error instanceof Error && error.message ? { message: error.message.slice(0, 240) } : {}),
     // The API-only worker has no Laya model to load. Its local model status must
     // never overwrite Python's ready API-worker state after a provider error.
     ...(!apiOnly ? { modelStatus: getModelStatus() } : {}) });
@@ -241,8 +247,17 @@ async function handleTargets(id: unknown, req: Record<string, unknown>): Promise
       emit({ id, error: "bad-request:message" });
       return;
     }
-    messages.push({ id: rec.id, side: rec.side, text: rec.text, time: typeof rec.time === "number" ? rec.time : 0 });
-    seen.add(rec.id);
+    let record: UnifiedMessageInput;
+    try {
+      // Validate the optional local metadata and keep the unified input record; the
+      // model still receives exactly the legacy four-field projection below.
+      record = buildUnifiedInput(rec);
+    } catch {
+      emit({ id, error: "bad-request:message" });
+      return;
+    }
+    messages.push(projectLegacyWire(record, typeof rec.time === "number" ? rec.time : undefined));
+    seen.add(record.id);
   }
   const targetIds: string[] = [];
   for (const t of req.targetIds) {
@@ -333,6 +348,22 @@ async function handleTargets(id: unknown, req: Record<string, unknown>): Promise
     },
     model: r.model,
   });
+}
+
+async function handleCustomTargets(id: unknown, req: Record<string, unknown>): Promise<void> {
+  if (typeof req.sessionId !== "string" || !req.sessionId || !Array.isArray(req.messages) ||
+      !Array.isArray(req.targetIds) || !req.questions || typeof req.questions !== "object") {
+    emit({ id, cmd: "custom-targets", analysisVersion: ANALYSIS_VERSION, error: "bad-request:custom-targets" });
+    return;
+  }
+  const questions = req.questions as CustomLabelQuestions;
+  if (Object.keys(questions).length === 0 ||
+      Object.values(questions).some(question => !question || typeof question !== "object")) {
+    emit({ id, cmd: "custom-targets", analysisVersion: ANALYSIS_VERSION, error: "bad-request:questions" });
+    return;
+  }
+  const result = await analyzeMessageTargetsWithQuestions(req as never, questions);
+  emit({ id, cmd: "custom-targets", modelStatus: getModelStatus(), ...result });
 }
 
 async function handleBatch(id: unknown, req: Record<string, unknown>): Promise<void> {
@@ -594,6 +625,19 @@ async function main(): Promise<void> {
           continue;
         }
         await handleTargets(id, req);
+        continue;
+      }
+      if (cmd === "custom-targets") {
+        if (apiOnly) {
+          emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
+          continue;
+        }
+        const status = getModelStatus();
+        if (status.state !== "ready") {
+          emit({ id, error: `model-${status.state}` });
+          continue;
+        }
+        await handleCustomTargets(id, req);
         continue;
       }
       if (cmd === "batch") {

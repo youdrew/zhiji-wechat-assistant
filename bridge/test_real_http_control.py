@@ -70,6 +70,26 @@ class ControlTests(unittest.TestCase):
                                       {CONTROL_TOKEN_HEADER: "a" * 64})[0], 403)
         self.assertTrue(thread.is_alive())
 
+    def test_javascript_static_resources_ignore_windows_registry_mime(self):
+        token = "a" * 64
+        server, thread = self.server(token)
+        self.addCleanup(server.shutdown)
+        self.assertEqual(real_http.static_content_type("app.js"), real_http.JAVASCRIPT_MIME)
+        self.assertEqual(real_http.static_content_type("module.mjs"), real_http.JAVASCRIPT_MIME)
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+        try:
+            with patch.object(real_http.mimetypes, "guess_type", return_value=("text/plain", None)):
+                connection.request("GET", "/app.js")
+                response = connection.getresponse()
+                body = response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Content-Type"), real_http.JAVASCRIPT_MIME)
+            self.assertIn(b"function", body)
+        finally:
+            connection.close()
+            server.shutdown()
+            thread.join(2)
+
 
 if __name__ == "__main__":
     unittest.main()

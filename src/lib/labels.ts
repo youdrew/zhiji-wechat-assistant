@@ -53,6 +53,7 @@ export const INTENT_LABELS: Record<string, string> = {
   offer_help: "提供帮助",
   tease: "调侃",
   close_chat: "告别",
+  deny: "否认",
   ...GROUNDED_INTENT_LABELS,
 };
 
