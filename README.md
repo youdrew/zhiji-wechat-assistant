@@ -248,11 +248,7 @@ WechatVibe 面向技术学习、研究及个人聊天复盘。使用前请确认
 
 WechatVibe 为独立项目，与腾讯、微信没有官方隶属、合作或背书关系。相关名称、商标及第三方组件的权利归各自权利人所有。
 
-## 交流与建议
-
-QQ 交流群：**921170374** 对项目有改进建议，或者想交流使用经验欢迎加入本群
-
-<img src="docs/assets/readme/community-qq.jpg" alt="WechatVibe QQ 交流群二维码" width="320">
+## 问题反馈
 
 作者：[tswawa](https://github.com/tswawa) · 问题反馈：[GitHub Issues](https://github.com/tswawa/WechatVibe/issues)
 
