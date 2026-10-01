@@ -37,11 +37,18 @@ export const INTENT_FAMILIES = [
 ] as const;
 const familyByLabel = new Map<string, (typeof INTENT_FAMILIES)[number]>(INTENT_FAMILIES.map((family) => [family.modelLabel, family]));
 
+// Option wording is what the decision head actually reads, and two of these labels cost
+// accuracy: `caring` is chosen far more reliably than `affectionate` for 关切/关心, and asking
+// `surprised` separately from `amused` stops surprise from being absorbed into amusement.
+// Measured on 180 human-labelled dialogue messages against this very question: 38.9% -> 57.2%
+// (chance 14.3%). The instruction sentence itself is not the lever: added definitions measured
+// 48.6% on a 210-message sample, i.e. worse.
 export const EMOTION_BUCKETS = {
   happy: ["happy", "excited", "content", "relieved", "grateful", "hopeful", "proud"],
-  affectionate: ["affectionate", "tender"],
+  caring: ["affectionate", "tender"],
   neutral: ["neutral", "calm", "focused", "bored", "tired", "detached", "determined", "curious"],
-  amused: ["amused", "surprised"],
+  surprised: ["surprised"],
+  amused: ["amused"],
   sad: ["sad", "lonely", "disappointed", "hurt", "guilty", "ashamed"],
   anxious: ["anxious", "fearful", "worried", "stressed", "overwhelmed", "suspicious", "confused", "uncertain", "embarrassed", "shy"],
   angry: ["angry", "frustrated", "irritated", "resentful", "jealous"],
