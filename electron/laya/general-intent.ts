@@ -2,7 +2,7 @@ import type { LabelScore } from "../../shared/contracts";
 import type { Answer, Question } from "./types";
 
 /** Stable wire marker. A saved legacy fine result can be refreshed one message at a time. */
-export const GENERAL_LABEL_SCHEMA = "generic-v9";
+export const GENERAL_LABEL_SCHEMA = "generic-v10";
 
 export const INTENTS = [
   { id: "small_talk", zh: "闲聊", en: "small talk" },
