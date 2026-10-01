@@ -16,6 +16,7 @@
  */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const CHATUI = path.join(__dirname, "..", "chatui");
@@ -135,6 +136,99 @@ function addEntryReachable(window) {
   const state = addEntryState(window);
   return state.sidebarUsable || Boolean(state.sidebarEmpty) || Boolean(state.chatEmpty);
 }
+
+// ---------------------------------------------------------------------------
+// Source contract (no DOM, no dependencies).
+//
+// The behavioural test below needs jsdom, which is not a project dependency, so
+// it skips in a clean checkout. This part reads the shipped sources directly and
+// always runs. It guards the exact invariant that broke: the sidebar must expose
+// an add-conversation entry whose availability depends on the session directory,
+// never on how many conversations are already selected.
+// ---------------------------------------------------------------------------
+const INDEX_HTML = fs.readFileSync(path.join(CHATUI, "index.html"), "utf8");
+const APP_JS = fs.readFileSync(path.join(CHATUI, "app.js"), "utf8");
+
+// Slice out a `function NAME(...) { ... }` body via brace matching. These
+// helpers are small and contain no braces inside strings, so a plain scan is
+// accurate for them.
+function functionBody(source, name) {
+  const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
+  if (!match) return null;
+  const open = source.indexOf("{", match.index + match[0].length);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(open, i + 1);
+  }
+  return null;
+}
+
+// Return the markup of the <div> carrying `marker`, closing tags balanced.
+function elementMarkup(html, marker) {
+  const at = html.indexOf(marker);
+  if (at === -1) return null;
+  const start = html.lastIndexOf("<", at);
+  const openEnd = html.indexOf(">", at);
+  if (start === -1 || openEnd === -1) return null;
+  let depth = 1;
+  const tag = /<(\/?)div\b[^>]*>/g;
+  tag.lastIndex = openEnd + 1;
+  let hit;
+  while ((hit = tag.exec(html))) {
+    depth += hit[1] === "/" ? -1 : 1;
+    if (depth === 0) return html.slice(start, hit.index + hit[0].length);
+  }
+  return null;
+}
+
+test("the sidebar add-conversation entry is persistent and not selection-gated", () => {
+  // 1. A real, always-present button lives in the session pane's search header.
+  const header = elementMarkup(INDEX_HTML, 'class="search-header"');
+  assert.ok(header, "chatui/index.html must keep the .search-header block");
+  const button = /<button\b[^>]*id="btnAddConversation"[^>]*>/.exec(header);
+  assert.ok(button, "the search header must ship a persistent #btnAddConversation button");
+  assert.ok(!/\bdisabled\b/.test(button[0]),
+    "the sidebar add entry must not start disabled in the markup");
+  assert.ok(!/<template[\s\S]*id="btnAddConversation"/.test(INDEX_HTML),
+    "the sidebar add entry must not hide behind a <template>");
+
+  // 2. Its enabled state is a function of the session directory only.
+  const updater = functionBody(APP_JS, "updateAddConversationButton");
+  assert.ok(updater, "app.js must define updateAddConversationButton()");
+  assert.ok(/messageSourceReady/.test(updater),
+    "the add entry must depend on the session directory being ready");
+  assert.ok(!/selectedConversations/.test(updater),
+    "the add entry must never be gated on how many conversations are selected");
+
+  // 3. renderSessions refreshes it before the empty-state branches, so the entry
+  //    survives every re-render regardless of the selection.
+  const render = functionBody(APP_JS, "renderSessions");
+  assert.ok(render, "app.js must define renderSessions()");
+  const refreshAt = render.indexOf("updateAddConversationButton()");
+  assert.ok(refreshAt !== -1, "renderSessions() must refresh the add entry");
+  assert.ok(refreshAt < render.indexOf("!visible"),
+    "the add entry must be refreshed before any empty-state branch");
+
+  // 4. The button actually opens the conversation manager.
+  const wiring = /byId\("btnAddConversation"\)\.addEventListener\("click",[\s\S]{0,400}?\}\);/g.exec(APP_JS);
+  assert.ok(wiring, "app.js must bind a click handler to #btnAddConversation");
+  assert.ok(/openConversationManager/.test(wiring[0]),
+    "the sidebar add entry must open the conversation manager");
+
+  // 5. Opening the manager is itself independent of the selection count.
+  const open = functionBody(APP_JS, "openConversationManager");
+  assert.ok(open, "app.js must define openConversationManager()");
+  assert.ok(!/selectedConversations\.size/.test(open),
+    "openConversationManager() must not be short-circuited by the selection count");
+
+  // 6. The chat pane's idle state offers its own way back in.
+  const empty = functionBody(APP_JS, "showChatEmptyState");
+  assert.ok(empty, "app.js must define showChatEmptyState()");
+  assert.ok(/打开信息列表/.test(empty) && /openConversationManager/.test(empty),
+    "the chat idle state must offer an entry into the conversation manager");
+});
 
 test("a second conversation stays addable after the first is selected",
   { skip: unavailable || false },
