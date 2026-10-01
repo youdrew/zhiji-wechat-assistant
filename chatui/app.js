@@ -684,6 +684,7 @@ function renderSessions() {
     visible++;
   }
   while (container.children.length > visible) container.lastElementChild.remove();
+  updateAddConversationButton();
   if (!visible && chatState.sessions.size && !chatState.selectedConversations.size) {
     container.replaceChildren();
     const empty = element("div", "session-empty");
@@ -694,7 +695,26 @@ function renderSessions() {
     button.addEventListener("click", openConversationManager);
     empty.appendChild(button);
     container.appendChild(empty);
+  } else if (!visible && chatState.sessions.size && query) {
+    container.replaceChildren();
+    const empty = element("div", "session-empty");
+    empty.appendChild(element("strong", "", "没有匹配的会话"));
+    const button = element("button", "settings-action-btn", "打开信息列表");
+    button.type = "button";
+    button.addEventListener("click", openConversationManager);
+    empty.appendChild(button);
+    container.appendChild(empty);
   } else if (!visible) status(container, chatState.sessions.size ? "没有匹配的会话" : "暂无会话");
+}
+// The sidebar add entry must never disappear: keep it usable whenever the
+// session directory is known, regardless of how many conversations are already
+// added. It only reflects whether the directory is ready to be browsed.
+function updateAddConversationButton() {
+  const button = byId("btnAddConversation");
+  if (!button) return;
+  const ready = chatState.sessions.size > 0 && chatState.messageSourceReady;
+  button.disabled = !ready;
+  button.title = ready ? "添加要查看的聊天" : "会话目录尚未就绪";
 }
 async function preloadSessionWindows(account, nextSessions, request) {
   const list = [...nextSessions.values()].filter(session => chatState.selectedConversations.has(session.username));
@@ -761,11 +781,25 @@ function clearUnselectedConversation() {
     clearProfileView("人物画像");
   }
   text("chatTitle", "聊天");
-  status(byId("chatMessages"), "从信息列表选择会话");
+  showChatEmptyState();
   byId("btnChatHistory").disabled = true;
   updateHistoryNavigation();
   renderMood();
   switchView("chat");
+}
+// The chat pane's idle state keeps its own entry into the conversation manager,
+// so adding a second (or nth) conversation is always one click away.
+function showChatEmptyState(message) {
+  const container = byId("chatMessages");
+  container.replaceChildren();
+  const empty = element("div", "session-empty chat-empty");
+  empty.appendChild(element("strong", "", "还没有打开会话"));
+  empty.appendChild(element("span", "", message || "从信息列表选择要查看的聊天"));
+  const button = element("button", "settings-action-btn", "打开信息列表");
+  button.type = "button";
+  button.addEventListener("click", openConversationManager);
+  empty.appendChild(button);
+  container.appendChild(empty);
 }
 function renderConversationManager() {
   const list = byId("conversationManagerList");
@@ -805,7 +839,15 @@ function openConversationManager() {
   byId("conversationManager").hidden = false;
   byId("settingsModal").querySelector(".settings-modal-card").classList.add("conversation-open");
   text("btnManageConversations", "收起");
+  try { byId("conversationSearch").focus(); } catch { }
   renderConversationManager();
+  updateAddConversationButton();
+}
+function closeConversationManager() {
+  byId("conversationManager").hidden = true;
+  byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
+  text("btnManageConversations", "管理会话");
+  updateAddConversationButton();
 }
 async function toggleConversationSelected(user) {
   const account = chatState.currentAccount;
@@ -4197,6 +4239,7 @@ function closeSettingsModal() {
   byId("conversationManager").hidden = true;
   byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
   text("btnManageConversations", "管理会话");
+  updateAddConversationButton();
   text("conversationManagerStatus", "");
   ++settingsState.modelSourceReadRequest;
   ++settingsState.modelListRequest;
@@ -4652,14 +4695,15 @@ byId("btnSettings").addEventListener("click", () => {
   if (typeof window.desktopHost?.getModelDownloadState === "function")
     void window.desktopHost.getModelDownloadState().then(showLocalModelDownload);
 });
+byId("btnAddConversation").addEventListener("click", () => {
+  const panel = byId("conversationManager");
+  if (panel.hidden || !byId("settingsModal").classList.contains("show")) openConversationManager();
+  else closeConversationManager();
+});
 byId("btnManageConversations").addEventListener("click", () => {
   const panel = byId("conversationManager");
   if (panel.hidden) openConversationManager();
-  else {
-    panel.hidden = true;
-    byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
-    text("btnManageConversations", "管理会话");
-  }
+  else closeConversationManager();
 });
 byId("conversationSearch").addEventListener("input", renderConversationManager);
 byId("btnCloseSettings").addEventListener("click", closeSettingsModal);

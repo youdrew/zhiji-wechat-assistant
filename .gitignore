@@ -33,6 +33,7 @@ credentials*.json
 # Private agent notes and delivery metadata
 .codex/
 .gemini/
+.workbuddy-ai/
 .vscode/
 .idea/
 AGENTS.md

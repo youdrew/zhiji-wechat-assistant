@@ -310,15 +310,20 @@ body {
   background-color: var(--bg-search);
   border: 1px solid #333334;
   color: #b0b0b0;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: background-color 0.15s, color 0.15s;
 }
-.btn-add-chat:hover {
+.btn-add-chat:hover:not(:disabled) {
   background-color: #3b3b3d;
   color: #fff;
+}
+.btn-add-chat:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .btn-add-chat svg {
   width: 14px;
@@ -603,6 +608,14 @@ body.theme-light .chat-status-pill .status-pill-text {
   flex-direction: column;
   gap: 16px;
   transition: flex 0.2s ease;
+}
+/* Idle chat pane: centre the "open conversation list" call to action. */
+.chat-messages:has(> .chat-empty) {
+  align-items: center;
+  justify-content: center;
+}
+.chat-empty .settings-action-btn {
+  padding: 6px 14px;
 }
 
 /* Timestamp Row */
