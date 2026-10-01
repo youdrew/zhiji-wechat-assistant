@@ -43,8 +43,12 @@ it("issues the same fine questions as the previous inline branch and never asks 
   assert.ok(intentCaption.length >= 8, "general intent stays a bounded choice set with anchors");
   assert.ok(intentCaption.includes("一般交流"));
   assert.equal(ANALYSIS_QUESTIONS.emotion.type, "choice");
-  assert.notEqual(asked.emotion, ANALYSIS_QUESTIONS.emotion,
-    "fine display emotion must not reuse portrait emotion routing");
+  // The display emotion question is the measured broad one: 64.3% coarse top-1 on 300
+  // human-labelled dialogue rows, against 19.7% for the stance-word set, on the same rows
+  // and the same model (see FINE_EMOTION_OPTIONS). The fine path still asks it directly and
+  // never runs the portrait bucket-to-detail routing.
+  assert.equal(asked.emotion, ANALYSIS_QUESTIONS.emotion,
+    "fine display emotion uses the measured broad question");
   assert.deepEqual(asked.emotion, FINE_DISPLAY_QUESTIONS.emotion);
   assert.equal(asked.relationship, ANALYSIS_QUESTIONS.relationship);
   for (const name of ["socialEnergy", "composure", "initiative"]) {

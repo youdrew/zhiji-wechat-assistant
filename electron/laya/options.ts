@@ -19,12 +19,16 @@ import type { Question } from "./types";
 import { EMOTION_QUESTION, INTENT_GROUP_QUESTION, EMOTIONS, INTENT_FAMILIES } from "./catalog";
 
 /**
- * Fine per-message emotion/stance buckets.  These are deliberately separate from the
- * seven broad emotions used by the portrait route: a short message often communicates
- * a social stance (for example, polite guardedness or playful closeness) rather than a
- * clinical mood.  Keep this question on DISPLAY_QUESTIONS only; portrait analysis must
- * continue to use EMOTION_QUESTION + routeEmotion so its saved state is not mixed with
- * the fine-message cache.
+ * Fine per-message emotion/stance buckets, kept for reference and future stance work.
+ *
+ * NOT used for the per-message display: measured on 300 human-labelled dialogue rows
+ * (`Johnson8187/Chinese_Multi-Emotion_Dialogue_Dataset`), this 18-word set scored 19.7%
+ * coarse top-1 against 64.3% for `EMOTION_QUESTION` on the same rows and the same model.
+ * The cause is structural, not a wording slip: the set has no plain-positive and no
+ * caring/surprised word, so 開心語調 was recalled 3.3%, 關切語調 and 驚奇語調 0%.
+ * Adding the missing semantics (开心/关切/惊讶) only reached 30.0%, and adding stance
+ * words to the broad set cost accuracy (60.3% / 61.0%), so `FINE_DISPLAY_QUESTIONS`
+ * now uses `EMOTION_QUESTION` unchanged.
  */
 export const FINE_EMOTION_OPTIONS = [
   "俏皮",
@@ -147,9 +151,14 @@ export const DISPLAY_QUESTIONS: Record<string, Question> = {
   intent: INTENT_GROUP_QUESTION,
 };
 
-/** Fine message labels use concrete social-emotion words; portrait/self-quality paths keep DISPLAY_QUESTIONS. */
+/**
+ * Fine message labels. The emotion question is the measured broad one, shared with the
+ * portrait route: on 300 human-labelled dialogue rows it reached 64.3% coarse top-1
+ * versus 19.7% for the stance-word set (see `FINE_EMOTION_OPTIONS`). Intent stays on the
+ * cue-narrowed general question.
+ */
 export const FINE_DISPLAY_QUESTIONS: Record<string, Question> = {
-  emotion: FINE_EMOTION_QUESTION,
+  emotion: EMOTION_QUESTION,
   intent: INTENT_GROUP_QUESTION,
 };
 
