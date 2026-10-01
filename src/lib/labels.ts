@@ -57,10 +57,14 @@ export const INTENT_LABELS: Record<string, string> = {
   ...GROUNDED_INTENT_LABELS,
 };
 
+// `caring` is an emotion QUESTION option (see EMOTION_BUCKETS), not a catalog emotion, so it
+// needs its own display label; otherwise the English word reaches the interface.
+const BUCKET_LABELS: Record<string, string> = { caring: "亲近" };
+
 export function emotionLabel(label: string): string {
   if (!label) return "";
   const key = keyOf(label);
-  return EMOTION_LABELS[key] ?? EMOTION_LABELS[label] ?? label;
+  return EMOTION_LABELS[key] ?? EMOTION_LABELS[label] ?? BUCKET_LABELS[key] ?? BUCKET_LABELS[label] ?? label;
 }
 
 export function intentLabel(label: string): string {
