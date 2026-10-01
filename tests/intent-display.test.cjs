@@ -31,9 +31,20 @@ vm.runInContext(section("const GENERIC_INTENT_LABELS", "settingsState.settings =
   section("function hasIntentContent(", "function clearInlineIntentPending(") +
   "globalThis.displayedIntentForTest = displayedIntent;" +
   "globalThis.appendScoreLineForTest = appendScoreLine;" +
-  "globalThis.appendIntentLineForTest = appendIntentLine;", context);
+  "globalThis.appendIntentLineForTest = appendIntentLine;" +
+  "globalThis.isIncompleteFragmentForTest = isIncompleteFragment;", context);
 const select = context.displayedIntentForTest;
 const plain = candidates => Array.from(candidates, candidate => ({ ...candidate }));
+
+it("treats a dangling copula as undecidable text", () => {
+  const incomplete = context.isIncompleteFragmentForTest;
+  for (const text of ["我是", "这是", "我这是", "你那是", "这个就是", "我这是。"]) {
+    assert.equal(incomplete(text), true, `${text} should have no label`);
+  }
+  for (const text of ["我是真的服了", "这是我的号", "你是什么时候到的？", "这个是重点"]) {
+    assert.equal(incomplete(text), false, `${text} should keep its labels`);
+  }
+});
 
 it("shows evidence-backed intent plus distinct scored model alternatives", () => {
   const result = select({

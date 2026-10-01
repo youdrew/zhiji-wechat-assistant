@@ -1037,7 +1037,9 @@ function hasIntentContent(messageText) {
   return String(messageText || "").trim().length > 0;
 }
 function isIncompleteFragment(messageText) {
-  return /^(?:这|那|我|你|你这|这个|那个)(?:就)?是[，,。！!…\s]*$/u.test(String(messageText || "").trim());
+  // A dangling copula ("我是" / "这是" / "我这是") states nothing a label could
+  // stand on, so the whole label row stays blank for it.
+  return /^(?:这|那|我|你|你这|这个|那个)(?:就|这|那)?是[，,。！!…\s]*$/u.test(String(messageText || "").trim());
 }
 // Plain acknowledgements / status reports display blank unless the text turns or asks for
 // something. This is an explicit short-text rule, not a global label blacklist: a normal
