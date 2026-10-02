@@ -45,6 +45,7 @@ CONFIG_PATH_KEYS = (
 )
 DATA_ROOT_NAMES = ("xwechat_files", "WeChat Files", "xwechat_files_data")
 TEXT_CONFIG_PATH = re.compile(r"[A-Za-z]:[\\/][^\s\x00-\x1f\"']+")
+CUSTOM_ROOT_ENV = "WECHATVIBE_DATA_ROOT"
 
 
 @dataclass
@@ -286,9 +287,16 @@ def _registry_roots() -> list[str]:
     return roots
 
 
+def _custom_roots() -> list[str]:
+    """User-configured data root (WECHATVIBE_DATA_ROOT); one existing absolute directory."""
+    candidate = _existing_absolute_directory(os.environ.get(CUSTOM_ROOT_ENV) or "")
+    return [candidate] if candidate else []
+
+
 def _known_roots() -> list[str]:
     home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    bases = [*_config_dir_roots(), *_registry_roots(), os.path.join(home, "Documents"), home]
+    bases = [*_custom_roots(), *_config_dir_roots(), *_registry_roots(),
+             os.path.join(home, "Documents"), home]
     for env_name in ("APPDATA", "LOCALAPPDATA"):
         appdata = os.environ.get(env_name)
         if appdata:

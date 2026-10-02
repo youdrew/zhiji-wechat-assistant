@@ -35,6 +35,7 @@ from backend_contracts import (
     mood_from_progress, normalize_api_insight, scope_rank, valid_api_portrait,
 )
 from conversation_selection import ConversationSelectionStore, _session_id
+from data_root_source import DataRootSource
 from history_browser import browse as browse_history, saved_results as saved_history_results, search as search_history
 from message_results import validate_fine_result, validate_portrait_result
 from model_source import LOCAL_SOURCE_ID, ModelSourceStore, ModelSourceUnavailable, connection_values
@@ -47,7 +48,7 @@ from wechat_source import WeChatSource
 
 class Backend:
     def __init__(self, source, analyzer=None, store_factory=None, model_source_store=None,
-                 selection_store=None):
+                 selection_store=None, data_root_store=None):
         self.source = source
         self.analyzer = analyzer or NodeAnalysis()
         self.api_analyzer = NodeAnalysis(api_only=True) if analyzer is None else analyzer
@@ -58,6 +59,7 @@ class Backend:
         self.model_source_store = model_source_store or ModelSourceStore(
             ROOT / ".local" / "real-client-runtime" / "api-model-source.json", root=ROOT,
             legacy_path=ROOT / ".local" / "real-client-runtime" / "model-source.json")
+        self.data_root_store = data_root_store or DataRootSource(ROOT)
         # API chat insights have their own source-scoped cache. The local Laya
         # portrait/affinity worker keeps its existing analysis version.
         # One ApiTaskCoordinator owns the lock/condition, the three registries and
@@ -399,6 +401,15 @@ class Backend:
 
     def configure_local_model(self, value):
         return self.analyzer.configure_local_model(value)
+
+    def data_root_status(self):
+        return self.data_root_store.status()
+
+    def configure_data_root(self, value):
+        return self.data_root_store.select(value)
+
+    def clear_data_root(self):
+        return self.data_root_store.clear()
 
     def model_source(self):
         with self.api_lock:

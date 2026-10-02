@@ -169,6 +169,15 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       return choice.canceled ? null : choice.filePaths[0] || null;
     });
 
+    ipcMain.handle("real-client:data-root-choose-directory", async (event) => {
+      if (!trustedFrame(event) || selfTest || updateValidation || !window) return null;
+      const choice = await dialog.showOpenDialog(window, {
+        title: "选择微信聊天记录目录", defaultPath: app.getPath("documents"),
+        properties: ["openDirectory"],
+      });
+      return choice.canceled ? null : choice.filePaths[0] || null;
+    });
+
     ipcMain.handle("real-client:check-updates", (event) => {
       if (!trustedFrame(event)) return { status: "blocked" };
       if (updateController) return updateController.check();

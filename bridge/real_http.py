@@ -128,6 +128,8 @@ def make_handler(backend, accounts=None, control_token=None):
                     return self.send(200, backend.runtime())
                 if parsed.path == "/api/local-model":
                     return self.send(200, backend.local_model_status())
+                if parsed.path == "/api/data-root":
+                    return self.send(200, backend.data_root_status())
                 if parsed.path == "/api/model-source":
                     try:
                         return self.send(200, backend.model_source())
@@ -223,6 +225,7 @@ def make_handler(backend, accounts=None, control_token=None):
                                  "/api/runtime", "/api/local-model", "/api/model-insights",
                                  "/api/model-portrait", "/api/analysis-cache/clear",
                                  "/api/analysis-cache/resume", "/api/conversation-selection",
+                                 "/api/data-root", "/api/data-root/clear",
                                  *model_endpoints):
                 return self.send(404, {"error": "not found"})
             content_type = [part.strip().lower() for part in self.headers.get("Content-Type", "").split(";")]
@@ -266,6 +269,15 @@ def make_handler(backend, accounts=None, control_token=None):
                     if set(request) != {"path"} or not isinstance(value, str) or not 1 <= len(value) <= 4096 or any(ord(char) < 32 for char in value):
                         raise ValueError("invalid model path")
                     return self.send(200, backend.configure_local_model(value))
+                if endpoint == "/api/data-root":
+                    value = request.get("path")
+                    if set(request) != {"path"} or not isinstance(value, str) or not 1 <= len(value) <= 4096 or any(ord(char) < 32 for char in value):
+                        raise ValueError("invalid data root path")
+                    return self.send(200, backend.configure_data_root(value))
+                if endpoint == "/api/data-root/clear":
+                    if set(request):
+                        raise ValueError("invalid data root request")
+                    return self.send(200, backend.clear_data_root())
                 if endpoint == "/api/model-insights":
                     account = user_value(request.get("account"))
                     user = user_value(request.get("user"))
@@ -375,6 +387,7 @@ def main(classifier):
     from account_api import AccountAPI
     control_token = os.environ.pop(CONTROL_TOKEN_ENV, None)
     backend = Backend(WeChatSource(classifier=classifier))
+    backend.data_root_store.apply()
     port = integer(os.environ.get("CHATUI_PORT"), default_port(ROOT), 65535)
     accounts = AccountAPI(backend, ROOT / ".local" / "real-client-data")
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(backend, accounts, control_token))

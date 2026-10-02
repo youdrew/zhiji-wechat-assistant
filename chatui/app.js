@@ -3147,6 +3147,65 @@ byId("btnChooseLocalModelDir").addEventListener("click", async () => {
   const directory = await window.desktopHost.chooseModelDirectory();
   if (directory) await selectLocalModel(directory);
 });
+settingsState.dataRootRequest = 0;
+settingsState.dataRootBusy = false;
+function showDataRoot(data) {
+  text("dataRootStatus", data.state === "ready" ? `已设置 · 发现 ${data.accounts} 个账号目录` :
+    data.state === "missing" ? (data.exists ? "目录内未发现微信数据" : "路径不存在") : "自动发现");
+  byId("dataRootStatus").title = data.path || "";
+  byId("inputDataRoot").value = data.path || "";
+}
+async function loadDataRoot() {
+  const request = ++settingsState.dataRootRequest;
+  try {
+    const data = await api("/api/data-root");
+    if (request !== settingsState.dataRootRequest) return;
+    if (!data || !["unset", "ready", "missing"].includes(data.state) ||
+        typeof data.path !== "string") throw new Error("数据目录状态无效");
+    showDataRoot(data);
+  } catch {
+    if (request === settingsState.dataRootRequest) text("dataRootStatus", "读取失败");
+  }
+}
+async function saveDataRoot() {
+  const value = byId("inputDataRoot").value.trim();
+  if (!value) { text("dataRootStatus", "请输入目录路径"); return; }
+  settingsState.dataRootBusy = true;
+  text("dataRootStatus", "正在校验路径…");
+  try {
+    const data = await api("/api/data-root", { method: "POST", body: JSON.stringify({ path: value }) });
+    showDataRoot(data);
+    toast("聊天记录路径已保存");
+    void loadSessions();
+  } catch {
+    text("dataRootStatus", "请输入已存在的绝对路径目录");
+  } finally {
+    settingsState.dataRootBusy = false;
+  }
+}
+async function clearDataRoot() {
+  settingsState.dataRootBusy = true;
+  try {
+    const data = await api("/api/data-root/clear", { method: "POST", body: "{}" });
+    showDataRoot(data);
+    toast("已恢复自动发现");
+    void loadSessions();
+  } catch {
+    text("dataRootStatus", "操作失败");
+  } finally {
+    settingsState.dataRootBusy = false;
+  }
+}
+byId("btnBrowseDataRoot").addEventListener("click", async () => {
+  if (typeof window.desktopHost?.chooseDataRoot !== "function") return;
+  const directory = await window.desktopHost.chooseDataRoot();
+  if (directory) byId("inputDataRoot").value = directory;
+});
+byId("btnSaveDataRoot").addEventListener("click", () => void saveDataRoot());
+byId("btnClearDataRoot").addEventListener("click", () => void clearDataRoot());
+byId("inputDataRoot").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); void saveDataRoot(); }
+});
 const MODEL_SOURCE_PROTOCOLS = new Set(["anthropic", "responses", "chat_completions", "gemini", "ollama"]);
 settingsState.modelSourceSnapshot = { mode: "local", api: null, sourceId: "local", status: "idle" };
 settingsState.modelSourceResolved = false;
@@ -4649,6 +4708,7 @@ byId("btnSettings").addEventListener("click", () => {
   void loadRuntime();
   void loadModelSource();
   void loadLocalModel();
+  void loadDataRoot();
   if (typeof window.desktopHost?.getModelDownloadState === "function")
     void window.desktopHost.getModelDownloadState().then(showLocalModelDownload);
 });

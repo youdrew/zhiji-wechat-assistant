@@ -162,6 +162,50 @@ class DiscoveryTests(unittest.TestCase):
         (config_dir / "oversized.ini").write_bytes(b"#" * discovery.CONFIG_READ_LIMIT + tail)
         self.assertEqual(self._discovered(), set())
 
+    def test_custom_root_env_direct_xwechat_files(self):
+        base = self.root / "custom-data"
+        expected = self._account(base, None, "account-1")
+        with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: str(base)}):
+            self.assertEqual(self._discovered(), {expected})
+
+    def test_custom_root_env_parent_directory(self):
+        parent = self.root / "custom-parent"
+        expected = self._account(parent, "xwechat_files", "account-1")
+        with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: str(parent)}):
+            self.assertEqual(self._discovered(), {expected})
+
+    def test_custom_root_env_account_directory(self):
+        base = self.root / "custom-acct"
+        account = base / "xwechat_files" / "myaccount"
+        (account / "db_storage").mkdir(parents=True)
+        expected = account / "db_storage"
+        with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: str(account)}):
+            self.assertEqual(self._discovered(), {expected})
+
+    def test_custom_root_env_invalid_values_ignored(self):
+        base = self.root / "custom-valid"
+        expected = self._account(base, "xwechat_files", "account-1")
+        for bad in ("", "relative/path", "/nonexistent/dir", str(base / "missing")):
+            with self.subTest(bad=bad):
+                with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: bad}):
+                    self.assertEqual(self._discovered(), set())
+
+    def test_custom_root_env_unset_unchanged(self):
+        env = patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(discovery.CUSTOM_ROOT_ENV, None)
+        self.assertEqual(self._discovered(), set())
+
+    def test_custom_root_deduplicates_config_root(self):
+        base = self.root / "shared-root"
+        expected = self._account(base, "xwechat_files", "shared")
+        config_dir = self.appdata / "Tencent" / "xwechat"
+        config_dir.mkdir(parents=True)
+        (config_dir / "path.json").write_text(json.dumps({"dataDir": str(base)}), encoding="utf-8")
+        with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: str(base)}):
+            self.assertEqual(self._discovered(), {expected})
+
 
 if __name__ == "__main__":
     unittest.main()

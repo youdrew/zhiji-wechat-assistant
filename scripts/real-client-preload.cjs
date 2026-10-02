@@ -80,6 +80,10 @@ contextBridge.exposeInMainWorld("desktopHost", Object.freeze({
     if (window.top !== window || !navigator.userActivation.isActive) return Promise.resolve(null);
     return ipcRenderer.invoke("real-client:model-choose-directory");
   },
+  chooseDataRoot() {
+    if (window.top !== window || !navigator.userActivation.isActive) return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:data-root-choose-directory");
+  },
   checkForUpdates() {
     if (window.top !== window) return Promise.resolve({ status: "blocked" });
     return ipcRenderer.invoke("real-client:check-updates");

@@ -21,7 +21,8 @@ SCRIPTS = (
 BRIDGE = (
     "account_api.py", "account_store.py", "conversation_selection.py",
     "analysis_server.ts", "batch_engine.py",
-    "batch_state.py", "cache_source.py", "chat_server.py", "history_browser.py",
+    "batch_state.py", "cache_source.py", "chat_server.py", "data_root_source.py",
+    "history_browser.py",
     "instance_identity.py", "live_source.py", "model_source.py", "model_bundle.py",
     "local_model_source.py", "model_install.py", "profile_signals.py", "profile_state.py",
     "backend_contracts.py", "backend_service.py", "message_results.py", "message_contracts.py",
@@ -150,8 +151,10 @@ def public_mappings(source: Path, models: Path) -> list[tuple[Path, Path, Path]]
     project_files += [Path("native-reader/wr") / name for name in NATIVE_READER]
     project_files += [Path("electron/laya") / name for name in LAYA]
     mappings = [(source / relative, relative, source) for relative in project_files]
-    mappings += [(models / Path(name), Path(".models/laya") / name, models)
-                 for name in MODEL_FILES]
+    for name in MODEL_FILES:
+        original = models / Path(name)
+        if original.is_file():
+            mappings.append((original, Path(".models/laya") / name, models))
     return mappings
 
 
