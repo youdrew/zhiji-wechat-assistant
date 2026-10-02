@@ -15,6 +15,19 @@ function portrait(summary) {
       care: null, affection: null } };
 }
 
+function supportedPortrait(summary) {
+  return { portrait: portrait(summary), support: { summary: ['e1'] } };
+}
+
+function evidence(id, dimension = 'communication') {
+  const quotes = dimension === 'mbti_EI' ? [`tag-${id} 交流能让我恢复精力`, `tag-${id} 我通常找朋友聊天来放松`] :
+    [`tag-${id}`, `tag-${id}`];
+  return { version: 3, subjectKind: 'person', targetCount: 100, batchCount: 1,
+    items: [{ id: `stored-${id}`, dimension, text: quotes[0],
+      sources: [{ messageId: `m-${id}-1`, quote: quotes[0], time: null, speaker: 'person' },
+        { messageId: `m-${id}-2`, quote: quotes[1], time: null, speaker: 'person' }] }] };
+}
+
 function completion(value) {
   return { choices: [{ message: { content: JSON.stringify(value) } }],
     usage: { prompt_tokens: 3, completion_tokens: 2 } };
@@ -31,7 +44,7 @@ async function gateway(t, respond) {
       const answer = await respond({ body, prompt, tag });
       response.setHeader('Content-Type', 'application/json');
       response.statusCode = answer.status || 200;
-      response.end(JSON.stringify(answer.body || completion(portrait(`tag-${tag}`))));
+      response.end(JSON.stringify(answer.body || completion(supportedPortrait(`tag-${tag}`))));
     } catch {
       response.statusCode = 500;
       response.end('{}');
@@ -90,8 +103,8 @@ async function worker(t) {
 
 function portraitRequest(id, baseUrl) {
   return { id, cmd: 'model:portrait', protocol: 'chat_completions', baseUrl,
-    apiKey: 'synthetic-key', model: 'synthetic', previous: null,
-    messages: [{ id: `m-${id}`, sender: 'OTHER', target: true, text: `tag-${id}` }] };
+    apiKey: 'synthetic-key', model: 'synthetic', phase: 'synthesize',
+    evidence: evidence(id), contextTokens: 32768 };
 }
 
 function insightsRequest(id, baseUrl) {
@@ -103,7 +116,8 @@ function insightsRequest(id, baseUrl) {
 
 function axesRequest(id, baseUrl) {
   return { id, cmd: 'model:portrait-axes', protocol: 'chat_completions', baseUrl,
-    apiKey: 'synthetic-key', model: 'synthetic', portrait: portrait(`tag-${id}`) };
+    apiKey: 'synthetic-key', model: 'synthetic', portrait: portrait('stale portrait must not be sent'),
+    evidence: evidence(id, 'mbti_EI'), contextTokens: 32768 };
 }
 
 async function exitCleanly(child) {
@@ -118,7 +132,7 @@ async function exitCleanly(child) {
 test('a slow API portrait does not block a later fast portrait, including after stdin closes', async t => {
   const baseUrl = await gateway(t, async ({ tag }) => {
     await wait(tag === 1 ? 650 : 20);
-    return { body: completion(portrait(`tag-${tag}`)) };
+    return { body: completion(supportedPortrait(`tag-${tag}`)) };
   });
   const running = await worker(t);
   running.send(portraitRequest(1, baseUrl));
@@ -131,10 +145,30 @@ test('a slow API portrait does not block a later fast portrait, including after 
   await exitCleanly(running.child);
 });
 
+test('an observe phase returns a durable ledger without implicitly triggering synthesis', async t => {
+  const requests = [];
+  const baseUrl = await gateway(t, async ({ prompt }) => {
+    requests.push(JSON.parse(prompt.split('INPUT_JSON:\n')[1]));
+    return { body: completion({ observations: [{ dimension: 'communication', text: '这次确认到场',
+      sources: [{ id: 'm1', quote: 'tag-10' }] }] }) };
+  });
+  const running = await worker(t);
+  running.send({ id: 10, cmd: 'model:portrait', protocol: 'chat_completions', baseUrl,
+    apiKey: 'synthetic-key', model: 'synthetic', phase: 'observe', subjectKind: 'person',
+    evidence: null, messages: [{ id: 'segment-10', messageId: 'real-10',
+      sender: 'OTHER', target: true, text: 'tag-10', complete: true }] });
+  await running.until(1);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].facts, undefined);
+  assert.equal(running.replies[0].evidence.version, 3);
+  assert.equal(running.replies[0].evidence.items[0].sources[0].messageId, 'real-10');
+  assert.equal(Object.hasOwn(running.replies[0], 'portrait'), false);
+});
+
 test('stdin close waits for a portrait that is still queued', async t => {
   const baseUrl = await gateway(t, async ({ tag }) => {
     await wait(300);
-    return { body: completion(portrait(`tag-${tag}`)) };
+    return { body: completion(supportedPortrait(`tag-${tag}`)) };
   });
   const running = await worker(t);
   for (let id = 1; id <= 11; id++) running.send(portraitRequest(id, baseUrl));
@@ -147,17 +181,17 @@ test('stdin close waits for a portrait that is still queued', async t => {
 });
 
 test('insights and portrait axes use independent lanes, and one gateway error leaves peers usable', async t => {
-  const baseUrl = await gateway(t, async ({ prompt, tag }) => {
+  const baseUrl = await gateway(t, async ({ body, prompt, tag }) => {
     if (tag === 1) await wait(550);
     if (tag === 4) return { status: 429, body: { error: { message: 'synthetic limit' } } };
     if (prompt.includes('CHAT_BATCH_JSON:\n'))
       return { body: completion({ items: [{ id: `m-${tag}`, status: 'ok',
         emotion: '开心', intent: '分享' }] }) };
-    if (prompt.includes('"portrait"'))
-      return { body: completion({ mbtiAxes: { EI: 55, SN: null, TF: null, JP: null },
+    if (tag === 3)
+      return { body: completion({ portrait: { mbtiAxes: { EI: 55, SN: null, TF: null, JP: null },
         traits: { socialEnergy: 60, humor: null, composure: null, initiative: null,
-          care: null, affection: null }, affinity: null }) };
-    return { body: completion(portrait(`tag-${tag}`)) };
+          care: null, affection: null }, affinity: null }, support: { EI: ['e1'], socialEnergy: ['e1'] } }) };
+    return { body: completion(supportedPortrait(`tag-${tag}`)) };
   });
   const running = await worker(t);
   running.send(portraitRequest(1, baseUrl));
@@ -192,7 +226,7 @@ test('one lane runs at most ten requests and queues at most twenty before rate-l
     maxInFlight = Math.max(maxInFlight, inFlight);
     await wait(350);
     inFlight--;
-    return { body: completion(portrait(`tag-${tag}`)) };
+    return { body: completion(supportedPortrait(`tag-${tag}`)) };
   });
   const running = await worker(t);
   for (let id = 1; id <= 35; id++) running.send(portraitRequest(id, baseUrl));
@@ -216,7 +250,7 @@ test('a queued request expires after ten seconds and never becomes a paid gatewa
   const baseUrl = await gateway(t, async ({ tag }) => {
     gatewayIds.push(tag);
     if (tag <= 10) await held;
-    return { body: completion(portrait(`tag-${tag}`)) };
+    return { body: completion(supportedPortrait(`tag-${tag}`)) };
   });
   const running = await worker(t);
   try {

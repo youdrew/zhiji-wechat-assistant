@@ -21,6 +21,8 @@ from pathlib import Path
 
 import message_input
 from api_tasks import ApiTaskCoordinator
+from api_portrait_statistics import (append_batch, profile_from_statistics,
+                                    valid_statistics, validate_batch_signal)
 from backend_contracts import (
     API_INSIGHT_RETRYABLE, API_INSIGHT_RETRY_MAX, API_INSIGHT_RETRY_SECONDS,
     API_JOB_CACHE_LIMIT, API_MODEL_RETRYABLE, API_MODEL_RETRY_MAX,
@@ -32,23 +34,26 @@ from backend_contracts import (
     api_insight_scope, api_portrait_add_counts, api_portrait_plan,
     api_portrait_resume_anchor, api_portrait_scope, api_portrait_tail_hashes,
     api_portrait_wire_chars, mbti_from_totals, model_source_failure,
-    mood_from_progress, normalize_api_insight, scope_rank, valid_api_portrait,
+    mood_from_progress, normalize_api_insight, scope_rank,
 )
 from conversation_selection import ConversationSelectionStore, _session_id
+from data_root_source import DataRootSource
 from history_browser import browse as browse_history, saved_results as saved_history_results, search as search_history
 from message_results import validate_fine_result, validate_portrait_result
 from model_source import LOCAL_SOURCE_ID, ModelSourceStore, ModelSourceUnavailable, connection_values
 from node_analysis import NodeAnalysis
 from profile_signals import keywords_from_counts, summary_from_aggregate
 from profile_state import empty_state as empty_profile_state, traits_from_state
+from portrait_contracts import valid_mbti_basis
 from result_store import project_result_store
 from wechat_source import WeChatSource
 
 
 class Backend:
     def __init__(self, source, analyzer=None, store_factory=None, model_source_store=None,
-                 selection_store=None):
+                  selection_store=None, data_root_store=None):
         self.source = source
+        self.data_root_store = data_root_store or DataRootSource(ROOT)
         self.analyzer = analyzer or NodeAnalysis()
         self.api_analyzer = NodeAnalysis(api_only=True) if analyzer is None else analyzer
         # Long portrait generations must not hold up interactive message labels.
@@ -400,6 +405,15 @@ class Backend:
     def configure_local_model(self, value):
         return self.analyzer.configure_local_model(value)
 
+    def data_root_status(self):
+        return self.data_root_store.status()
+
+    def configure_data_root(self, value):
+        return self.data_root_store.select(value)
+
+    def clear_data_root(self):
+        return self.data_root_store.clear()
+
     def model_source(self):
         with self.api_lock:
             return self.model_source_store.public(self.active_model_source_mode,
@@ -705,7 +719,14 @@ class Backend:
                 if subject not in contexts:
                     saved = store.api_portrait_get(job_key[0], job_key[1],
                                                    api_portrait_scope(job_key[2]), subject)
-                    contexts[subject] = saved["portrait"]["summary"][:80] if saved else ""
+                    statistics = (saved.get("resume") or {}).get("portraitStatistics") if saved else None
+                    if valid_statistics(statistics):
+                        derived = profile_from_statistics(statistics, statistics["classifierVersion"],
+                                                          is_group=job_key[1].endswith("@chatroom"),
+                                                          subject=subject)
+                        contexts[subject] = (derived["summary"] or "")[:80]
+                    else:
+                        contexts[subject] = saved["portrait"]["summary"][:80] if saved else ""
                 if contexts[subject]:
                     next(item for item in wire if item["id"] == message["id"])[
                         "portraitContext"] = contexts[subject]
@@ -831,7 +852,7 @@ class Backend:
         full_digest, delta_digest = hashlib.sha256(), hashlib.sha256()
         pieces = []
         retained_bytes = 0
-        full = {"messageCount": 0, "textCount": 0, "targetTextCount": 0,
+        full = {"messageCount": 0, "targetMessageCount": 0, "textCount": 0, "targetTextCount": 0,
                 "totalChars": 0, "pieceCount": 0}
         delta = dict(full)
         row_hashes = bytearray()
@@ -859,6 +880,11 @@ class Backend:
                     delta["messageCount"] += 1
                 text = item.get("text")
                 sender = item.get("side")
+                target = sender == "other" and (not user.endswith("@chatroom") or
+                                                  subject == user or item.get("senderId") == subject)
+                full["targetMessageCount"] += int(target)
+                if current:
+                    delta["targetMessageCount"] += int(target)
                 evidence = json.dumps([item.get("id"), sender, item.get("senderId"),
                                        item.get("kind"), text if isinstance(text, str) else None],
                                       ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -882,8 +908,6 @@ class Backend:
                 if (first_item and skip_first_pieces >=
                         (len(text) + API_PORTRAIT_PIECE_CHARS - 1) // API_PORTRAIT_PIECE_CHARS):
                     raise ValueError("unfinished portrait source changed")
-                target = sender == "other" and (not user.endswith("@chatroom") or
-                                                  subject == user or item.get("senderId") == subject)
                 for counts in (full, delta) if current else (full,):
                     counts["textCount"] += 1
                     counts["targetTextCount"] += int(target)
@@ -893,6 +917,11 @@ class Backend:
                     piece = {"id": f"{item['id']}:{offset // API_PORTRAIT_PIECE_CHARS}",
                              "sender": "SELF" if sender == "self" else "OTHER",
                              "target": target, "text": text[offset:offset + API_PORTRAIT_PIECE_CHARS],
+                             "messageId": item["id"],
+                             "time": item_sort[0] if type(item_sort[0]) is int and item_sort[0] >= 0 else None,
+                             "speaker": "self" if sender == "self" else hashlib.sha256(
+                                  str(item.get("senderId") or "other").encode("utf-8")).hexdigest()[:16],
+                             "complete": offset + API_PORTRAIT_PIECE_CHARS >= len(text),
                              "_last": offset + API_PORTRAIT_PIECE_CHARS >= len(text),
                              "_sort": item_sort, "_before": previous_sort,
                              "_pieceIndex": piece_index, "_rowIndex": row_index}
@@ -916,7 +945,7 @@ class Backend:
             raise ValueError("unfinished portrait source changed")
         def available(counts):
             return {key: counts[key] for key in
-                    ("messageCount", "textCount", "targetTextCount", "totalChars", "pieceCount")}
+                    ("messageCount", "targetMessageCount", "textCount", "targetTextCount", "totalChars", "pieceCount")}
         return (pieces, available(delta), delta_digest.hexdigest(),
                 available(full), full_digest.hexdigest(), row_hashes)
 
@@ -1075,9 +1104,33 @@ class Backend:
                         "processedTargetTexts": 0,
                         "totalTargetTexts": available["targetTextCount"] if available else 0,
                         "batchIndex": 0, "batchTotal": 0, "complete": False}
+        basis = (saved.get("resume") or {}).get("mbtiBasis") if saved else None
+        statistics = (saved.get("resume") or {}).get("portraitStatistics") if saved else None
+        classifier_version = self.api_portrait_analyzer.portrait_version() if mode == "api" else None
+        compatible = valid_statistics(statistics, classifier_version)
+        rebuilding = bool(compatible and not saved["complete"] and not statistics["state"]["count"] and
+                          saved["portrait"].get("summary"))
+        native_profile = None
+        if valid_statistics(statistics) and (statistics["state"]["count"] or saved["complete"] or
+                                            not saved["portrait"].get("summary")):
+            derived = profile_from_statistics(statistics, statistics["classifierVersion"],
+                                              is_group=group, subject=member or ("" if group else user))
+            native_profile = {**identity, **derived, "account": account,
+                              "stats": {"messageCount": message_count if message_count is not None else
+                                        (available or {}).get("messageCount" if group and not member else "targetMessageCount"),
+                                        "textCount": text_count if text_count is not None else
+                                        (available or {}).get("textCount" if group and not member else "targetTextCount", 0),
+                                        "analyzedCount": derived["analyzedCount"],
+                                        "participantCount": len(members) if group and not member else 1},
+                              "analysisUnit": "batch", "job": job,
+                              "dataStatus": "analyzed" if progress["complete"] else
+                                            "partial" if derived["analyzedCount"] else "unanalyzed"}
         return {"account": account, "sourceId": source_id, "subject": subject,
                 "identity": identity,
                 "portrait": saved["portrait"] if saved else None,
+                **({"nativeProfile": native_profile} if native_profile is not None else {}),
+                **({"mbtiBasis": basis} if native_profile is None and valid_mbti_basis(basis) else {}),
+                "needsRebuild": bool(saved and not compatible), "rebuilding": rebuilding,
                 "available": available, "inventoryReady": inventory_status == "ready",
                 "inventoryStatus": inventory_status, "progress": progress,
                 "suspended": store.cache_suspended(account, source_id) if mode == "api" else False,
@@ -1219,31 +1272,8 @@ class Backend:
             if current and current["status"] in ("queued", "running"):
                 return {"account": account, "sourceId": source_id,
                         "job": {key: value for key, value in current.items() if not key.startswith("_")}}
-            if refresh_axes:
-                # Re-estimate MBTI/traits from the saved cumulative portrait with one
-                # bounded call: no history rescan, no progress reset, same source scope.
-                saved = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
-                if saved is None:
-                    raise ValueError("no saved portrait to re-evaluate")
-                job = {"id": uuid.uuid4().hex, "status": "queued",
-                       "processed": saved["available"].get("baseTextCount", 0) + saved["processed"],
-                       "total": saved["available"].get("baseTextCount", 0) + saved["available"]["textCount"],
-                       "batchIndex": saved["batchIndex"], "batchTotal": len(saved["plan"]),
-                       "startedAtMs": int(time.time() * 1000),
-                       "_axesRefresh": True, "_contextTokens": config.get("contextTokens")}
-                self.api_portrait_jobs[job_key] = job
-                self.api_tasks.begin()
-                thread = threading.Thread(target=self._run_model_portrait_axes,
-                                          args=(job_key, job, (account, workdir), store, config,
-                                                api_key, saved), daemon=True)
-                try:
-                    thread.start()
-                except Exception:
-                    self.api_tasks.finish()
-                    job.update(status="error", error="portrait-analysis-failed")
-                    raise
-                return {"account": account, "sourceId": source_id,
-                        "job": {key: value for key, value in job.items() if not key.startswith("_")}}
+            # Keep the old request flag compatible, but every refresh uses the
+            # same incremental statistics path. Never ask an LLM to rewrite axes.
             # The full history scan and batch planning can take minutes. Register
             # the scoped job before starting that work so POST can return at once.
             job = {"id": uuid.uuid4().hex, "status": "queued", "phase": "preparing",
@@ -1281,6 +1311,14 @@ class Backend:
         self._assert_scope(scope)
         self._assert_api_portrait_job(job_key, job, store, config)
         existing = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
+        classifier_version = self.api_portrait_analyzer.portrait_version()
+        job["_classifierVersion"] = classifier_version
+        rebuild = bool(existing and not valid_statistics(
+            (existing.get("resume") or {}).get("portraitStatistics"), classifier_version))
+        if rebuild:
+            # Preserve the stored display portrait. Only the explicit analysis task
+            # replaces its obsolete cursor/ledger after a new plan has been prepared.
+            existing = None
         current_highwater = self.source.history_highwater(user)
         self._assert_scope(scope)
         self._assert_api_portrait_job(job_key, job, store, config)
@@ -1298,6 +1336,21 @@ class Backend:
                            batchIndex=existing["batchIndex"], batchTotal=len(existing["plan"]))
                 job.pop("phase", None)
             return None
+        if existing and not existing["complete"] and existing["batchIndex"] == len(existing["plan"]):
+            # Compatibility with a crash after the final batch checkpoint. Finalize
+            # durable statistics without another model call or a history scan.
+            with self.api_lock:
+                self._assert_api_portrait_job(job_key, job, store, config)
+                job.update(status="running",
+                           processed=existing["available"].get("baseTextCount", 0) + existing["processed"],
+                           total=existing["available"].get("baseTextCount", 0) + existing["available"]["textCount"],
+                           processedTargetTexts=existing["available"].get("baseTargetTextCount", 0) +
+                                                existing["available"].get("processedTargetTextCount", 0),
+                           totalTargetTexts=existing["available"].get("baseTargetTextCount", 0) +
+                                            existing["available"]["targetTextCount"],
+                           batchIndex=existing["batchIndex"], batchTotal=len(existing["plan"]),
+                           _available=existing["available"].get("fullAvailable"))
+            return existing, [], existing["plan"][-1] if existing["plan"] else 0, b""
         highwater = existing["highwater"] if existing and not existing["complete"] else current_highwater
         after = existing["after"] if existing and not existing["complete"] else (
             existing["highwater"] if existing else None)
@@ -1403,6 +1456,7 @@ class Backend:
                 raise ValueError("unfinished portrait source changed")
             legacy_resume = api_portrait_resume_anchor(
                 pieces[piece_offset - 1], piece_offset, completed, tails)
+            legacy_resume["portraitStatistics"] = existing["resume"]["portraitStatistics"]
             if type(existing["available"].get("processedTargetTextCount")) is not int:
                 available["processedTargetTextCount"] = sum(
                     bool(item["target"] and item["_last"]) for item in pieces[:piece_offset])
@@ -1413,7 +1467,7 @@ class Backend:
         available["baseTargetTextCount"] = base_target_count
         available["fullAvailable"] = full_available
         available["fullFingerprint"] = full_fingerprint
-        wire_chars = api_portrait_wire_chars(config.get("contextTokens"))
+        wire_chars = api_portrait_wire_chars(config.get("contextTokens"), reserved_tokens=10240)
         if existing and not existing["complete"]:
             prefix = existing["plan"][:completed]
             plan = prefix + [piece_offset + end for end in api_portrait_plan(pieces, wire_chars)]
@@ -1429,7 +1483,10 @@ class Backend:
                                                  full_fingerprint, full_available)
                 store.register_api_source(account, source_id, config["protocol"], config["model"])
                 saved = store.api_portrait_begin(account, user, api_portrait_scope(source_id), subject,
-                                                 highwater, after, fingerprint, available, plan)
+                                                 highwater, after, fingerprint, available, plan,
+                                                 rebuild=rebuild,
+                                                 local_rules=True, classifier_version=classifier_version,
+                                                 subject_kind="group" if user.endswith("@chatroom") and subject == user else "person")
                 if existing and not existing["complete"] and (
                         available != saved["available"] or legacy_resume is not None):
                     store.api_portrait_upgrade_resume(
@@ -1492,6 +1549,9 @@ class Backend:
 
     def _run_model_portrait_scoped(self, job_key, job, scope, store, config, api_key):
         account, user, source_id, subject = job_key
+        group = user.endswith("@chatroom")
+        local_subject = "" if group and subject == user else subject
+        subject_kind = "group" if group and not local_subject else "person"
         try:
             with self.api_lock:
                 self._assert_api_portrait_job(job_key, job, store, config)
@@ -1500,36 +1560,57 @@ class Backend:
             if prepared is None:
                 return
             saved, pieces, piece_offset, tails = prepared
-            portrait = saved["portrait"]
-            processed = saved["processed"]
-            processed_chars = saved["processedChars"]
+            portrait = saved["portrait"]  # Display-only legacy snapshot until statistics exist.
+            saved_resume = saved.get("resume") or {}
+            statistics = saved_resume.get("portraitStatistics")
+            if not valid_statistics(statistics):
+                raise RuntimeError("invalid-portrait")
+            background = saved_resume.get("portraitContext") or []
+            if not isinstance(background, list):
+                background = []
+            processed, processed_chars = saved["processed"], saved["processedChars"]
             plan = saved["plan"]
-            processed_target = saved["available"].get("processedTargetTextCount")
+            processed_target = saved["available"].get("processedTargetTextCount", 0)
             if type(processed_target) is not int:
-                if saved["batchIndex"]:
-                    raise RuntimeError("API portrait target checkpoint unavailable")
-                processed_target = 0
+                raise RuntimeError("invalid-portrait")
+            wire_budget = api_portrait_wire_chars(config.get("contextTokens"), reserved_tokens=10240)
             for batch_index in range(saved["batchIndex"], len(plan)):
                 self._assert_scope(scope)
-                with self.api_lock:
-                    self._assert_api_portrait_job(job_key, job, store, config)
+                self._assert_api_portrait_job(job_key, job, store, config)
                 start = (plan[batch_index - 1] if batch_index else 0) - piece_offset
                 stop = plan[batch_index] - piece_offset
                 batch = pieces[start:stop]
                 if not batch:
                     raise RuntimeError("API portrait batch cursor unavailable")
-                wire = [{key: item[key] for key in ("id", "sender", "target", "text")}
+                wire = [{key: value for key, value in item.items() if not key.startswith("_")}
                         for item in batch]
+                # Prior raw text is optional context, never previously generated
+                # personality conclusions. Drop oldest background to respect budget.
+                context = [dict(item, target=False, complete=False) for item in background[-3:]
+                           if isinstance(item, dict) and isinstance(item.get("text"), str)]
+                while context and sum(len(json.dumps(item, ensure_ascii=False, separators=(",", ":"))) + 1
+                                      for item in context + wire) > wire_budget:
+                    context.pop(0)
+                wire = context + wire
                 batch_started = time.monotonic()
-                job["batchStartedAtMs"] = int(time.time() * 1000)
+                job.update(batchStartedAtMs=int(time.time() * 1000), phase="classifying")
                 for attempt in range(API_MODEL_RETRY_MAX + 1):
                     self._assert_scope(scope)
                     self._assert_api_portrait_job(job_key, job, store, config)
                     try:
-                        updated = self.api_portrait_analyzer.model_portrait(
-                            config["protocol"], config["baseUrl"], api_key, config["model"], portrait, wire)
-                        if not valid_api_portrait(updated):
+                        generated = self.api_portrait_analyzer.classify_portrait_batch(
+                            config["protocol"], config["baseUrl"], api_key, config["model"],
+                            wire, subject_kind, config.get("contextTokens")) if any(
+                                item["target"] and item["text"].strip() for item in batch) else {"result": None}
+                        if not isinstance(generated, dict) or "result" not in generated:
                             raise RuntimeError("invalid-portrait")
+                        if (any(item["target"] and item["text"].strip() for item in batch) and
+                                generated.get("batchVersion") != statistics["classifierVersion"]):
+                            raise RuntimeError("portrait-state-invalid")
+                        try:
+                            validate_batch_signal(generated["result"], batch)
+                        except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+                            raise RuntimeError("invalid-portrait") from exc
                     except Exception as exc:
                         code = str(exc)
                         if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
@@ -1539,89 +1620,43 @@ class Backend:
                                                    store, code, attempt + 1)
                         continue
                     break
+                # Local coverage/state faults cannot be fixed by regenerating the
+                # same paid model response. Only model-output validation retries.
+                try:
+                    next_statistics = append_batch(statistics, generated["result"], batch,
+                                                   is_group=group, subject=local_subject)
+                except (TypeError, ValueError, KeyError, RuntimeError) as exc:
+                    raise RuntimeError("portrait-state-invalid") from exc
+                completed_texts = sum(bool(item["_last"]) for item in batch)
+                completed_targets = sum(bool(item["target"] and item["_last"]) for item in batch)
+                next_processed = processed + completed_texts
+                next_target = processed_target + completed_targets
+                next_chars = processed_chars + sum(len(item["text"]) for item in batch)
+                checkpoint_resume = api_portrait_resume_anchor(
+                    batch[-1], plan[batch_index], batch_index + 1, tails)
+                checkpoint_resume["portraitStatistics"] = next_statistics
+                background = [{**{key: value for key, value in item.items() if not key.startswith("_")},
+                               "id": "background:" + item["id"], "target": False, "complete": False}
+                              for item in batch[-3:]]
+                checkpoint_resume["portraitContext"] = background
                 self._assert_scope(scope)
                 with self.api_lock:
                     self._assert_api_portrait_job(job_key, job, store, config)
                     source_lock = getattr(self.source, "lock", None)
                     with source_lock if source_lock is not None else nullcontext():
                         self._assert_scope(scope)
-                        portrait = updated
-                        completed_texts = sum(bool(item["_last"]) for item in batch)
-                        completed_targets = sum(bool(item["target"] and item["_last"])
-                                                for item in batch)
-                        processed += completed_texts
-                        processed_target += completed_targets
-                        processed_chars += sum(len(item["text"]) for item in batch)
-                        store.api_portrait_checkpoint(account, user, api_portrait_scope(source_id),
-                                                      subject, batch_index + 1, portrait, processed,
-                                                      processed_chars, batch_index + 1 == len(plan),
-                                                      processed_target=processed_target,
-                                                      resume=api_portrait_resume_anchor(
-                                                          batch[-1], plan[batch_index],
-                                                          batch_index + 1, tails))
-                        job["processed"] = saved["available"].get("baseTextCount", 0) + processed
-                        job["processedTargetTexts"] = (saved["available"].get("baseTargetTextCount", 0) +
-                                                       processed_target)
-                        job["batchIndex"] = batch_index + 1
-                        elapsed = max(time.monotonic() - batch_started, .001)
-                        job["rateTextsPerSecond"] = round(completed_texts / elapsed, 2)
-                        job.pop("retry", None)
-            job["status"] = "done"
-        except Exception as exc:
-            code = str(exc)
-            with self.api_lock:
-                job.pop("retry", None)
-                job.pop("phase", None)
-                job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
-                           code in {"invalid-portrait", "model-source-changed"} else
-                           "portrait-analysis-failed")
-    def _run_model_portrait_axes(self, job_key, job, scope, store, config, api_key, saved):
-        """Pin the same source before the paid axes call and its checkpoint."""
-        request_scope = getattr(self.source, "request_scope", None)
-        try:
-            with request_scope() if callable(request_scope) else nullcontext():
-                self._run_model_portrait_axes_scoped(
-                    job_key, job, scope, store, config, api_key, saved)
-        except Exception as exc:
-            code = str(exc)
-            with self.api_lock:
-                job.pop("retry", None)
-                job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
-                           code in {"invalid-portrait", "model-source-changed"} else
-                            "portrait-analysis-failed")
-        finally:
-            self.api_tasks.finish()
-
-    def _run_model_portrait_axes_scoped(self, job_key, job, scope, store, config, api_key, saved):
-        account, user, source_id, subject = job_key
-        try:
-            self._assert_scope(scope)
-            with self.api_lock:
-                self._assert_api_portrait_job(job_key, job, store, config)
-                job["status"] = "running"
-            portrait = saved["portrait"]
-            job["batchStartedAtMs"] = int(time.time() * 1000)
-            for attempt in range(API_MODEL_RETRY_MAX + 1):
-                self._assert_scope(scope)
-                self._assert_api_portrait_job(job_key, job, store, config)
-                try:
-                    update = self.api_portrait_analyzer.refresh_portrait_axes(
-                        config["protocol"], config["baseUrl"], api_key, config["model"], portrait)
-                    if not isinstance(update, dict) or not {"mbtiAxes", "traits", "affinity"} <= update.keys():
-                        raise RuntimeError("invalid-portrait")
-                    merged = {**portrait, "mbtiAxes": update["mbtiAxes"],
-                              "traits": update["traits"], "affinity": update["affinity"]}
-                    if not valid_api_portrait(merged):
-                        raise RuntimeError("invalid-portrait")
-                except Exception as exc:
-                    code = str(exc)
-                    if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
-                        raise
-                    self._assert_scope(scope)
-                    self._wait_api_model_retry(self.api_portrait_jobs, job_key, job,
-                                               store, code, attempt + 1)
-                    continue
-                break
+                        store.api_portrait_checkpoint(
+                            account, user, api_portrait_scope(source_id), subject,
+                            batch_index + 1, portrait, next_processed, next_chars,
+                            batch_index + 1 == len(plan), processed_target=next_target,
+                            resume=checkpoint_resume)
+                    statistics = next_statistics
+                    processed, processed_target, processed_chars = next_processed, next_target, next_chars
+                    job.update(processed=saved["available"].get("baseTextCount", 0) + processed,
+                               processedTargetTexts=saved["available"].get("baseTargetTextCount", 0) + processed_target,
+                               batchIndex=batch_index + 1,
+                               rateTextsPerSecond=round(completed_texts / max(time.monotonic() - batch_started, .001), 2))
+                    job.pop("retry", None)
             self._assert_scope(scope)
             with self.api_lock:
                 self._assert_api_portrait_job(job_key, job, store, config)
@@ -1629,16 +1664,20 @@ class Backend:
                 with source_lock if source_lock is not None else nullcontext():
                     self._assert_scope(scope)
                     store.api_portrait_checkpoint(account, user, api_portrait_scope(source_id), subject,
-                                                  saved["batchIndex"], merged, saved["processed"],
-                                                  saved["processedChars"], saved["complete"])
-            job["status"] = "done"
+                                                 len(plan), portrait, processed, processed_chars, True,
+                                                 processed_target=processed_target)
+                job.update(status="done")
+                job.pop("retry", None)
+                job.pop("phase", None)
         except Exception as exc:
             code = str(exc)
             with self.api_lock:
                 job.pop("retry", None)
+                job.pop("phase", None)
                 job.update(status="error", error=code if code in MODEL_CONNECTOR_ERRORS or
-                           code in {"invalid-portrait", "model-source-changed"} else
+                           code in {"invalid-portrait", "portrait-state-invalid", "model-source-changed"} else
                            "portrait-analysis-failed")
+
     def messages(self, user, limit):
         account, workdir, _ = self._scoped_identity()
         messages = self.source.messages(user, limit)

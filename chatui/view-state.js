@@ -121,6 +121,9 @@
         localModelDownloadBusy: false,
         localModelReady: false,
         localModelResolved: false,
+        dataRootRequest: 0,
+        dataRootBusy: false,
+        dataRootDraftDirty: false,
         modelSourceSnapshot: { mode: "local", api: null, sourceId: "local", status: "idle" },
         modelSourceResolved: false,
         modelSourceReadRequest: 0,
@@ -163,7 +166,7 @@
         chat: ["generation", "historyRequest", "historySearchRequest", "sessionRequest", "windowRequestSerial", "messageRequest"],
         labels: [],
         portrait: ["profileGeneration", "analysisGeneration", "apiPortraitRequest"],
-        settings: ["runtimeRequest", "localModelRequest", "modelSourceReadRequest", "modelSourceRevision", "modelListRequest", "modelTestRequest"],
+        settings: ["runtimeRequest", "localModelRequest", "dataRootRequest", "modelSourceReadRequest", "modelSourceRevision", "modelListRequest", "modelTestRequest"],
       };
       if (keys.some(key => counters[domain].includes(key))) throw new Error("Request counters must never reset");
       if (keys.some(key => !fields.has(key))) throw new Error("Unknown state field");

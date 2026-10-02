@@ -7,9 +7,65 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock
 
 from real_backend import NodeAnalysis
+from api_portrait_statistics import append_batch, empty_statistics, profile_from_statistics
 
 
 class ApiWorkerRecoveryTests(unittest.TestCase):
+    def test_portrait_classifier_runs_once_through_real_worker_without_local_model(self):
+        calls = []
+        class Gateway(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                calls.append(body)
+                system = next(message["content"] for message in body["messages"]
+                              if message["role"] == "system")
+                contract = json.loads(system.split("LOCAL_QUESTION_CONTRACT:\n", 1)[1])
+                answers = {}
+                for name, (_instruction, labels) in contract["questions"].items():
+                    selected = labels.index("warm") if name == "relationship" else 0
+                    answers[name] = [int(index == selected) for index in range(len(labels))]
+                answers["emotion"] = [.4, .3, .3] + [0] * (len(answers["emotion"]) - 3)
+                data = json.dumps({"choices": [{"message": {"content": json.dumps({"answers": answers})}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        worker = NodeAnalysis(api_only=True)
+        try:
+            generated = worker.classify_portrait_batch(
+                "chat_completions", f"http://127.0.0.1:{server.server_port}/v1",
+                "synthetic-key", "synthetic", [{"id": "part-a", "messageId": "synthetic-a",
+                 "sender": "OTHER", "target": True, "text": "一段合成的背景材料。", "complete": True}],
+                "person", 32768)
+            self.assertEqual(len(calls), 1)
+            self.assertAlmostEqual(generated["result"]["score"], .55)
+            self.assertIsNone(generated["result"]["personalityEvidence"])
+            self.assertTrue(generated["result"]["intentBroad"])
+            # Exercise the full adapter boundary with legal partial routed mass
+            # and no personality evidence, not just an all-one-hot fake signal.
+            self.assertAlmostEqual(sum(item["probability"] for item in generated["result"]["emotion"]), .7)
+            statistics = append_batch(empty_statistics(), generated["result"], [
+                {"messageId": "synthetic-a", "speaker": "friend", "sender": "OTHER",
+                 "target": True, "text": "一段合成的背景材料。", "_pieceIndex": 0,
+                 "_last": True, "_sort": [1, "message__message_0.db", 1]}], subject="friend")
+            profile = profile_from_statistics(statistics, "test", subject="friend")
+            self.assertEqual(profile["analyzedCount"], 1)
+            self.assertEqual(profile["affinity"], 78)
+            self.assertIsNone(profile["mbti"])
+            self.assertNotIn("portrait", generated)
+            self.assertEqual(worker.model["state"], "ready")
+        finally:
+            worker.cancel()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
     def test_api_error_cannot_replace_api_readiness_with_laya_loading(self):
         analyzer = NodeAnalysis(api_only=True)
         analyzer.version = "synthetic"
@@ -81,11 +137,10 @@ class ApiWorkerRecoveryTests(unittest.TestCase):
         args = ("chat_completions", f"http://127.0.0.1:{server.server_port}/v1", "synthetic-key", "synthetic",
                 [{"id": "synthetic-target", "sender": "OTHER", "text": "周末一起去吗"}], ["synthetic-target"])
         try:
-            first = worker.model_insights(*args)
-            # A noisy provider response is filtered into an empty label pair; it
-            # does not force a second paid request or poison API readiness.
-            self.assertEqual(first["insights"][0], {
-                "id": "synthetic-target", "status": "ok", "intents": []})
+            # A response with no answer must not become a cached empty success.
+            # Its error still must not poison the independent API worker readiness.
+            with self.assertRaisesRegex(RuntimeError, "invalid-output"):
+                worker.model_insights(*args)
             self.assertEqual(worker.model["state"], "ready")
             start = time.monotonic()
             result = worker.model_insights(*args)

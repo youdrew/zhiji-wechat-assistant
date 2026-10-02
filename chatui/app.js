@@ -431,6 +431,7 @@ function resetAccountView(message = "当前微信账号未就绪", preserveOther
   chatState.currentAccount = null;
   chatState.selectionLoadedAccount = null;
   chatState.selectedConversations.clear();
+  updateAddConversationButton();
   chatState.currentUser = null;
   chatState.currentHasMoreBefore = null;
   chatState.messageSourceReady = false;
@@ -684,6 +685,7 @@ function renderSessions() {
     visible++;
   }
   while (container.children.length > visible) container.lastElementChild.remove();
+  updateAddConversationButton();
   if (!visible && chatState.sessions.size && !chatState.selectedConversations.size) {
     container.replaceChildren();
     const empty = element("div", "session-empty");
@@ -694,7 +696,23 @@ function renderSessions() {
     button.addEventListener("click", openConversationManager);
     empty.appendChild(button);
     container.appendChild(empty);
+  } else if (!visible && chatState.sessions.size && query) {
+    container.replaceChildren();
+    const empty = element("div", "session-empty");
+    empty.appendChild(element("strong", "", "没有匹配的会话"));
+    const button = element("button", "settings-action-btn", "打开信息列表");
+    button.type = "button";
+    button.addEventListener("click", openConversationManager);
+    empty.appendChild(button);
+    container.appendChild(empty);
   } else if (!visible) status(container, chatState.sessions.size ? "没有匹配的会话" : "暂无会话");
+}
+function updateAddConversationButton() {
+  const button = byId("btnAddConversation");
+  // Browsing the current account's directory does not require chat messages to be ready.
+  const ready = !!chatState.currentAccount && chatState.selectionLoadedAccount === chatState.currentAccount;
+  button.disabled = !ready;
+  button.title = ready ? "添加要查看的聊天" : "会话目录尚未就绪";
 }
 async function preloadSessionWindows(account, nextSessions, request) {
   const list = [...nextSessions.values()].filter(session => chatState.selectedConversations.has(session.username));
@@ -761,11 +779,21 @@ function clearUnselectedConversation() {
     clearProfileView("人物画像");
   }
   text("chatTitle", "聊天");
-  status(byId("chatMessages"), "从信息列表选择会话");
+  showChatEmptyState();
   byId("btnChatHistory").disabled = true;
   updateHistoryNavigation();
   renderMood();
   switchView("chat");
+}
+function showChatEmptyState() {
+  const container = byId("chatMessages");
+  const empty = element("div", "session-empty chat-empty");
+  empty.appendChild(element("strong", "", "还没有打开会话"));
+  const button = element("button", "settings-action-btn", "打开信息列表");
+  button.type = "button";
+  button.addEventListener("click", openConversationManager);
+  empty.appendChild(button);
+  container.replaceChildren(empty);
 }
 function renderConversationManager() {
   const list = byId("conversationManagerList");
@@ -806,6 +834,12 @@ function openConversationManager() {
   byId("settingsModal").querySelector(".settings-modal-card").classList.add("conversation-open");
   text("btnManageConversations", "收起");
   renderConversationManager();
+  byId("conversationSearch").focus();
+}
+function closeConversationManager() {
+  byId("conversationManager").hidden = true;
+  byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
+  text("btnManageConversations", "管理会话");
 }
 async function toggleConversationSelected(user) {
   const account = chatState.currentAccount;
@@ -2043,6 +2077,9 @@ function profileSnapshot(profile) {
     summary: String(profile.summary || "").slice(0, 600),
     mbtiInference: inference && typeof inference === "object" ? {
       eligibleMessages: count(inference.eligibleMessages), minMessages: count(inference.minMessages) || 100,
+      ...(Number.isFinite(inference.minAxisMargin) ? { minAxisMargin: inference.minAxisMargin } : {}),
+      ...(profile.apiNativeProfile && Object.hasOwn(inference, "type") ?
+        { type: typeof inference.type === "string" ? inference.type.slice(0, 4) : null } : {}),
       axes: inference.axes && typeof inference.axes === "object" ? Object.fromEntries(
         ["EI", "SN", "TF", "JP"].map(axis => [axis, inference.axes[axis] || {}])) : {}
     } : null,
@@ -2053,6 +2090,7 @@ function profileSnapshot(profile) {
     // API display state (only meaningful when apiSource). Bounded and derived from the
     // already-validated backend portrait; no key, raw chat, or raw provider response.
     apiSource,
+    apiNativeProfile: apiSource && profile.apiNativeProfile === true,
     apiSourceId: apiSource && typeof profile.apiSourceId === "string" ? profile.apiSourceId.slice(0, 64) : "",
     apiTargetTexts: count(profile.apiTargetTexts),
     apiProgressProcessed: count(profile.apiProgressProcessed),
@@ -2061,6 +2099,7 @@ function profileSnapshot(profile) {
     apiRunning: profile.apiRunning === true,
     apiMbtiAxes: apiPortrait ? { EI: score(apiAxes.EI), SN: score(apiAxes.SN),
       TF: score(apiAxes.TF), JP: score(apiAxes.JP) } : null,
+    apiMbtiBasis: apiSource ? mbtiBasisSnapshot(profile.apiMbtiBasis) : null,
     apiPortrait: apiPortrait ? {
       summary: String(apiPortrait.summary || "").slice(0, 240),
       communication: String(apiPortrait.communication || "").slice(0, 120),
@@ -2288,7 +2327,7 @@ function renderMbti(profile) {
     return;
   }
 
-  if (profile.apiSource) {
+  if (profile.apiSource && !profile.apiNativeProfile) {
     // API portrait reuses the Laya card: same threshold, lock panel and evidence
     // section. Axis shares arrive as 0-100 favoring the left letter.
     const eligible = Number(profile.apiTargetTexts) || 0;
@@ -2312,6 +2351,30 @@ function renderMbti(profile) {
     evidence.leftShare >= 0 && evidence.leftShare <= 1 &&
     evidence.rightShare >= 0 && evidence.rightShare <= 1;
   const validAxisCount = preferenceAxes.filter(axis => validAxis(axes[axis.key])).length;
+  // Preserve the local portrait's existing preference margin for both sources.
+  // A weak majority is still shown as a percentage, but is not a personality type.
+  const minAxisMargin = Number.isFinite(inference?.minAxisMargin) &&
+    inference.minAxisMargin >= 0 && inference.minAxisMargin <= 1 ? inference.minAxisMargin : 0.2;
+  const preferredPole = axis => {
+    const evidence = axes[axis.key];
+    if (!validAxis(evidence)) return "?";
+    const difference = evidence.leftShare - evidence.rightShare;
+    if (profile.apiNativeProfile) {
+      if (Object.hasOwn(evidence, "preference"))
+        return evidence.preference === axis.left || evidence.preference === axis.right ? evidence.preference : "?";
+      if (typeof inference?.type === "string" && /^[EI][SN][TF][JP]$/.test(inference.type))
+        return inference.type[preferenceAxes.indexOf(axis)];
+      // Native API results use the backend's exact comparison, including the
+      // representable 60/40 boundary. Leave local and legacy display unchanged.
+      if (difference === 0 || Math.abs(difference) < minAxisMargin) return "?";
+      return difference > 0 ? axis.left : axis.right;
+    }
+    // 60/40 reaches a 0.2 margin despite floating-point subtraction rounding.
+    if (difference === 0 || Math.abs(difference) + Number.EPSILON * 4 < minAxisMargin) return "?";
+    if (Object.hasOwn(evidence, "preference"))
+      return evidence.preference === axis.left || evidence.preference === axis.right ? evidence.preference : "?";
+    return difference > 0 ? axis.left : axis.right;
+  };
 
   if (eligible < minMessages) {
     text("heroMbti", `${Math.max(0, eligible)}/${minMessages} 条`);
@@ -2335,11 +2398,7 @@ function renderMbti(profile) {
     lockPanel.appendChild(btn);
     container.appendChild(lockPanel);
   } else {
-    const inclination = preferenceAxes.map(axis => {
-      const evidence = axes[axis.key];
-      if (!validAxis(evidence) || evidence.leftShare === evidence.rightShare) return "?";
-      return evidence.leftShare > evidence.rightShare ? axis.left : axis.right;
-    }).join("");
+    const inclination = preferenceAxes.map(preferredPole).join("");
     text("heroMbti", validAxisCount ? inclination : "待判断");
     text("mbtiScaleBadge", inclination.includes("?") ? validAxisCount ? "部分维度待定" : "偏好证据待积累" : `${inclination} · 聊天倾向`);
     for (const axis of preferenceAxes) {
@@ -2355,7 +2414,11 @@ function renderMbti(profile) {
         fill.style.width = `${leftShare * 100}%`;
         track.appendChild(fill);
         row.appendChild(track);
-      } else row.appendChild(element("div", "mbti-axis-empty", `${axis.left}/${axis.right} · 尚无足够证据`));
+      } else {
+        const note = profile.apiSource && !profile.apiNativeProfile && profile.apiMbtiBasis?.[axis.key]?.status === "unverified" ?
+          "模型依据未通过校验" : "尚无足够证据";
+        row.appendChild(element("div", "mbti-axis-empty", `${axis.left}/${axis.right} · ${note}`));
+      }
       container.appendChild(row);
     }
   }
@@ -2365,6 +2428,12 @@ function renderMbti(profile) {
   const details = element("details", "mbti-details");
   details.appendChild(element("summary", "", "依据与说明"));
   details.appendChild(element("div", "mbti-sample", `${eligible} 条目标文本 · ${minMessages} 条展示门槛`));
+  if (profile.apiSource && !profile.apiNativeProfile) {
+    for (const axis of preferenceAxes) {
+      const basis = profile.apiMbtiBasis?.[axis.key];
+      if (basis?.reason) details.appendChild(element("div", "mbti-sample", `${axis.key}：${basis.reason}`));
+    }
+  }
   for (const [index, url] of (urls.length ? urls : officialSources).entries()) {
     const link = element("a", "mbti-source", index ? "Myers & Briggs 官方资料" : "MBTI 官方偏好理论");
     link.href = url;
@@ -2509,6 +2578,7 @@ function renderMembers(profile) {
 }
 function renderProfile(profile) {
   const group = !!profile.isGroup;
+  const legacyApi = profile.apiSource && !profile.apiNativeProfile;
   portraitState.apiPortraitProgressNode = null;
   text("personaHeaderTitle", profile.name || profile.username || "人物画像");
   text("heroName", profile.name || profile.username || "未知");
@@ -2516,10 +2586,10 @@ function renderProfile(profile) {
   renderMbti(profile);
   byId("heroArchetype").style.display = "none";
   text("heroRelationBadge", group ? portraitState.activeMember ? "群成员画像" : "群画像" : profile.affinity == null ?
-    profile.apiSource ? "好感待判断" : "好感待分析" : `好感 ${profile.affinity}`);
+    legacyApi ? "好感待判断" : "好感待分析" : `好感 ${profile.affinity}`);
   const stats = profile.stats || {};
   text("stripMessageLabel", group ? portraitState.activeMember ? "成员消息：" : "群消息：" :
-    profile.apiSource ? "会话消息：" : "对方消息：");
+    profile.apiSource && !profile.apiNativeProfile ? "会话消息：" : "对方消息：");
   text("stripTextLabel", group ? portraitState.activeMember ? "成员文本：" : "群文本：" : "对方文本：");
   text("stripAnalysisLabel", "已分析：");
   const messageCount = profile.apiSource && stats.messageCount === null ? "—" : Number(stats.messageCount) || 0;
@@ -2545,7 +2615,7 @@ function renderProfile(profile) {
     const score = profile.affinity;
     const header = element("div", "game-favor-header");
     header.append(element("div", "game-favor-title-wrap", "♥ 好感度等级"), element("div", "game-favor-score",
-      score == null ? profile.apiSource ? "待判断" : "待分析" : String(score)));
+      score == null ? legacyApi ? "待判断" : "待分析" : String(score)));
     metric.appendChild(header);
     if (typeof score === "number" && score >= 0 && score <= 100) {
       const names = ["素昧平生", "泛泛之交", "初识相知", "友善默契", "亲密无间"];
@@ -2566,22 +2636,28 @@ function renderProfile(profile) {
       metric.append(track, progress);
     }
   }
-  renderRadar(profile.traits, !!profile.apiSource);
-  text("tagCardTitle", profile.apiSource ? "常见话题" : "高频词");
-  text("tagCardBadge", profile.apiSource ? "API 画像" : "词频统计 Top 6");
+  renderRadar(profile.traits, !!legacyApi);
+  text("tagCardTitle", legacyApi ? "常见话题" : "高频词");
+  text("tagCardBadge", legacyApi ? "API 画像" : "词频统计 Top 6");
   const tags = byId("tagCloud");
   tags.replaceChildren();
   for (const keyword of (profile.keywords || []).map((value, index) => ({ value, index })).sort((left, right) => (Number(right.value.count) || 0) - (Number(left.value.count) || 0) || left.index - right.index).slice(0, 6).map(item => item.value)) {
     const tag = element("span", "keyword-tag", keyword.word);
-    if (!profile.apiSource) tag.appendChild(element("span", "tag-count", ` ${keyword.count}`));
+    if (!legacyApi) tag.appendChild(element("span", "tag-count", ` ${keyword.count}`));
     tags.appendChild(tag);
   }
-  if (!tags.childNodes.length) tags.textContent = profile.apiSource ? "待判断" : "暂无关键词";
+  if (!tags.childNodes.length) tags.textContent = legacyApi ? "待判断" : "暂无关键词";
   renderPortraitSummary(profile);
   renderApiPortraitDetails(null);
   renderMembers(profile);
 }
 portraitState.apiPortraitRequest = 0;
+const API_PORTRAIT_MIN_CONTEXT = 12288;
+const API_PORTRAIT_CONTEXT_HINT = "画像分析需要至少 12288 tokens 上下文，请在设置中调整";
+function apiPortraitContextReady() {
+  const tokens = settingsState.modelSourceSnapshot.api?.contextTokens;
+  return Number.isSafeInteger(tokens) && tokens >= API_PORTRAIT_MIN_CONTEXT;
+}
 portraitState.apiPortraitPollTimer = null;
 portraitState.apiPortraitSnapshot = null;
 portraitState.apiPortraitBusy = false;
@@ -2600,7 +2676,7 @@ portraitState.renderedApiProfileScope = null;
 portraitState.renderedApiProfileSignature = null;
 portraitState.apiPortraitProgressNode = null;
 function renderPortraitSummary(localProfile) {
-  text("botSummaryText", localProfile?.summary || (localProfile?.apiSource ?
+  text("botSummaryText", localProfile?.summary || (localProfile?.apiSource && !localProfile.apiNativeProfile ?
     localProfile.apiPortrait ? "待判断" : "待分析" : "暂无摘要"));
   text("summaryBadge", localProfile?.apiSource ? `API · ${settingsState.modelSourceSnapshot.api?.model || "模型"}` : "本地 Laya");
 }
@@ -2610,6 +2686,18 @@ const apiTraitLabels = {
 };
 function apiScore(value) {
   return Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
+}
+function mbtiBasisSnapshot(value) {
+  if (!value || typeof value !== "object") return null;
+  return Object.fromEntries(["EI", "SN", "TF", "JP"].map(axis => {
+    const item = value[axis] || {};
+    return [axis, {
+      status: ["supported", "insufficient", "unverified"].includes(item.status) ? item.status : "unverified",
+      kind: ["pattern", "self-report", "unspecified"].includes(item.kind) ? item.kind : "unspecified",
+      reason: typeof item.reason === "string" ? item.reason.slice(0, 160) : "",
+      evidenceCount: Number.isSafeInteger(item.evidenceCount) && item.evidenceCount >= 0 ? Math.min(item.evidenceCount, 100000) : 0,
+    }];
+  }));
 }
 function apiPortraitHasContent(portrait) {
   if (!portrait || typeof portrait !== "object") return false;
@@ -2646,6 +2734,12 @@ function apiProcessedTargets(available, progress, fallback = 0) {
   // unfinished portrait cannot unlock from messages it has not analyzed yet.
   return Math.min(target, Math.floor(target * Math.max(0, Math.min(1, processed / total))));
 }
+function validNativeApiProfile(profile, data) {
+  return !!profile && typeof profile === "object" && profile.account === data.account &&
+    profile.username === data.subject && profile.isGroup === data.identity?.isGroup &&
+    !!profile.stats && typeof profile.stats === "object" && Array.isArray(profile.members) &&
+    Array.isArray(profile.traits) && Array.isArray(profile.keywords);
+}
 function renderApiProfile(data) {
   const identity = data.identity;
   const available = data.available || {};
@@ -2666,10 +2760,19 @@ function renderApiProfile(data) {
     analyzedCount: analyzed,
     participantCount: group ? identity.members.length : 1,
   };
-  const profile = {
+  const profile = data.nativeProfile ? {
+    ...data.nativeProfile,
+    apiSource: true, apiSourceId: data.sourceId, apiNativeProfile: true,
+    apiPortrait: null, apiMbtiAxes: null, apiMbtiBasis: null,
+    apiTargetTexts: Number(data.nativeProfile.mbtiInference?.eligibleMessages) || 0,
+    apiProgressProcessed: analyzed, apiProgressTotal: analysisTotal,
+    apiComplete: progress.complete === true,
+    apiRunning: ["queued", "running"].includes(data.job?.status),
+  } : {
     account: data.account, ...identity, isGroup: group, members: identity.members, stats,
     apiSource: true, apiSourceId: data.sourceId, apiPortrait: portrait,
     apiMbtiAxes: portrait?.mbtiAxes || null,
+    apiMbtiBasis: mbtiBasisSnapshot(data.mbtiBasis),
     apiTargetTexts: analyzedTargets,
     apiProgressProcessed: analyzed,
     apiProgressTotal: analysisTotal,
@@ -2704,8 +2807,8 @@ function updateApiProfileProgress(data) {
   const cached = cachedProfileFor(data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
   if (cached) rememberProfile({
     ...cached, ...progressFields,
-    apiTargetTexts: apiProcessedTargets(data.available, progress),
-    stats: { ...cached.stats, analyzedCount: processed },
+    apiTargetTexts: cached.apiNativeProfile ? cached.apiTargetTexts : apiProcessedTargets(data.available, progress),
+    stats: cached.apiNativeProfile ? cached.stats : { ...cached.stats, analyzedCount: processed },
   }, data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
   updateProfileProgress(progressFields);
   if (portraitState.apiPortraitProgressNode) portraitState.apiPortraitProgressNode.textContent = `${processed} / ${total}`;
@@ -2726,6 +2829,7 @@ function cancelApiPortraitPoll() {
   ++portraitState.apiPortraitRequest;
   clearTimeout(portraitState.apiPortraitPollTimer);
   portraitState.apiPortraitPollTimer = null;
+  portraitState.apiPortraitLoadingKey = null;
 }
 function syncPortraitMode() {
   const apiMode = settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api";
@@ -2743,11 +2847,18 @@ function renderApiPortrait(data) {
   const portrait = data.portrait == null && portraitState.renderedApiProfileScope === scope &&
     apiPortraitHasContent(previous?.portrait) ? previous.portrait :
     data.portrait == null && apiPortraitHasContent(cached?.apiPortrait) ? cached.apiPortrait : data.portrait;
-  const displayData = portrait === data.portrait ? data : { ...data, portrait };
+  const nativeProfile = data.nativeProfile ||
+    (previous?._scope === scope ? previous.nativeProfile : null) ||
+    (cached?.apiNativeProfile ? cached : null);
+  const displayData = { ...data, portrait, nativeProfile };
+  // A task status/timer change must not rebuild the portrait cards. Native
+  // scores and evidence are already derived by the shared backend rules.
+  const nativeContent = nativeProfile && [nativeProfile.stats, nativeProfile.affinity,
+    nativeProfile.traits, nativeProfile.keywords, nativeProfile.summary, nativeProfile.mbtiInference];
   const signature = JSON.stringify([scope, displayData.identity,
     displayData.available?.messageCount, displayData.available?.targetTextCount,
-    displayData.portrait]);
-  portraitState.apiPortraitSnapshot = displayData;
+    nativeContent || displayData.portrait, nativeContent ? null : displayData.mbtiBasis]);
+  portraitState.apiPortraitSnapshot = { ...displayData, _scope: scope };
   if ((!cached || data.inventoryReady && data.available) &&
       (scope !== portraitState.renderedApiProfileScope || signature !== portraitState.renderedApiProfileSignature)) {
     renderApiProfile(displayData);
@@ -2762,11 +2873,11 @@ function renderApiPortrait(data) {
   const total = Number(available?.textCount) || Number(progress.total) || 0;
   const running = ["queued", "running"].includes(job.status);
   const upToDate = ready && progress.complete === true && Number(progress.processed) >= total;
-  const contextReady = Number.isSafeInteger(settingsState.modelSourceSnapshot.api?.contextTokens) &&
-    settingsState.modelSourceSnapshot.api.contextTokens >= 4096;
+  const contextReady = apiPortraitContextReady();
   const portraitErrors = {
-    "context-too-long": "模型不支持当前上下文大小，请在设置中调低",
+    "context-too-long": contextReady ? "模型不支持当前请求上下文，请按模型实际支持容量调整设置" : API_PORTRAIT_CONTEXT_HINT,
     "invalid-output": "模型返回格式不正确", "invalid-portrait": "模型画像结果不完整",
+    "portrait-state-invalid": "画像进度校验失败，请清除当前模型的分析缓存后重试",
     "timeout": "模型响应超时", "rate-limit": "接口请求受限",
     "empty-response": "模型未返回内容", "response-too-large": "模型返回内容过长",
     "auth": "API Key 无效", "network": "网络连接失败",
@@ -2774,17 +2885,21 @@ function renderApiPortrait(data) {
   };
   let state = "";
   if (data.suspended) state = "API 画像缓存已暂停";
+  else if (!contextReady && !running) state = API_PORTRAIT_CONTEXT_HINT;
   else if (job.status === "error") state = portraitErrors[job.error] || "API 画像分析失败";
   else if (running && job.phase === "preparing") state = "正在准备待分析文本";
+  else if (running && job.phase === "classifying") state = "正在分析聊天";
+  else if (running && job.phase === "observing") state = "正在提取聊天观察";
+  else if (running && job.phase === "synthesizing") state = "正在整理人物画像";
   else if (!ready) state = data.inventoryStatus === "error" ? "会话读取失败，正在重试" : "正在读取会话消息";
-  else if (targetTexts < 3) state = "目标发言不足 3 条，等待更多消息";
-  else if (!contextReady) state = "请在设置中填写模型上下文大小";
+  else if (targetTexts < 1) state = "暂无目标文本，等待更多消息";
   else if (running) state = "API 分析中";
+  else if (data.needsRebuild) state = "画像算法已更新，可重新分析";
   else if (upToDate) state = "API 画像已更新";
   else state = "正在准备 API 画像";
   const autoKey = portraitState.renderedApiPortraitKey + ":" + total + ":" + (Number(available?.totalChars) || 0);
   const submitError = portraitState.apiPortraitSubmitErrors.get(autoKey);
-  if (submitError && !running && job.status !== "error") state = "API 画像提交失败（" + submitError + "）";
+  if (contextReady && submitError && !running && job.status !== "error") state = "API 画像提交失败（" + submitError + "）";
   if (job.retry && running) {
     const remaining = Math.max(0, Math.ceil((Number(job.retry.nextAtMs) - Date.now()) / 1000));
     const reason = portraitErrors[job.retry.reason] || "模型响应失败";
@@ -2792,6 +2907,8 @@ function renderApiPortrait(data) {
     setStripStatus(`自动重试 ${job.retry.attempt}/${job.retry.max} · ${remaining} 秒`);
   } else if (running && job.phase === "preparing") {
     setStripStatus("正在准备待分析文本");
+  } else if (running && job.phase === "synthesizing") {
+    setStripStatus("观察已保存 · 正在整理画像");
   } else if (running) {
     const elapsed = Math.max(0, Math.floor((Date.now() - Number(job.batchStartedAtMs || job.startedAtMs || Date.now())) / 1000));
     const rate = Number(job.rateTextsPerSecond);
@@ -2800,17 +2917,26 @@ function renderApiPortrait(data) {
   } else if (job.status === "error" || submitError) {
     setStripStatus("分析失败，请重试");
   }
+  if (data.rebuilding) {
+    state = !contextReady || data.suspended || job.status === "error" || submitError || job.retry ?
+      `${state} · 暂显示旧画像` : "正在按新规则分析，暂显示旧画像";
+  }
   byId("apiPortraitStatus").hidden = false;
   text("apiPortraitStatus", state);
   // Like local Laya, entering/switching back to a conversation automatically continues
   // the saved incremental analysis. The backend resumes from the persisted cursor and
   // sends only new/unprocessed text, and dedupes an in-flight job. A terminal error stops
   // the loop and keeps the prior portrait with an actionable Manual retry.
-  const canContinue = ready && targetTexts >= 3 && contextReady && !data.suspended && !running &&
-    !upToDate && job.status !== "error" && !submitError;
+  const canContinue = ready && targetTexts >= 1 && contextReady && !data.suspended && !running &&
+    !data.needsRebuild && !upToDate && job.status !== "error" && !submitError;
   const action = byId("btnRetryApiPortrait");
-  action.hidden = !(job.status === "error" && ready || submitError);
-  action.textContent = "重试分析";
+  action.disabled = !contextReady;
+  const canReassess = upToDate && contextReady && !running && !data.suspended &&
+    !(data.identity?.isGroup && !portraitState.activeMember) &&
+    apiPortraitHasContent(portrait) && apiCanReassessMbti();
+  action.hidden = !(job.status === "error" && ready || submitError || data.needsRebuild && !running && ready || canReassess);
+  action.textContent = data.needsRebuild && job.status !== "error" ? "更新画像" :
+    canReassess && job.status !== "error" ? "重新评估 MBTI" : "重试分析";
   if (canContinue && !portraitState.apiPortraitBusy) {
     void startApiPortrait(autoKey);
   }
@@ -2828,6 +2954,7 @@ async function loadApiPortrait(member = "") {
   const token = ++portraitState.apiPortraitRequest;
   portraitState.apiPortraitLoadingKey = portraitKey;
   if (portraitKey !== portraitState.renderedApiPortraitKey) {
+    byId("btnRetryApiPortrait").hidden = true;
     portraitState.renderedApiPortraitKey = portraitKey;
     portraitState.apiPortraitReadFailures = 0;
     if (scopeKey !== portraitState.renderedApiPortraitScopeKey) {
@@ -2849,6 +2976,7 @@ async function loadApiPortrait(member = "") {
         !data.identity || data.identity.username !== subject ||
         typeof data.identity.isGroup !== "boolean" || !Array.isArray(data.identity.members) ||
         typeof data.inventoryReady !== "boolean" ||
+        (data.nativeProfile != null && !validNativeApiProfile(data.nativeProfile, data)) ||
         (data.inventoryReady && (!data.available ||
           !(data.available.totalChars === null || Number.isSafeInteger(data.available.totalChars) && data.available.totalChars >= 0) ||
           !Number.isSafeInteger(data.available.textCount) || data.available.textCount < 0)))
@@ -2868,7 +2996,8 @@ async function loadApiPortrait(member = "") {
       else byId("btnRetryApiPortrait").hidden = false;
     }
   } finally {
-    if (portraitState.apiPortraitLoadingKey === portraitKey) portraitState.apiPortraitLoadingKey = null;
+    if (token === portraitState.apiPortraitRequest && portraitState.apiPortraitLoadingKey === portraitKey)
+      portraitState.apiPortraitLoadingKey = null;
   }
 }
 async function startApiPortrait(autoKey, force = false, refreshAxes = false) {
@@ -2876,6 +3005,11 @@ async function startApiPortrait(autoKey, force = false, refreshAxes = false) {
   const member = portraitState.activeMember;
   if (!account || !user || settingsState.modelSourceSnapshot.mode !== "api" || portraitState.apiPortraitBusy ||
       portraitState.apiPortraitSubmitErrors.has(autoKey) && !force) return;
+  if (!apiPortraitContextReady()) {
+    text("apiPortraitStatus", API_PORTRAIT_CONTEXT_HINT);
+    byId("btnRetryApiPortrait").disabled = true;
+    return;
+  }
   if (force) portraitState.apiPortraitSubmitErrors.delete(autoKey);
   portraitState.apiPortraitBusy = true;
   byId("btnRetryApiPortrait").hidden = true;
@@ -2904,16 +3038,25 @@ async function startApiPortrait(autoKey, force = false, refreshAxes = false) {
         chatState.view === "persona" && settingsState.modelSourceSnapshot.mode === "api") void loadApiPortrait(portraitState.activeMember);
   }
 }
-function apiAxesMissing() {
+function apiPortraitSnapshotCurrent() {
   const snapshot = portraitState.apiPortraitSnapshot;
+  const subject = portraitState.activeMember || chatState.currentUser;
+  const sourceId = settingsState.modelSourceSnapshot.sourceId;
+  return settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" &&
+    snapshot?.account === chatState.currentAccount && snapshot.sourceId === sourceId && snapshot.subject === subject &&
+    snapshot._scope === JSON.stringify([chatState.currentAccount, chatState.currentUser, sourceId, subject]);
+}
+function apiCanReassessMbti() {
+  const snapshot = portraitState.apiPortraitSnapshot;
+  if (snapshot?.nativeProfile) return false;
   const axes = snapshot?.portrait?.mbtiAxes;
-  if (!axes || snapshot?.progress?.complete !== true) return false;
-  if (!["EI", "SN", "TF", "JP"].every(key => apiScore(axes[key]) === null)) return false;
+  if (!apiPortraitSnapshotCurrent() || !axes || snapshot?.progress?.complete !== true || snapshot.needsRebuild ||
+      snapshot.identity?.isGroup && !portraitState.activeMember) return false;
   return (Number(snapshot.available?.targetTextCount) || 0) >= 100;
 }
 byId("btnRetryApiPortrait").addEventListener("click", () => {
   const available = portraitState.apiPortraitSnapshot?.available;
-  if (!available || !portraitState.renderedApiPortraitKey) {
+  if (!available || !portraitState.renderedApiPortraitKey || !apiPortraitSnapshotCurrent()) {
     portraitState.apiPortraitReadFailures = 0;
     byId("btnRetryApiPortrait").hidden = true;
     void loadApiPortrait(portraitState.activeMember);
@@ -2921,9 +3064,9 @@ byId("btnRetryApiPortrait").addEventListener("click", () => {
   }
   const autoKey = portraitState.renderedApiPortraitKey + ":" +
     (Number(available.textCount) || 0) + ":" + (Number(available.totalChars) || 0);
-  // A finished portrait whose axes are still empty re-evaluates them from the saved
-  // cumulative portrait; everything else keeps the normal resume behavior.
-  void startApiPortrait(autoKey, true, apiAxesMissing());
+  // Explicit reassessment uses saved observations, including after a prior partial
+  // or complete estimate. Unfinished work keeps the normal resume behavior.
+  void startApiPortrait(autoKey, true, apiCanReassessMbti());
 });
 async function loadProfile(member = "", retry = false) {
   if (!chatState.currentUser || !settingsState.modelSourceResolved) return;
@@ -3146,6 +3289,82 @@ byId("btnChooseLocalModelDir").addEventListener("click", async () => {
   if (typeof window.desktopHost?.chooseModelDirectory !== "function") return;
   const directory = await window.desktopHost.chooseModelDirectory();
   if (directory) await selectLocalModel(directory);
+});
+function dataRootControlsBusy(busy) {
+  settingsState.dataRootBusy = busy;
+  for (const id of ["inputDataRoot", "btnBrowseDataRoot", "btnSaveDataRoot", "btnClearDataRoot"])
+    byId(id).disabled = busy;
+  if (typeof window.desktopHost?.chooseDataRoot !== "function") byId("btnBrowseDataRoot").disabled = true;
+}
+function showDataRoot(data) {
+  if (!data || !["unset", "ready", "missing", "invalid"].includes(data.state) ||
+      typeof data.path !== "string" || !Number.isInteger(data.accounts) || data.accounts < 0)
+    throw new Error("数据目录状态无效");
+  text("dataRootStatus", data.state === "ready" ? `已设置 · 发现 ${data.accounts} 个账号目录` :
+    data.state === "missing" ? "所选目录不可用" : data.state === "invalid" ? "配置不可用，请重新选择或恢复自动" : "自动发现");
+  byId("dataRootStatus").title = data.path;
+  byId("inputDataRoot").value = data.path;
+  settingsState.dataRootDraftDirty = false;
+}
+async function loadDataRoot() {
+  if (settingsState.dataRootBusy) return;
+  const request = ++settingsState.dataRootRequest;
+  dataRootControlsBusy(false);
+  try {
+    const data = await api("/api/data-root");
+    if (request !== settingsState.dataRootRequest || settingsState.dataRootDraftDirty) return;
+    showDataRoot(data);
+  } catch {
+    if (request === settingsState.dataRootRequest) text("dataRootStatus", "读取失败，请重新打开设置重试");
+  }
+}
+async function changeDataRoot(clear = false) {
+  if (settingsState.dataRootBusy) return;
+  const value = byId("inputDataRoot").value.trim();
+  if (!clear && !value) { text("dataRootStatus", "请选择微信数据目录"); return; }
+  const request = ++settingsState.dataRootRequest;
+  dataRootControlsBusy(true);
+  text("dataRootStatus", clear ? "正在恢复自动发现…" : "正在校验路径…");
+  try {
+    const data = await api(clear ? "/api/data-root/clear" : "/api/data-root", {
+      method: "POST", body: JSON.stringify(clear ? {} : { path: value }),
+    });
+    if (request === settingsState.dataRootRequest) {
+      showDataRoot(data);
+      toast(clear ? "已恢复自动发现" : "聊天记录路径已保存");
+    }
+    // A directory is only a discovery hint. The normal account-boundary flow
+    // decides whether a live account is available before displaying any data.
+    void loadSessions();
+  } catch (error) {
+    if (request === settingsState.dataRootRequest)
+      text("dataRootStatus", error.message || "路径设置失败，请重试");
+  } finally {
+    dataRootControlsBusy(false);
+    if (request !== settingsState.dataRootRequest && byId("settingsModal").classList.contains("show"))
+      void loadDataRoot();
+  }
+}
+async function browseDataRoot() {
+  if (settingsState.dataRootBusy || typeof window.desktopHost?.chooseDataRoot !== "function") return;
+  const request = ++settingsState.dataRootRequest;
+  dataRootControlsBusy(true);
+  try {
+    const directory = await window.desktopHost.chooseDataRoot();
+    if (directory && request === settingsState.dataRootRequest) {
+      byId("inputDataRoot").value = directory;
+      settingsState.dataRootDraftDirty = true;
+    }
+  } catch {
+    if (request === settingsState.dataRootRequest) text("dataRootStatus", "无法打开目录选择器");
+  } finally { dataRootControlsBusy(false); }
+}
+byId("btnBrowseDataRoot").addEventListener("click", () => void browseDataRoot());
+byId("btnSaveDataRoot").addEventListener("click", () => void changeDataRoot());
+byId("btnClearDataRoot").addEventListener("click", () => void changeDataRoot(true));
+byId("inputDataRoot").addEventListener("input", () => { settingsState.dataRootDraftDirty = true; });
+byId("inputDataRoot").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); void changeDataRoot(); }
 });
 const MODEL_SOURCE_PROTOCOLS = new Set(["anthropic", "responses", "chat_completions", "gemini", "ollama"]);
 settingsState.modelSourceSnapshot = { mode: "local", api: null, sourceId: "local", status: "idle" };
@@ -3598,13 +3817,26 @@ function validApiInsight(value, id) {
   return true;
 }
 // Parse only completed emotion/intent pairs from the text received so far. A
-// label is committed after its line (or the next label marker) is complete;
+// label is previewed after its line (or the next label marker) is complete;
 // half a streamed word never reaches the message row. The provider may add
 // JSON, Markdown, thoughts, or a trailing summary, so the parser deliberately
 // ignores everything except the two requested markers and uses target order.
 function parseApiPartialLabels(raw, ids) {
   const targetIds = Array.isArray(ids) ? ids.map(id => String(id)) : [];
   if (!targetIds.length || typeof raw !== "string" || !raw) return {};
+  const idMarkers = [...raw.matchAll(/(?:^|\n)\s*(?:编号|id)\s*[:：]\s*([^\r\n]+)/giu)];
+  if (idMarkers.length) {
+    const results = {};
+    for (let index = 0; index < idMarkers.length; index++) {
+      const current = idMarkers[index];
+      const id = current[1].trim();
+      if (!targetIds.includes(id) || Object.hasOwn(results, id)) continue;
+      const next = idMarkers[index + 1];
+      const block = raw.slice(current.index + current[0].length, next?.index) + (next ? "\n" : "");
+      Object.assign(results, parseApiPartialLabels(block, [id]));
+    }
+    return results;
+  }
   const summary = raw.search(/(?:^|\n)\s*(?:整体|总体)?总结\s*[:：]?/u);
   const body = (summary >= 0 ? `${raw.slice(0, summary)}\n` : raw).replace(/\r/g, "");
   const marker = /(?:情感|情绪|emotion|意图|intent)\s*[:：]\s*/giu;
@@ -3623,8 +3855,9 @@ function parseApiPartialLabels(raw, ids) {
     const complete = !!next || /\n/u.test(value) ||
       /[}\]，,。！？!?；;:"'”」』]\s*$/u.test(trimmed);
     if (!complete) continue;
-    const label = trimmed.match(/\p{Script=Han}{1,4}/u)?.[0];
-    if (!label) continue;
+    const absent = /^(?:无|暂无|没有|不明确|未知|不确定|无明显情绪|无明确意图|none|null|n\/a|[-—–])(?:\s|$|[。；;])/iu.test(trimmed);
+    const label = absent ? "" : trimmed.match(/\p{Script=Han}{1,4}/u)?.[0];
+    if (label === undefined) continue;
     const kind = current[0].match(/^(?:情感|情绪|emotion)/iu) ? "emotion" : "intent";
     (kind === "emotion" ? emotions : intents).push(label);
   }
@@ -3634,8 +3867,7 @@ function parseApiPartialLabels(raw, ids) {
     const id = targetIds[index];
     const emotion = emotions[index];
     const intent = intents[index];
-    if (!emotion || !intent) continue;
-    result[id] = { id, status: "ok", affect: { feeling: emotion }, intents: [intent] };
+    result[id] = { id, status: "ok", ...(emotion ? { affect: { feeling: emotion } } : {}), intents: intent ? [intent] : [] };
   }
   return result;
 }
@@ -3729,7 +3961,15 @@ function updateApiInsightLabel(message, node, wrap) {
     typeof message.text === "string" && !!message.text.trim() &&
     hasIntentContent(message.text) && !isIncompleteFragment(message.text);
   const entry = activeApiInsightEntry();
-  const result = eligible && validApiInsight(entry?.results?.[id], id) ? entry.results[id] : null;
+  let result = eligible && validApiInsight(entry?.results?.[id], id) ? entry.results[id] : null;
+  const work = labelState.apiInsightWork;
+  if (eligible && !result && !entry?.error && work?.hydrated && apiInsightWorkCurrent(work) &&
+      ["queued", "running"].includes(entry?.job?.status)) {
+    // Streaming is a temporary preview. Only GET results enter the confirmed
+    // cache; errors, cancellation and a retry's cleared stream discard previews.
+    const preview = entry.job.previewResults?.[id];
+    if (validApiInsight(preview, id)) result = preview;
+  }
   const pending = eligible && !result && labelState.apiInsightWork?.key === activeApiInsightKey() &&
     labelState.apiInsightWork.pendingIds.has(id);
   const signature = result ? `api:${settingsState.modelSourceSnapshot.sourceId}:${JSON.stringify(result)}` :
@@ -3790,14 +4030,12 @@ async function fetchApiInsightResults(work) {
     const storedIds = Object.keys(entry.results);
     for (const id of storedIds.slice(0, Math.max(0, storedIds.length - 320))) delete entry.results[id];
     entry.job = data.job || { status: "idle" };
-    if (["queued", "running"].includes(entry.job.status)) {
-      const partialIds = Array.isArray(entry.job.targetIds) && entry.job.targetIds.length ?
-        entry.job.targetIds : [...work.pendingIds];
-      const partial = parseApiPartialLabels(entry.job.partialText, partialIds);
-      // Reparse the complete streamed text on every poll. Newer output replaces
-      // an earlier partial label; the final validated result above wins at done.
-      entry.results = { ...entry.results, ...partial };
-    }
+    // Derive once per poll, not once per message row. This belongs to this job
+    // snapshot only and is never merged into confirmed results.
+    entry.job.previewResults = ["queued", "running"].includes(entry.job.status) ?
+      parseApiPartialLabels(entry.job.partialText,
+        Array.isArray(entry.job.targetIds) && entry.job.targetIds.length ?
+          entry.job.targetIds : [...work.pendingIds]) : {};
     if (entry.job.status === "done") entry.sessionReady = true;
     const insightErrors = {
       "invalid-output": "模型返回格式不正确", "invalid-insights": "模型结果不完整",
@@ -3826,6 +4064,7 @@ async function fetchApiInsightResults(work) {
       work.pendingIds.clear();
       entry.requestedSignature = null;
       entry.error = "分析结果读取失败";
+      if (entry.job) entry.job.previewResults = {};
       refreshLabels();
       renderApiInsightStatus();
     }
@@ -3843,10 +4082,8 @@ async function submitApiInsightJob(work, candidates, signature) {
   const entry = labelState.apiInsightCache.get(work.key);
   work.postPending = true;
   work.pendingIds = new Set(candidates.map(message => String(message.id)));
-  // A new text signature is a new analysis turn. Remove stale labels for its
-  // targets immediately so the row cannot show an older answer while the
-  // streamed replacement is being parsed.
-  for (const id of work.pendingIds) delete entry.results[id];
+  // Retain previously confirmed results until the backend supplies a validated
+  // replacement. A new request or its streamed preview is not a saved result.
   entry.requestedSignature = signature;
   entry.error = "";
   renderApiInsightStatus();
@@ -3869,7 +4106,7 @@ async function submitApiInsightJob(work, candidates, signature) {
     }
     if (!data.job?.id)
       throw new Error("model insights scope mismatch");
-    entry.job = data.job;
+    entry.job = { ...data.job, previewResults: {} };
     work.pollAttempt = 0;
     renderApiInsightStatus();
     void fetchApiInsightResults(work);
@@ -4159,10 +4396,12 @@ byId("btnConfirmAnalysisCacheClear").addEventListener("click", async () => {
           portraitState.profileSnapshotsRequireRefresh.delete(key);
       } catch { }
       saveStoredProfiles();
-      if (settingsState.modelSourceSnapshot.sourceId === pending.sourceId && chatState.view === "persona") {
+      if (chatState.currentAccount === pending.account && settingsState.modelSourceSnapshot.sourceId === pending.sourceId) {
         cancelApiPortraitPoll();
         clearApiPortraitView();
-        void loadApiPortrait(portraitState.activeMember);
+        portraitState.renderedApiPortraitKey = null;
+        portraitState.renderedApiPortraitScopeKey = null;
+        if (chatState.view === "persona") void loadApiPortrait(portraitState.activeMember);
       }
       if (settingsState.modelSourceSnapshot.sourceId === pending.sourceId && chatState.messages.length) renderMessages(chatState.messages);
     } else {
@@ -4181,6 +4420,8 @@ byId("btnConfirmAnalysisCacheClear").addEventListener("click", async () => {
   }
 });
 function closeSettingsModal() {
+  ++settingsState.dataRootRequest;
+  settingsState.dataRootDraftDirty = false;
   settingsState.modelSourceLoadController?.abort();
   settingsState.modelSourceLoadController = null;
   settingsState.modelListController?.abort();
@@ -4194,9 +4435,7 @@ function closeSettingsModal() {
   byId("analysisCacheConfirm").hidden = true;
   byId("analysisCacheManager").hidden = true;
   text("btnManageAnalysisCache", "查看缓存");
-  byId("conversationManager").hidden = true;
-  byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
-  text("btnManageConversations", "管理会话");
+  closeConversationManager();
   text("conversationManagerStatus", "");
   ++settingsState.modelSourceReadRequest;
   ++settingsState.modelListRequest;
@@ -4649,17 +4888,15 @@ byId("btnSettings").addEventListener("click", () => {
   void loadRuntime();
   void loadModelSource();
   void loadLocalModel();
+  void loadDataRoot();
   if (typeof window.desktopHost?.getModelDownloadState === "function")
     void window.desktopHost.getModelDownloadState().then(showLocalModelDownload);
 });
+byId("btnAddConversation").addEventListener("click", openConversationManager);
 byId("btnManageConversations").addEventListener("click", () => {
   const panel = byId("conversationManager");
   if (panel.hidden) openConversationManager();
-  else {
-    panel.hidden = true;
-    byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
-    text("btnManageConversations", "管理会话");
-  }
+  else closeConversationManager();
 });
 byId("conversationSearch").addEventListener("input", renderConversationManager);
 byId("btnCloseSettings").addEventListener("click", closeSettingsModal);

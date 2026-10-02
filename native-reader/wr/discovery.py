@@ -44,6 +44,7 @@ CONFIG_PATH_KEYS = (
     "dataDir", "data_dir", "fileSavePath", "savePath", "path", "defaultFileSavePath"
 )
 DATA_ROOT_NAMES = ("xwechat_files", "WeChat Files", "xwechat_files_data")
+CUSTOM_ROOT_ENV = "WECHATVIBE_DATA_ROOT"
 TEXT_CONFIG_PATH = re.compile(r"[A-Za-z]:[\\/][^\s\x00-\x1f\"']+")
 
 
@@ -288,7 +289,9 @@ def _registry_roots() -> list[str]:
 
 def _known_roots() -> list[str]:
     home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    bases = [*_config_dir_roots(), *_registry_roots(), os.path.join(home, "Documents"), home]
+    custom = _existing_absolute_directory(os.environ.get(CUSTOM_ROOT_ENV) or "")
+    bases = [*([custom] if custom else []), *_config_dir_roots(), *_registry_roots(),
+             os.path.join(home, "Documents"), home]
     for env_name in ("APPDATA", "LOCALAPPDATA"):
         appdata = os.environ.get(env_name)
         if appdata:
@@ -303,10 +306,10 @@ def _known_roots() -> list[str]:
     return roots
 
 
-def discover_account_dirs() -> list[AccountDir]:
+def discover_account_dirs(roots: list[str] | None = None) -> list[AccountDir]:
     accounts: list[AccountDir] = []
     seen: set[str] = set()
-    for root in _known_roots():
+    for root in _known_roots() if roots is None else roots:
         if not os.path.isdir(root):
             continue
         for entry in _safe_listdir(root):

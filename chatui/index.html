@@ -73,6 +73,11 @@
         </svg>
         <input type="text" id="searchInput" placeholder="搜索">
       </div>
+      <button type="button" class="btn-add-chat" id="btnAddConversation" title="会话目录尚未就绪" aria-label="添加会话" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Session Items Container -->
@@ -487,6 +492,19 @@
             <div class="conversation-manager-list" id="conversationManagerList"></div>
             <div id="conversationManagerStatus" class="model-source-status" role="status"></div>
           </section>
+          <div class="settings-row">
+            <span>聊天记录路径</span>
+            <span id="dataRootStatus" role="status">自动发现</span>
+          </div>
+          <div class="model-source-field">
+            <label for="inputDataRoot">数据目录</label>
+            <input id="inputDataRoot" type="text" placeholder="默认自动发现，可选择 xwechat_files 或账号目录" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="local-model-control">
+            <button type="button" class="settings-action-btn" id="btnBrowseDataRoot">选择目录</button>
+            <button type="button" class="settings-action-btn model-source-primary" id="btnSaveDataRoot">保存</button>
+            <button type="button" class="settings-action-btn" id="btnClearDataRoot">恢复自动</button>
+          </div>
           <div class="settings-row">
             <span>管理账号</span>
             <div class="account-status-control">

@@ -21,7 +21,7 @@ const code = section("async function api(", "function status(") +
   section("const MODEL_SOURCE_PROTOCOLS", "let managedAccounts = [];") +
   section("let analysisCacheRequest = 0;", "async function loadAnalysisCache") +
   "globalThis.ui = { showModelSource, updateLabel, validApiInsight, parseApiPartialLabels, renderApiInsightResult, " +
-  "ensureApiInsights, cancelApiInsightWork, activeApiInsightKey, apiInsightCache, " +
+  "ensureApiInsights, fetchApiInsightResults, cancelApiInsightWork, activeApiInsightKey, apiInsightCache, " +
   "renderAnalysisCache, suppressedApiSources, suppressedLocalAccounts, " +
   "getSource: () => modelSourceSnapshot };";
 
@@ -191,6 +191,37 @@ it("lands only complete streamed emotion and intent pairs", () => {
   });
 });
 
+it("places out-of-order streamed blocks on their explicit original target IDs", () => {
+  const { ui } = harness();
+  const parsed = JSON.parse(JSON.stringify(ui.parseApiPartialLabels(
+    "编号：second-id\n情感：犹豫\n意图：改期\n编号：first-id\n情感：关切\n意图：询问\n",
+    ["first-id", "second-id"])));
+  assert.deepEqual(parsed, {
+    "second-id": { id: "second-id", status: "ok", affect: { feeling: "犹豫" }, intents: ["改期"] },
+    "first-id": { id: "first-id", status: "ok", affect: { feeling: "关切" }, intents: ["询问"] },
+  });
+});
+
+it("does not assign unknown or unfinished streamed ID blocks to another message", () => {
+  const { ui } = harness();
+  const parse = text => JSON.parse(JSON.stringify(ui.parseApiPartialLabels(text, ["m1", "m2"])));
+  assert.deepEqual(parse("编号：unknown\n情感：愤怒\n意图：拒绝\n编号：m2\n情感：关切\n意图：询问\n"), {
+    m2: { id: "m2", status: "ok", affect: { feeling: "关切" }, intents: ["询问"] },
+  });
+  assert.deepEqual(parse("编号：m1\n情感：关切\n意图：询"), {});
+  assert.deepEqual(parse("编号：m\n情感：关切\n意图：询问\n"), {});
+});
+
+it("treats explicitly absent streamed labels as empty and leaves malformed text pending", () => {
+  const { ui } = harness();
+  const parse = text => JSON.parse(JSON.stringify(ui.parseApiPartialLabels(text, ["m1", "m2"])));
+  assert.deepEqual(parse("编号：m1\n情感：无\n意图：无\n编号：m2\n情感：关切\n意图：询问\n"), {
+    m1: { id: "m1", status: "ok", intents: [] },
+    m2: { id: "m2", status: "ok", affect: { feeling: "关切" }, intents: ["询问"] },
+  });
+  assert.deepEqual(parse("编号：m1\n情感：happy\n意图：unknown\n"), {});
+});
+
 it("posts only scoped message IDs and a bounded limit; no API key or chat text", async () => {
   const calls = [];
   const { ui, context } = harness(async (url, options) => {
@@ -291,6 +322,136 @@ it("hydrates completed API results into the current bubble", async () => {
   assert.equal(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1.status, "ok");
   assert.match(textOf(bubble), /请求帮助/);
   assert.equal(countClass(bubble, "intent-pct"), 0);
+});
+
+it("drops uncommitted streamed labels on terminal failure while keeping confirmed results", async () => {
+  let failed = false;
+  const confirmed = { ...insight, id: "saved" };
+  const { ui, context } = harness(async () => response({ account: "acct", sourceId: "api-a",
+    results: failed ? {} : { saved: confirmed }, job: { id: "stream-job", status: failed ? "error" : "running",
+      error: failed ? "invalid-output" : undefined, total: 2, processed: 0,
+      targetIds: ["m1", "m2"], partialText: "编号：m1\n情感：关切\n意图：询问\n" } }));
+  const message = { id: "m1", side: "other", kind: "text", text: "今天身体怎么样？" };
+  const savedMessage = { ...message, id: "saved" };
+  context.messages = [savedMessage, message];
+  ui.showModelSource(apiState());
+  await tick();
+  const bubble = messageNode();
+  ui.updateLabel(message, bubble);
+  assert.match(textOf(bubble), /关切/);
+  failed = true;
+  await ui.fetchApiInsightResults(context.apiInsightWork);
+  ui.updateLabel(message, bubble);
+  assert.equal(countClass(bubble, "inline-intent-row"), 0);
+  const entry = ui.apiInsightCache.get(ui.activeApiInsightKey());
+  assert.equal(entry.results.m1, undefined);
+  assert.deepEqual(entry.results.saved, confirmed);
+  const savedBubble = messageNode("saved");
+  ui.updateLabel(savedMessage, savedBubble);
+  assert.match(textOf(savedBubble), /请求帮助/);
+});
+
+it("replaces a retry's temporary preview instead of retaining labels from its failed attempt", async () => {
+  let phase = 0;
+  const final = { ...insight, emotion: "期待", intent: "邀约" };
+  const { ui, context } = harness(async () => response({ account: "acct", sourceId: "api-a",
+    results: phase === 3 ? { m1: final } : {},
+    job: { id: "same-job", status: phase === 3 ? "done" : phase === 1 ? "queued" : "running",
+      total: 1, processed: phase === 3 ? 1 : 0, targetIds: ["m1"],
+      partialText: phase === 0 ? "编号：m1\n情感：关切\n意图：询问\n" :
+        phase === 2 ? "编号：m1\n情感：犹豫\n意图：改期\n" : "" } }));
+  const message = { id: "m1", side: "other", kind: "text", text: "这周末出去吗？" };
+  context.messages = [message];
+  ui.showModelSource(apiState());
+  await tick();
+  const bubble = messageNode();
+  ui.updateLabel(message, bubble);
+  assert.match(textOf(bubble), /关切/);
+  phase = 1;
+  await ui.fetchApiInsightResults(context.apiInsightWork);
+  ui.updateLabel(message, bubble);
+  assert.doesNotMatch(textOf(bubble), /关切|询问/);
+  phase = 2;
+  await ui.fetchApiInsightResults(context.apiInsightWork);
+  ui.updateLabel(message, bubble);
+  assert.match(textOf(bubble), /犹豫/);
+  assert.doesNotMatch(textOf(bubble), /关切|询问/);
+  assert.equal(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1, undefined);
+  phase = 3;
+  await ui.fetchApiInsightResults(context.apiInsightWork);
+  ui.updateLabel(message, bubble);
+  assert.match(textOf(bubble), /期待/);
+  assert.deepEqual(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1, final);
+});
+
+it("keeps confirmed labels authoritative when a new stream refers to the same target", async () => {
+  const { ui, context } = harness(async () => response({ account: "acct", sourceId: "api-a",
+    results: { m1: insight }, job: { id: "new-job", status: "running", total: 1, processed: 0,
+      targetIds: ["m1"], partialText: "编号：m1\n情感：恼火\n意图：拒绝\n" } }));
+  const message = { id: "m1", side: "other", kind: "text", text: "请帮我处理一下" };
+  context.messages = [message];
+  ui.showModelSource(apiState());
+  await tick();
+  const bubble = messageNode();
+  ui.updateLabel(message, bubble);
+  assert.match(textOf(bubble), /请求帮助/);
+  assert.doesNotMatch(textOf(bubble), /恼火|拒绝/);
+  assert.deepEqual(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1, insight);
+});
+
+it("preserves saved results when submitting a retry and hides previews after a polling failure", async () => {
+  let failRead = false;
+  let resolvePost;
+  const { ui, context } = harness(async (url, options) => {
+    if (options.method === "POST") return new Promise(resolve => { resolvePost = resolve; });
+    if (failRead) throw new Error("synthetic network failure");
+    return response({ account: "acct", sourceId: "api-a", results: { m1: insight },
+      job: { id: "failed-job", status: "error", error: "invalid-output", total: 2, processed: 0 } });
+  });
+  const messages = [
+    { id: "m1", side: "other", kind: "text", text: "请帮我处理一下" },
+    { id: "m2", side: "other", kind: "text", text: "今天怎么样？" },
+  ];
+  context.messages = messages;
+  ui.showModelSource(apiState());
+  await tick();
+  ui.ensureApiInsights(true);
+  assert.equal(typeof resolvePost, "function");
+  assert.deepEqual(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1, insight);
+  resolvePost(response({ account: "acct", sourceId: "api-a",
+    job: { id: "retry-job", status: "running", total: 2, processed: 0, targetIds: ["m1", "m2"],
+      partialText: "编号：m2\n情感：关切\n意图：询问\n" } }));
+  failRead = true;
+  await tick();
+  const bubble = messageNode("m2");
+  ui.updateLabel(messages[1], bubble);
+  assert.equal(countClass(bubble, "inline-intent-row"), 0);
+  assert.deepEqual(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1, insight);
+});
+
+it("forgets the current stream after a read failure even if its error is later dismissed", async () => {
+  let failRead = false;
+  const { ui, context } = harness(async () => {
+    if (failRead) throw new Error("synthetic network failure");
+    return response({ account: "acct", sourceId: "api-a", results: {},
+      job: { id: "stream-job", status: "running", total: 1, processed: 0, targetIds: ["m1"],
+        partialText: "编号：m1\n情感：关切\n意图：询问\n" } });
+  });
+  const message = { id: "m1", side: "other", kind: "text", text: "今天还好吗？" };
+  context.messages = [message];
+  ui.showModelSource(apiState());
+  await tick();
+  const bubble = messageNode();
+  ui.updateLabel(message, bubble);
+  assert.match(textOf(bubble), /关切/);
+  failRead = true;
+  await ui.fetchApiInsightResults(context.apiInsightWork);
+  ui.updateLabel(message, bubble);
+  assert.equal(countClass(bubble, "inline-intent-row"), 0);
+  ui.ensureApiInsights(true);
+  ui.updateLabel(message, bubble);
+  assert.equal(countClass(bubble, "inline-intent-row"), 0);
+  assert.equal(ui.apiInsightCache.get(ui.activeApiInsightKey()).results.m1, undefined);
 });
 
 it("ignores a late response from an old source", async () => {

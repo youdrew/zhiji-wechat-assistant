@@ -25,7 +25,7 @@ MODEL_CONNECTOR_ERRORS = frozenset({
 })
 
 
-API_PORTRAIT_PIECE_CHARS = 1000
+API_PORTRAIT_PIECE_CHARS = 800
 
 
 API_PORTRAIT_BATCH_ITEMS = 20_000
@@ -93,13 +93,15 @@ def empty_api_portrait():
                                               "initiative", "care", "affection")}}
 
 
-def api_portrait_wire_chars(context_tokens):
+def api_portrait_wire_chars(context_tokens, reserved_tokens=2048):
     if type(context_tokens) is not int or not 4096 <= context_tokens <= 1000000:
         raise ModelSourceUnavailable("context-size-required")
-    # Reserve system/summary/output tokens; UTF-8 and JSON overhead are included
+    if context_tokens < reserved_tokens + 2048:
+        raise ModelSourceUnavailable("context-too-long")
+    # Reserve the caller's fixed rules and output budget; JSON overhead is included
     # in the measured wire length below. The conservative ratio avoids promising
     # that a character is exactly one provider token.
-    return min(API_PORTRAIT_MAX_WIRE_CHARS, max(1024, (context_tokens - 2048) * 55 // 100))
+    return min(API_PORTRAIT_MAX_WIRE_CHARS, max(1024, (context_tokens - reserved_tokens) * 55 // 100))
 
 
 def api_portrait_plan(pieces, wire_chars):
@@ -107,7 +109,7 @@ def api_portrait_plan(pieces, wire_chars):
         raise ValueError("invalid portrait context budget")
     if not pieces:
         return []
-    weights = [len(json.dumps({key: item[key] for key in ("id", "sender", "target", "text")},
+    weights = [len(json.dumps({key: value for key, value in item.items() if not key.startswith("_")},
                               ensure_ascii=False, separators=(",", ":"))) + 1 for item in pieces]
     groups = []
     start = total = 0
@@ -133,7 +135,11 @@ def api_portrait_add_counts(base, delta):
     if not all(type(base.get(key)) is int and type(delta.get(key)) is int and
                base[key] >= 0 and delta[key] >= 0 for key in API_PORTRAIT_COUNT_KEYS):
         raise ValueError("invalid API portrait inventory")
-    return {key: base[key] + delta[key] for key in API_PORTRAIT_COUNT_KEYS}
+    combined = {key: base[key] + delta[key] for key in API_PORTRAIT_COUNT_KEYS}
+    if all(type(item.get("targetMessageCount")) is int and item["targetMessageCount"] >= 0
+           for item in (base, delta)):
+        combined["targetMessageCount"] = base["targetMessageCount"] + delta["targetMessageCount"]
+    return combined
 
 
 def api_portrait_tail_hashes(rows):

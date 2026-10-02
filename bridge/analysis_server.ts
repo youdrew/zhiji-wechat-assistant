@@ -42,8 +42,9 @@ import {
   type ModelConfig, type Protocol,
 } from "../electron/model-connectors";
 import { analyzeApiInsights, type ApiInsightMessage } from "../electron/api-message-insights";
-import { refreshApiPortraitAxes, updateApiPortrait,
-  type ApiPortrait, type ApiPortraitMessage } from "../electron/api-portrait";
+import { API_PORTRAIT_CLASSIFIER_VERSION, classifyApiPortraitBatch } from "../electron/api-portrait-classifier";
+import { refreshApiPortraitAxes, updateApiPortrait, extractPortraitObservations, synthesizeApiPortrait,
+  type ApiPortrait, type ApiPortraitEvidenceState, type ApiPortraitMessage } from "../electron/api-portrait";
 import { buildUnifiedInput, projectLegacyWire,
   type UnifiedMessageInput } from "../shared/message-input";
 
@@ -106,26 +107,58 @@ async function handleApiGeneration(id: unknown, cmd: ApiGenerationCommand,
     return;
   }
   if (cmd === "model:portrait") {
+    if (req.phase === "classify") {
+      const result = await classifyApiPortraitBatch(connectorConfig(req, true), {
+        messages: req.messages as ApiPortraitMessage[],
+        subjectKind: req.subjectKind as "person" | "group",
+        contextTokens: req.contextTokens as number,
+      });
+      emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+      return;
+    }
+    if (req.phase === "synthesize") {
+      const result = await synthesizeApiPortrait(connectorConfig(req, true),
+        req.evidence as ApiPortraitEvidenceState, req.contextTokens as number);
+      emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+      return;
+    }
+    if (req.phase === "observe") {
+      if (req.subjectKind !== "person" && req.subjectKind !== "group") {
+        emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
+        return;
+      }
+      const result = await extractPortraitObservations(connectorConfig(req, true),
+        req.messages as ApiPortraitMessage[], req.evidence as ApiPortraitEvidenceState | null,
+        generateStructured, req.subjectKind);
+      emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
+      return;
+    }
     if (!Array.isArray(req.messages) ||
         (req.previous !== null && (!req.previous || typeof req.previous !== "object" ||
-                                   Array.isArray(req.previous)))) {
+                                   Array.isArray(req.previous))) ||
+        (req.evidence !== undefined && req.evidence !== null &&
+         (!req.evidence || typeof req.evidence !== "object" || Array.isArray(req.evidence)))) {
       emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
       return;
     }
     const result = await updateApiPortrait(connectorConfig(req, true),
-      req.previous as ApiPortrait | null, req.messages as ApiPortraitMessage[]);
+      req.previous as ApiPortrait | null, req.messages as ApiPortraitMessage[],
+      generateStructured, req.evidence as ApiPortraitEvidenceState | null | undefined);
     emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });
     return;
   }
-  if (!req.portrait || typeof req.portrait !== "object" || Array.isArray(req.portrait)) {
+  if (!req.portrait || typeof req.portrait !== "object" || Array.isArray(req.portrait) ||
+      (req.evidence !== undefined && req.evidence !== null &&
+       (!req.evidence || typeof req.evidence !== "object" || Array.isArray(req.evidence)))) {
     emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, error: "invalid-request" });
     return;
   }
   const result = await refreshApiPortraitAxes(connectorConfig(req, true),
-    req.portrait as ApiPortrait);
+    req.portrait as ApiPortrait, generateStructured,
+    req.evidence as ApiPortraitEvidenceState | null | undefined, req.contextTokens as number);
   emit({ id, cmd, analysisVersion: ANALYSIS_VERSION,
-    axes: { mbtiAxes: result.mbtiAxes, traits: result.traits, affinity: result.affinity },
-    ...(result.usage ? { usage: result.usage } : {}) });
+    axes: { mbtiAxes: result.mbtiAxes, traits: result.traits, affinity: result.affinity,
+      mbtiBasis: result.mbtiBasis } });
 }
 
 function emitRequestError(id: unknown, error: unknown, apiOnly: boolean): void {
@@ -449,7 +482,7 @@ interface ApiGenerationLane {
 
 async function main(): Promise<void> {
   if (process.argv.includes("--analysis-version")) {
-    emit({ analysisVersion: ANALYSIS_VERSION });
+    emit({ analysisVersion: ANALYSIS_VERSION, apiPortraitVersion: API_PORTRAIT_CLASSIFIER_VERSION });
     return;
   }
   const providerFlag = process.argv.indexOf("--provider");

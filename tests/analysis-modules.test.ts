@@ -54,7 +54,7 @@ it("sends an unchanged bounded per-message request through the facade and busine
   }
 });
 
-it("keeps the portrait request parameter set unchanged through the facade", async () => {
+it("routes the portrait facade through independent observation and synthesis", async () => {
   const previous = {
     summary: "常讨论日程", communication: "表达简洁", emotionExpression: "",
     interactionPreferences: "", topics: [], patterns: [], boundaries: [], uncertain: [],
@@ -66,17 +66,24 @@ it("keeps the portrait request parameter set unchanged through the facade", asyn
   const requests: GenerationRequest[] = [];
   const generate = async (_config: ModelConfig, request: GenerationRequest) => {
     requests.push(request);
-    return { text: JSON.stringify({ ...previous, summary: "常讨论见面时间" }) };
+    const input = JSON.parse(request.prompt.slice("INPUT_JSON:\n".length));
+    assert.doesNotMatch(request.prompt, /常讨论日程|表达简洁/);
+    return input.messages ? { text: JSON.stringify({ observations: [{ dimension: "topics",
+      text: "约定周六见面", sources: [{ id: "m1", quote: "周六见。" }] }] }) } :
+      { text: JSON.stringify({ portrait: { ...previous, summary: "常讨论见面时间" },
+        support: { summary: ["e1"] } }) };
   };
   const result = await compat.updateApiPortrait(config, previous, messagesInput, generate);
   assert.equal(result.portrait.summary, "常讨论见面时间");
-  await portrait.updateApiPortrait(config, previous, messagesInput, generate);
-  for (const request of requests) {
-    assert.deepEqual(Object.keys(request).sort(),
-      ["jsonMode", "maxOutputTokens", "prompt", "system", "timeoutMs"]);
+  const direct = await portrait.updateApiPortrait(config, previous, messagesInput, generate);
+  assert.deepEqual(result, direct);
+  assert.equal(requests.length, 4);
+  for (const [index, request] of requests.entries()) {
     assert.equal(request.jsonMode, true);
-    assert.equal(request.maxOutputTokens, 8192);
-    assert.equal(request.timeoutMs, 30_000);
+    assert.ok(request.maxOutputTokens! <= 2048);
+    const input = JSON.parse(request.prompt.slice("INPUT_JSON:\n".length));
+    assert.equal(Array.isArray(input.messages), index % 2 === 0);
+    assert.equal(Array.isArray(input.facts), index % 2 === 1);
   }
 });
 
@@ -93,7 +100,7 @@ it("keeps the business modules free of facade imports", () => {
 it("lists the new TypeScript and UI modules in the public staging allowlist", () => {
   const stage = readFileSync(path.join(ROOT, "scripts/stage-real-client.py"), "utf8");
   for (const name of ["chatui/message-labels.js", "electron/api-message-insights.ts",
-    "electron/api-portrait.ts", "electron/api-analysis-json.ts"]) {
+    "electron/api-portrait.ts", "electron/api-portrait-evidence.ts", "electron/api-analysis-json.ts"]) {
     assert.ok(stage.includes(`"${name}"`), `staging allowlist is missing ${name}`);
   }
   assert.ok(stage.includes('"message_results.py"'), "staging allowlist is missing message_results.py");

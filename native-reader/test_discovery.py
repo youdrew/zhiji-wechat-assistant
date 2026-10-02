@@ -37,6 +37,7 @@ class DiscoveryTests(unittest.TestCase):
             "APPDATA": str(self.appdata),
             "LOCALAPPDATA": str(self.localappdata),
             "USERPROFILE": str(self.home),
+            "WECHATVIBE_DATA_ROOT": "",
         })
         env.start()
         self.addCleanup(env.stop)
@@ -161,6 +162,39 @@ class DiscoveryTests(unittest.TestCase):
         tail = json.dumps({"dataDir": str(base)}).encode("utf-8")
         (config_dir / "oversized.ini").write_bytes(b"#" * discovery.CONFIG_READ_LIMIT + tail)
         self.assertEqual(self._discovered(), set())
+
+    def test_manual_hint_adds_candidates_without_replacing_automatic_roots(self):
+        auto = self._account(self.home, "xwechat_files", "automatic")
+        base = self.root / "manual-root"
+        manual = self._account(base, "xwechat_files", "manual")
+        with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: str(base)}):
+            self.assertEqual(self._discovered(), {auto, manual})
+        for value in ("", "relative-path", str(self.root / "missing")):
+            with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: value}):
+                self.assertEqual(self._discovered(), {auto})
+
+    def test_manual_account_does_not_authorize_logged_out_or_ambiguous_accounts(self):
+        auto = self._account(self.home, "xwechat_files", "automatic")
+        manual_base = self.root / "manual"
+        manual = self._account(manual_base, None, "manual")
+        with patch.dict(os.environ, {discovery.CUSTOM_ROOT_ENV: str(manual_base)}):
+            accounts = discovery.discover_account_dirs()
+        process = discovery.WeixinProcess(pid=42)
+        with patch.object(discovery, "process_open_file_paths", return_value=[]):
+            self.assertIsNone(discovery.active_account_id(accounts, [process]))
+        with patch.object(discovery, "process_open_file_paths", return_value=[str(auto / "session.db")]):
+            selected = next(account for account in accounts if Path(account.path) == auto)
+            self.assertEqual(discovery.active_account_id(accounts, [process]), selected.id)
+        with patch.object(discovery, "process_open_file_paths",
+                          return_value=[str(auto / "session.db"), str(manual / "session.db")]):
+            self.assertIsNone(discovery.active_account_id(accounts, [process]))
+
+    def test_explicit_roots_only_check_the_requested_directory(self):
+        self._account(self.home, "xwechat_files", "automatic")
+        base = self.root / "isolated"
+        expected = self._account(base, None, "manual")
+        self.assertEqual({Path(account.path) for account in discovery.discover_account_dirs([str(base)])},
+                         {expected})
 
 
 if __name__ == "__main__":

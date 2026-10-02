@@ -15,8 +15,11 @@ from contextlib import contextmanager
 from backend_contracts import (
     FINE_LABEL_SCHEMA, LOCAL_SOURCE_ID, ROOT, empty_api_portrait, valid_api_portrait,
 )
+from portrait_contracts import (empty_portrait_evidence, portrait_synthesis_fingerprint,
+                                valid_mbti_basis, valid_portrait_evidence, valid_synthesis_fingerprint)
 from profile_signals import keyword_counts
 from profile_state import empty_state as empty_profile_state, add_result as add_profile_result
+from api_portrait_statistics import empty_statistics, valid_statistics
 
 
 def project_result_store(account, _workdir):
@@ -415,18 +418,31 @@ class ResultStore:
         portrait = json.loads(row[9])
         if not valid_api_portrait(portrait):
             raise RuntimeError("invalid saved API portrait")
+        resume = json.loads(row[10]) if row[10] else None
+        if isinstance(resume, dict) and "portraitStatistics" in resume and not valid_statistics(
+                resume["portraitStatistics"]):
+            resume.pop("portraitStatistics", None)
+        if isinstance(resume, dict) and "portraitEvidence" in resume and not valid_portrait_evidence(
+                resume["portraitEvidence"]):
+            resume.pop("portraitEvidence", None)
+        if isinstance(resume, dict) and "mbtiBasis" in resume and not valid_mbti_basis(resume["mbtiBasis"]):
+            resume.pop("mbtiBasis", None)
+        if isinstance(resume, dict) and "synthesisFingerprint" in resume and not valid_synthesis_fingerprint(
+                resume["synthesisFingerprint"]):
+            resume.pop("synthesisFingerprint", None)
         return {"highwater": tuple(json.loads(row[0])) if row[0] else None,
                 "after": tuple(json.loads(row[1])) if row[1] else None,
                 "fingerprint": row[2], "available": json.loads(row[3]),
                 "plan": json.loads(row[4]), "batchIndex": row[5],
                 "complete": bool(row[6]), "processed": row[7],
                 "processedChars": row[8], "portrait": portrait,
-                "resume": json.loads(row[10]) if row[10] else None}
+                "resume": resume}
 
     def api_portrait_begin(self, account, user, source_id, subject, highwater, after,
-                           fingerprint, available, plan):
+                           fingerprint, available, plan, *, rebuild=False, subject_kind="person",
+                           local_rules=False, classifier_version="api-local-rules-v1"):
         saved = self.api_portrait_get(account, user, source_id, subject)
-        if saved and not saved["complete"]:
+        if saved and not rebuild and not saved["complete"]:
             if (saved["highwater"] != highwater or saved["after"] != after or
                     saved["fingerprint"] != fingerprint):
                 raise ValueError("unfinished portrait source changed")
@@ -444,9 +460,39 @@ class ResultStore:
                         raise RuntimeError("API portrait plan changed concurrently")
                 saved["plan"] = plan
             return saved
-        if saved and (highwater is None or saved["highwater"] == highwater):
+        if saved and not rebuild and (highwater is None or saved["highwater"] == highwater):
             return saved
         portrait = saved["portrait"] if saved else empty_api_portrait()
+        previous_resume = saved.get("resume") if saved and not rebuild else None
+        evidence_resume = ({"portraitEvidence": previous_resume["portraitEvidence"]}
+                           if isinstance(previous_resume, dict) and
+                           isinstance(previous_resume.get("portraitEvidence"), dict)
+                           else {"portraitEvidence": empty_portrait_evidence(subject_kind)})
+        # The old display portrait survives a new job; retain its explanation,
+        # but never inherit the old cursor into this new incremental range.
+        saved_basis = (saved.get("resume") or {}).get("mbtiBasis") if saved else None
+        if valid_mbti_basis(saved_basis):
+            evidence_resume["mbtiBasis"] = saved_basis
+        if isinstance(previous_resume, dict):
+            last_synthesis = previous_resume.get("synthesisFingerprint")
+            if not valid_synthesis_fingerprint(last_synthesis) and saved["complete"]:
+                # Completed v3 rows predate the marker. Only these can safely be
+                # migrated; an unfinished row may still be awaiting synthesis.
+                last_synthesis = portrait_synthesis_fingerprint(previous_resume.get("portraitEvidence"))
+            if valid_synthesis_fingerprint(last_synthesis):
+                evidence_resume["synthesisFingerprint"] = last_synthesis
+        unchanged = (not plan and evidence_resume.get("synthesisFingerprint") is not None and
+                     evidence_resume["synthesisFingerprint"] ==
+                     portrait_synthesis_fingerprint(evidence_resume["portraitEvidence"]))
+        if local_rules:
+            # Reuse the source-scoped cursor transaction, never the legacy API's
+            # generated scores. Only compatible sufficient statistics carry forward.
+            statistics = (previous_resume or {}).get("portraitStatistics")
+            evidence_resume = {"portraitStatistics": statistics if valid_statistics(statistics, classifier_version)
+                               else empty_statistics(classifier_version)}
+            if valid_statistics(statistics, classifier_version) and isinstance(previous_resume.get("portraitContext"), list):
+                evidence_resume["portraitContext"] = previous_resume["portraitContext"][-3:]
+            unchanged = not plan
         with self.connect() as conn:
             conn.execute("INSERT OR REPLACE INTO api_portrait_v1 "
                          "(account,session,source_id,subject,highwater_json,after_json,fingerprint,"
@@ -456,7 +502,8 @@ class ResultStore:
                           json.dumps(highwater) if highwater else None,
                           json.dumps(after) if after else None, fingerprint,
                           json.dumps(available, ensure_ascii=False), json.dumps(plan), 0,
-                          int(not plan), 0, 0, json.dumps(portrait, ensure_ascii=False), None))
+                          int(unchanged), 0, 0, json.dumps(portrait, ensure_ascii=False),
+                          json.dumps(evidence_resume, ensure_ascii=False) if evidence_resume else None))
         return self.api_portrait_get(account, user, source_id, subject)
 
     def api_portrait_upgrade_resume(self, account, user, source_id, subject,
@@ -479,15 +526,34 @@ class ResultStore:
                 type(processed_chars) is not int or processed_chars < 0 or
                 processed_target is not None and (type(processed_target) is not int or processed_target < 0) or
                 resume is not None and (not isinstance(resume, dict) or
-                                        resume.get("batchIndex") != batch_index)):
+                                        resume.get("batchIndex") != batch_index or
+                                        "portraitEvidence" in resume and not valid_portrait_evidence(
+                                            resume["portraitEvidence"]) or
+                                        "portraitStatistics" in resume and not valid_statistics(
+                                            resume["portraitStatistics"]))):
             raise ValueError("invalid API portrait checkpoint")
         with self.connect() as conn:
-            row = conn.execute("SELECT available_json FROM api_portrait_v1 WHERE account=? AND session=? "
+            row = conn.execute("SELECT available_json,resume_json FROM api_portrait_v1 WHERE account=? AND session=? "
                                "AND source_id=? AND subject=?",
                                (account, user, source_id, subject)).fetchone()
             if row is None:
                 raise RuntimeError("API portrait scope disappeared")
             available = json.loads(row[0])
+            if resume is not None:
+                resume = dict(resume)
+                previous_resume = json.loads(row[1]) if row[1] else None
+                if not valid_synthesis_fingerprint(resume.get("synthesisFingerprint")):
+                    resume.pop("synthesisFingerprint", None)
+                    previous_fingerprint = (previous_resume.get("synthesisFingerprint")
+                                            if isinstance(previous_resume, dict) else None)
+                    if valid_synthesis_fingerprint(previous_fingerprint):
+                        resume["synthesisFingerprint"] = previous_fingerprint
+                if not valid_mbti_basis(resume.get("mbtiBasis")):
+                    resume.pop("mbtiBasis", None)
+                    previous_basis = (previous_resume.get("mbtiBasis")
+                                      if isinstance(previous_resume, dict) else None)
+                    if valid_mbti_basis(previous_basis):
+                        resume["mbtiBasis"] = previous_basis
             if processed_target is not None:
                 if processed_target > available.get("targetTextCount", processed_target):
                     raise ValueError("invalid API target progress")

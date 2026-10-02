@@ -116,6 +116,66 @@ def port_occupied(port):
         return connection.connect_ex(("127.0.0.1", port)) == 0
 
 
+def port_bindable(port):
+    """Probe the same IPv4 loopback bind as the bridge, including OS exclusions."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            listener.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def selected_port(config, *, allow_fallback):
+    """Resolve the saved installation port; status/stop never select or write one."""
+    marker = checked_runtime_dir(config) / "selected-port.json"
+    preferred = config.port
+    if marker.exists() or marker.is_symlink():
+        info = marker.lstat()
+        if marker.is_symlink() or info.st_file_attributes & 0x400 or not marker.is_file() or info.st_size > 1024:
+            raise LauncherError("Unsafe saved bridge port")
+        try:
+            record = json.loads(marker.read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or record.get("schema") != 1:
+                raise ValueError("invalid port record")
+            if record.get("instanceId") == config.instance_id:
+                preferred = record["port"]
+                if type(preferred) is not int or not 1 <= preferred <= 65535:
+                    raise ValueError("invalid port")
+        except (ValueError, KeyError) as error:
+            raise LauncherError("Invalid saved bridge port") from error
+    if not allow_fallback:
+        return preferred
+    probe = Config(config.root, config.python_exe, preferred, config.timeout)
+    # Leave matching, foreign and unhealthy live services to ensure_service's
+    # existing identity/ownership checks. Never hop around a live owned process.
+    if health(probe) != "unavailable" or port_occupied(preferred) or previous_live_bridge(probe):
+        return preferred
+    if port_bindable(preferred):
+        return preferred
+    seed = int(hashlib.sha256((config.instance_id + ":port-fallback").encode("ascii")).hexdigest()[:8], 16)
+    for index in range(128):
+        candidate = 20000 + (seed + index * 313) % 40000
+        if candidate == preferred or not port_bindable(candidate):
+            continue
+        # Remember before launch, under the installation selection mutex. This
+        # also lets ownership-aware cleanup locate a failed/aborted first launch.
+        checked_runtime_dir(config).mkdir(parents=True, exist_ok=True)
+        checked_runtime_dir(config)
+        temporary = marker.with_name(f".selected-port-{os.getpid()}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump({"schema": 1, "instanceId": config.instance_id, "port": candidate}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, marker)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return candidate
+    raise LauncherError("No bindable local bridge port was found")
+
+
 def clear_no_auto_recovery(config):
     """An explicit successful launch resets the current-account exit latch."""
     marker = config.no_auto_recovery_marker
@@ -690,6 +750,35 @@ def open_client(url, root=PROJECT_ROOT):
         raise LauncherError(f"Could not open dedicated Electron shell: {error}") from error
 
 
+def run_command(args, config):
+    if args.stop_owned_bridge:
+        result = stop_owned_bridge(config)
+        if args.json:
+            print(json.dumps(result))
+        else:
+            print("Stopped owned bridge" if result["stopped"] else "Owned bridge already stopped")
+        return 0
+    if args.status:
+        state = health(config)
+        if args.json:
+            print(json.dumps({"version": VERSION, "url": config.url,
+                              "instanceId": config.instance_id, "state": state}))
+        else:
+            print(f"{config.url}: {state}")
+        return 0 if state == "ready" else 1
+    created, log_path = ensure_service(config, recovery=args.recovery)
+    if args.json:
+        print(json.dumps({"version": VERSION, "url": config.url,
+                          "instanceId": config.instance_id, "created": created}))
+    else:
+        print(f"{'Started' if created else 'Reusing'} {VERSION} at {config.url}")
+        if log_path:
+            print(f"Bridge log: {log_path}")
+    if not args.no_open:
+        open_client(config.url, config.root)
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Open the local real-data client")
     parser.add_argument("--no-open", action="store_true", help="start or reuse bridge without opening a GUI")
@@ -699,36 +788,18 @@ def main(argv=None):
     parser.add_argument("--recovery", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        port = int(os.environ.get("CHATUI_PORT", str(default_port(PROJECT_ROOT))))
+        explicit = os.environ.get("CHATUI_PORT")
+        port = int(explicit) if explicit else default_port(PROJECT_ROOT)
         if not 1 <= port <= 65535:
             raise ValueError("out of range")
         config = Config(PROJECT_ROOT, PYTHON_EXE, port)
-        if args.stop_owned_bridge:
-            result = stop_owned_bridge(config)
-            if args.json:
-                print(json.dumps(result))
-            else:
-                print("Stopped owned bridge" if result["stopped"] else "Owned bridge already stopped")
-            return 0
-        if args.status:
-            state = health(config)
-            if args.json:
-                print(json.dumps({"version": VERSION, "url": config.url,
-                                  "instanceId": config.instance_id, "state": state}))
-            else:
-                print(f"{config.url}: {state}")
-            return 0 if state == "ready" else 1
-        created, log_path = ensure_service(config, recovery=args.recovery)
-        if args.json:
-            print(json.dumps({"version": VERSION, "url": config.url,
-                              "instanceId": config.instance_id, "created": created}))
-        else:
-            print(f"{'Started' if created else 'Reusing'} {VERSION} at {config.url}")
-            if log_path:
-                print(f"Bridge log: {log_path}")
-        if not args.no_open:
-            open_client(config.url, config.root)
-        return 0
+        if explicit:
+            # Updater and recovery pass their established port explicitly.
+            return run_command(args, config)
+        with launch_mutex(Config(PROJECT_ROOT, PYTHON_EXE, 0)):
+            chosen = selected_port(config, allow_fallback=not (
+                args.status or args.stop_owned_bridge or args.recovery))
+            return run_command(args, Config(PROJECT_ROOT, PYTHON_EXE, chosen))
     except (ValueError, LauncherError, OSError) as error:
         if args.stop_owned_bridge and args.json:
             print(json.dumps({"stopped": False, "error": str(error)}))

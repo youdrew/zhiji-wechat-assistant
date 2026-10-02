@@ -16,6 +16,7 @@ from pathlib import Path
 from backend_contracts import ROOT, valid_api_portrait, validate_personality_evidence
 from local_model_source import ModelSource
 from profile_signals import validate_style_evidence
+from portrait_contracts import valid_mbti_basis, valid_portrait_evidence
 
 
 class NodeAnalysis:
@@ -32,6 +33,7 @@ class NodeAnalysis:
         self.model = {"state": "idle"}
         self.serial = 0
         self.version = None
+        self.portrait_classifier_version = None
         self.running_version = None
         self.api_only = api_only
         self.settings_path = Path(settings_path) if settings_path is not None else (
@@ -162,13 +164,21 @@ class NodeAnalysis:
                 if probe.returncode != 0:
                     raise RuntimeError("analysis version unavailable")
                 try:
-                    version = json.loads(probe.stdout.strip()).get("analysisVersion")
+                    versions = json.loads(probe.stdout.strip())
+                    version = versions.get("analysisVersion")
                 except ValueError as exc:
                     raise RuntimeError("invalid analysis version response") from exc
                 if not isinstance(version, str) or not version:
                     raise RuntimeError("invalid analysis version")
                 self.version = version
+                self.portrait_classifier_version = versions.get("apiPortraitVersion")
             return self.version
+
+    def portrait_version(self):
+        self.analysis_version()
+        if not isinstance(self.portrait_classifier_version, str) or not self.portrait_classifier_version:
+            raise RuntimeError("portrait-state-invalid")
+        return self.portrait_classifier_version
 
     def _read(self, process):
         for line in process.stdout:
@@ -306,24 +316,57 @@ class NodeAnalysis:
         return {"insights": insights, "usage": response.get("usage"),
                 "responseId": response.get("responseId"), "timings": response.get("timings")}
 
-    def model_portrait(self, protocol, base_url, api_key, model, previous, messages):
-        response, _ = self._request({"cmd": "model:portrait", "protocol": protocol,
+    def extract_portrait_observations(self, protocol, base_url, api_key, model, messages,
+                                     evidence=None, subject_kind="person"):
+        response, _ = self._request({"cmd": "model:portrait", "phase": "observe", "protocol": protocol,
                                      "baseUrl": base_url, "apiKey": api_key, "model": model,
-                                     "previous": previous, "messages": messages},
+                                      "messages": messages, "evidence": evidence,
+                                      "subjectKind": subject_kind},
+                                     require_model=False)
+        evidence = response.get("evidence")
+        if not valid_portrait_evidence(evidence):
+            raise RuntimeError("invalid-portrait")
+        return {"evidence": evidence, "usage": response.get("usage")}
+
+    def classify_portrait_batch(self, protocol, base_url, api_key, model, messages,
+                               subject_kind="person", context_tokens=None):
+        """One context-sized API call; scores are subsequently derived by local rules."""
+        response, _ = self._request({"cmd": "model:portrait", "phase": "classify",
+                                     "protocol": protocol, "baseUrl": base_url,
+                                     "apiKey": api_key, "model": model,
+                                     "messages": messages, "subjectKind": subject_kind,
+                                     "contextTokens": context_tokens}, require_model=False)
+        if "result" not in response:
+            raise RuntimeError("invalid-portrait")
+        if response.get("batchVersion") != self.portrait_version():
+            raise RuntimeError("portrait-state-invalid")
+        return {"result": response["result"], "usage": response.get("usage"),
+                "batchVersion": response["batchVersion"]}
+
+    def synthesize_portrait(self, protocol, base_url, api_key, model, evidence, context_tokens):
+        response, _ = self._request({"cmd": "model:portrait", "phase": "synthesize", "protocol": protocol,
+                                      "baseUrl": base_url, "apiKey": api_key, "model": model,
+                                      "evidence": evidence, "contextTokens": context_tokens},
                                     require_model=False)
         portrait = response.get("portrait")
         if not valid_api_portrait(portrait):
             raise RuntimeError("invalid-portrait")
-        return portrait
+        return {"portrait": portrait, "usage": response.get("usage"),
+                **({"mbtiBasis": response["mbtiBasis"]}
+                   if valid_mbti_basis(response.get("mbtiBasis")) else {})}
 
-    def refresh_portrait_axes(self, protocol, base_url, api_key, model, portrait):
+    def refresh_portrait_axes(self, protocol, base_url, api_key, model, portrait, evidence=None,
+                             context_tokens=None):
         response, _ = self._request({"cmd": "model:portrait-axes", "protocol": protocol,
                                      "baseUrl": base_url, "apiKey": api_key, "model": model,
-                                     "portrait": portrait},
+                                      "portrait": portrait, "evidence": evidence,
+                                      "contextTokens": context_tokens},
                                     require_model=False)
         update = response.get("axes")
         if not isinstance(update, dict):
             raise RuntimeError("invalid-portrait")
+        if "mbtiBasis" in update and not valid_mbti_basis(update["mbtiBasis"]):
+            update = {key: value for key, value in update.items() if key != "mbtiBasis"}
         return update
 
     @staticmethod

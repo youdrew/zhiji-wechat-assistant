@@ -75,6 +75,23 @@ function apiPortraitPayload(user, sourceId = "api-a") {
     job: { id: null, status: "done" },
   };
 }
+function nativePayload(user = "friend", sourceId = "api-a") {
+  const data = apiPortraitPayload(user, sourceId);
+  data.available = { messageCount: 350, textCount: 300, targetTextCount: 240, totalChars: 2000 };
+  data.progress = { processed: 300, total: 300, processedTargetTexts: 240, totalTargetTexts: 240, complete: true };
+  data.nativeProfile = {
+    account: "acct", ...data.identity,
+    stats: { messageCount: 240, textCount: 240, analyzedCount: 120, participantCount: 1 },
+    affinity: 38, traits: ["socialEnergy", "humor", "composure", "initiative", "care", "affection"]
+      .map((key, index) => ({ key, label: key, val: 20 + index * 10, sampleCount: 120 })),
+    keywords: [{ word: "散步", count: 8 }], summary: "依据累计行为信号生成的摘要", traitsBasis: "chat-behaviour",
+    mbtiInference: { eligibleMessages: 120, minMessages: 100, minAxisMargin: .2,
+      axes: Object.fromEntries([['EI', .2], ['SN', .75], ['TF', .25], ['JP', .3]].map(([axis, share]) =>
+        [axis, { leftShare: share, rightShare: 1 - share, evidenceCount: 40, insufficientCount: 80 }])) },
+    dataStatus: "partial", analysisUnit: "batch", job: { status: "done" },
+  };
+  return data;
+}
 function personaHarness(apiImpl, storage) {
   const nodes = new Map();
   const members = [];
@@ -111,7 +128,7 @@ function personaHarness(apiImpl, storage) {
     sessions: new Map([["friend", { name: "合成联系人", isGroup: false }]]),
     currentAccount: "acct", currentUser: "friend", activeMember: "",
     view: "persona", modelSourceResolved: true,
-    modelSourceSnapshot: { mode: "api", sourceId: "api-a", api: { model: "synthetic", contextTokens: 8192 } },
+    modelSourceSnapshot: { mode: "api", sourceId: "api-a", api: { model: "synthetic", contextTokens: 16384 } },
     controller: new AbortController(), profileGeneration: 0, profilePending: false,
     profileCache: new Map(), profileSnapshotsRequireRefresh: new Set(),
     renderedProfileKey: null, renderedProfileSignature: null, memberRenderedScope: null,
@@ -143,6 +160,14 @@ function navigationHarness(apiImpl, storage) {
   });
   return harness;
 }
+function installApiCacheClear(harness, sourceId = "api-a") {
+  Object.assign(harness.context, {
+    pendingAnalysisCacheClear: { account: "acct", sourceId, kind: "api" },
+    analysisCacheBusy: false, loadAnalysisCache: async () => {},
+    cancelApiInsightWork() {}, renderMessages() {},
+  });
+  vm.runInContext(section('byId("btnConfirmAnalysisCacheClear").addEventListener(', "function closeSettingsModal("), harness.context);
+}
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 it("uses the existing Laya dashboard/cards for a source-scoped API portrait without local profile", async () => {
@@ -165,7 +190,7 @@ it("uses the existing Laya dashboard/cards for a source-scoped API portrait with
   assert.equal(byId("stripAnalysisLabel").textContent, "已分析：");
   assert.equal(byId("heroRelationBadge").textContent, "好感 72");
   assert.match(textOf(byId("heroMetricBox")), /好感度等级.*72/);
-  assert.equal(byId("heroMbti").textContent, "ENTJ");
+  assert.equal(byId("heroMbti").textContent, "EN?J");
   assert.equal(byId("mbtiScalesList").children.length, 4);
   assert.ok(byId("radarContainer").children.some(item => item.tag === "svg"));
   assert.equal(byId("tagCardTitle").textContent, "常见话题");
@@ -175,6 +200,308 @@ it("uses the existing Laya dashboard/cards for a source-scoped API portrait with
   assert.equal(byId("apiPortraitDetails").hidden, true);
   assert.equal(members[0].username, "friend");
   assert.equal(avatars[0][0], "heroAvatar");
+});
+
+it("prefers native profile evidence and scores over the legacy API portrait and hides axis-only reassessment", async () => {
+  const data = nativePayload();
+  data.portrait = portrait("旧的自由生成摘要");
+  data.mbtiBasis = { EI: { status: "supported", reason: "不应显示的旧解释" } };
+  const calls = [];
+  const { ui, byId, members } = personaHarness(async url => { calls.push(url); return data; });
+  await ui.loadProfile(); await tick();
+  assert.deepEqual(calls, ["/api/model-portrait?user=friend"]);
+  assert.equal(byId("heroMbti").textContent, "ISFP");
+  assert.equal(byId("heroRelationBadge").textContent, "好感 38");
+  assert.equal(byId("stripMessageLabel").textContent, "对方消息：");
+  assert.equal(byId("stripDbPath").textContent, "240 条");
+  assert.equal(byId("tagCardTitle").textContent, "高频词");
+  assert.match(textOf(byId("tagCloud")), /散步.*8/);
+  assert.equal(byId("botSummaryText").textContent, data.nativeProfile.summary);
+  assert.doesNotMatch(textOf(byId("mbtiSources")), /不应显示的旧解释/);
+  assert.equal(byId("btnRetryApiPortrait").hidden, true);
+  assert.equal(members[0].apiSource, true);
+  assert.equal(members[0].apiNativeProfile, true);
+  assert.deepEqual(members[0].mbtiInference, data.nativeProfile.mbtiInference);
+  assert.deepEqual(members[0].traits, data.nativeProfile.traits);
+});
+
+it("uses only native processed evidence for MBTI and keeps unsupported axes unknown", () => {
+  const data = nativePayload();
+  const { ui, byId } = personaHarness(async () => data);
+  data.nativeProfile.mbtiInference.eligibleMessages = 90;
+  ui.renderApiPortrait(data);
+  assert.equal(byId("heroMbti").textContent, "90/100 条");
+  data.nativeProfile.mbtiInference.eligibleMessages = 120;
+  data.nativeProfile.mbtiInference.axes.JP = { leftShare: null, rightShare: null, evidenceCount: 8, insufficientCount: 112 };
+  ui.renderApiPortrait(data);
+  assert.equal(byId("heroMbti").textContent, "ISF?");
+  assert.match(textOf(byId("mbtiScalesList")), /J\/P · 尚无足够证据/);
+  data.nativeProfile.traits = [];
+  ui.renderApiPortrait(data);
+  assert.match(textOf(byId("radarContainer")), /暂无互动风格证据/);
+});
+
+it("does not repaint native cards or rewrite evidence counts on job-only progress polls", () => {
+  const data = nativePayload();
+  data.progress.complete = false;
+  data.job = { status: "running", phase: "analyzing", processed: 200, total: 300 };
+  const { ui, context, members } = personaHarness(async () => data);
+  ui.renderApiPortrait(data);
+  const first = members.length;
+  ui.renderApiPortrait({ ...data, progress: { ...data.progress, processedTargetTexts: 230 },
+    job: { ...data.job, processed: 290 } });
+  assert.equal(members.length, first);
+  const saved = context.profileCache.get(JSON.stringify(["acct", "friend", "", "api-a"]));
+  assert.equal(saved.stats.analyzedCount, 120);
+  assert.equal(saved.mbtiInference.eligibleMessages, 120);
+  assert.equal(saved.apiProgressProcessed, 230);
+});
+
+it("preserves native whole-group and member portrait boundaries", async () => {
+  const data = nativePayload("group@chatroom");
+  data.identity.isGroup = true;
+  data.identity.members = [{ id: "member-1", name: "成员一" }];
+  data.nativeProfile = { ...data.nativeProfile, ...data.identity, affinity: null, mbtiInference: null };
+  const { ui, context, byId } = personaHarness(async () => data);
+  context.currentUser = "group@chatroom";
+  context.sessions.set("group@chatroom", { isGroup: true });
+  await ui.loadProfile(); await tick();
+  assert.equal(byId("mbtiCard").hidden, true);
+  assert.doesNotMatch(textOf(byId("heroMetricBox")), /好感度等级/);
+  const member = nativePayload("member-1").nativeProfile;
+  data.subject = "member-1";
+  data.identity = { ...data.identity, username: "member-1", name: "成员一" };
+  data.nativeProfile = { ...member, ...data.identity, affinity: null };
+  await ui.loadProfile("member-1"); await tick();
+  assert.equal(byId("mbtiCard").hidden, false);
+  assert.equal(byId("heroMbti").textContent, "ISFP");
+  assert.doesNotMatch(textOf(byId("heroMetricBox")), /好感度等级/);
+});
+
+it("restores native evidence from the persisted source snapshot before a slow read", async () => {
+  const values = new Map();
+  const storage = { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, String(value)),
+    removeItem: key => values.delete(key) };
+  const data = nativePayload();
+  data.nativeProfile.mbtiInference.minAxisMargin = .7;
+  const first = personaHarness(async () => data, storage);
+  await first.ui.loadProfile(); await tick();
+  let release;
+  const second = personaHarness(() => new Promise(resolve => { release = resolve; }), storage);
+  second.ui.loadProfile();
+  assert.equal(second.byId("botSummaryText").textContent, data.nativeProfile.summary);
+  assert.equal(second.byId("heroMbti").textContent, "????", "the cached native margin is not replaced by raw API axes");
+  assert.match(textOf(second.byId("tagCloud")), /散步.*8/);
+  release({ ...data, nativeProfile: null, portrait: null, available: null, inventoryReady: false });
+  await tick();
+  assert.equal(second.byId("botSummaryText").textContent, data.nativeProfile.summary);
+  assert.equal(second.byId("heroMbti").textContent, "????");
+});
+
+it("keeps legacy scores read-only until explicit rebuilding yields a native profile", async () => {
+  let data = { ...payload("api-a", "旧画像暂留"), needsRebuild: true, nativeProfile: null };
+  const posts = [];
+  const { ui, byId } = personaHarness(async (url, options) => {
+    if (options?.method === "POST") {
+      posts.push(JSON.parse(options.body));
+      return { account: "acct", sourceId: "api-a", job: { status: "queued" } };
+    }
+    return data;
+  });
+  await ui.loadProfile(); await tick();
+  assert.equal(posts.length, 0);
+  assert.equal(byId("botSummaryText").textContent, "旧画像暂留");
+  assert.equal(byId("btnRetryApiPortrait").textContent, "更新画像");
+  fire(byId("btnRetryApiPortrait"), "click"); await tick();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].refreshAxes, undefined);
+  data = { ...nativePayload(), needsRebuild: false };
+  await ui.loadProfile(); await tick();
+  assert.equal(byId("heroMbti").textContent, "ISFP");
+  assert.equal(byId("botSummaryText").textContent, data.nativeProfile.summary);
+  assert.equal(byId("btnRetryApiPortrait").hidden, true);
+});
+
+it("rejects a native profile belonging to another account or subject", async () => {
+  for (const invalid of [{ account: "other-account" }, { username: "other-member" }]) {
+    const data = nativePayload();
+    data.nativeProfile = { ...data.nativeProfile, ...invalid };
+    const { ui, byId, members } = personaHarness(async () => data);
+    await ui.loadProfile(); await tick();
+    assert.equal(members.some(profile => profile.apiNativeProfile), false);
+    assert.notEqual(byId("botSummaryText").textContent, data.nativeProfile.summary);
+    assert.equal(byId("apiPortraitStatus").textContent, "画像读取失败，请稍后重试");
+  }
+});
+
+it("starts accumulation from one target text while keeping MBTI locked and migrations manual", async () => {
+  for (const [targetCount, needsRebuild, expectedPosts] of [[0, false, 0], [1, false, 1], [2, false, 1], [1, true, 0]]) {
+    const data = nativePayload();
+    data.needsRebuild = needsRebuild;
+    data.available = { messageCount: targetCount, textCount: targetCount, targetTextCount: targetCount, totalChars: targetCount * 12 };
+    data.progress = { processed: 0, total: targetCount, processedTargetTexts: 0, totalTargetTexts: targetCount, complete: false };
+    data.nativeProfile.stats = { messageCount: targetCount, textCount: targetCount, analyzedCount: 0, participantCount: 1 };
+    data.nativeProfile.mbtiInference.eligibleMessages = 0;
+    data.job = { id: null, status: "idle" };
+    const posts = [];
+    const { ui, byId } = personaHarness(async (url, options) => {
+      if (options?.method === "POST") {
+        posts.push(JSON.parse(options.body));
+        data.job = { id: "first-batch", status: "running", phase: "classifying" };
+      }
+      return data;
+    });
+    await ui.loadProfile(); await tick();
+    assert.equal(posts.length, expectedPosts, JSON.stringify({ targetCount, needsRebuild }));
+    assert.equal(byId("heroMbti").textContent, "0/100 条");
+    if (expectedPosts) {
+      assert.equal(posts[0].refreshAxes, undefined);
+      assert.equal(byId("apiPortraitStatus").textContent, "正在分析聊天");
+    } else if (!targetCount) assert.equal(byId("apiPortraitStatus").textContent, "暂无目标文本，等待更多消息");
+    else assert.equal(byId("btnRetryApiPortrait").textContent, "更新画像");
+  }
+});
+
+it("requires the portrait's full context budget before automatic or manual submission", async () => {
+  for (const contextTokens of [4096, 8192, 12287, 12288, 16384]) {
+    for (const needsRebuild of [false, true]) {
+      const data = nativePayload();
+      data.needsRebuild = needsRebuild;
+      data.progress.complete = false;
+      data.job = { id: null, status: "idle" };
+      const posts = [];
+      const { ui, context, byId } = personaHarness(async (url, options) => {
+        if (options?.method === "POST") {
+          posts.push(JSON.parse(options.body));
+          data.job = { id: "job", status: "running", phase: "classifying" };
+        }
+        return data;
+      });
+      context.modelSourceSnapshot.api.contextTokens = contextTokens;
+      await ui.loadProfile(); await tick();
+      const canRun = contextTokens >= 12288;
+      assert.equal(posts.length, canRun && !needsRebuild ? 1 : 0);
+      assert.equal(byId("btnRetryApiPortrait").disabled, !canRun);
+      if (!canRun) {
+        assert.equal(byId("apiPortraitStatus").textContent, "画像分析需要至少 12288 tokens 上下文，请在设置中调整");
+        // Even a stale/programmatic click cannot bypass the disabled control.
+        fire(byId("btnRetryApiPortrait"), "click"); await tick();
+        assert.equal(posts.length, 0);
+      } else if (needsRebuild) {
+        fire(byId("btnRetryApiPortrait"), "click"); await tick();
+        assert.equal(posts.length, 1);
+      }
+    }
+  }
+});
+
+it("explains provider context rejection without always instructing a larger or smaller budget", () => {
+  const data = nativePayload();
+  data.job = { id: "job", status: "error", error: "context-too-long" };
+  const { ui, context, byId } = personaHarness(async () => data);
+  ui.renderApiPortrait(data);
+  assert.equal(byId("apiPortraitStatus").textContent, "模型不支持当前请求上下文，请按模型实际支持容量调整设置");
+  assert.doesNotMatch(byId("apiPortraitStatus").textContent, /调高|调低/);
+  context.modelSourceSnapshot.api.contextTokens = 4096;
+  ui.renderApiPortrait(data);
+  assert.equal(byId("apiPortraitStatus").textContent, "画像分析需要至少 12288 tokens 上下文，请在设置中调整");
+});
+
+it("invalidates hidden-page API portraits on clearing so fallback cannot resurrect them", async () => {
+  let cleared = false;
+  let reads = 0;
+  let holdOldRead = false, releaseOldRead;
+  const data = nativePayload();
+  const harness = navigationHarness(async (url, options) => {
+    if (url === "/api/analysis-cache/clear") {
+      cleared = true;
+      return { cleared: true, ...JSON.parse(options.body) };
+    }
+    reads++;
+    if (holdOldRead) {
+      holdOldRead = false;
+      return new Promise(resolve => { releaseOldRead = resolve; });
+    }
+    return cleared ? { ...data, portrait: null, nativeProfile: null,
+      available: { messageCount: 0, textCount: 0, targetTextCount: 0, totalChars: 0 },
+      progress: { processed: 0, total: 0, complete: false }, job: { status: "idle" } } : data;
+  });
+  const { ui, context, byId } = harness;
+  await ui.loadProfile(); await tick();
+  const currentKey = JSON.stringify(["acct", "friend", "", "api-a"]);
+  const otherKey = JSON.stringify(["acct", "friend", "", "api-b"]);
+  const other = { ...context.profileCache.get(currentKey), apiSourceId: "api-b" };
+  context.profileCache.set(otherKey, other);
+  context.storedProfileSnapshots.set(otherKey, { key: otherKey, at: Date.now(), profile: other });
+  holdOldRead = true;
+  ui.loadProfile(); await tick();
+  assert.equal(typeof releaseOldRead, "function");
+  ui.switchView("chat");
+  installApiCacheClear(harness);
+  const beforeClearReads = reads;
+  fire(byId("btnConfirmAnalysisCacheClear"), "click"); await tick();
+  assert.equal(reads, beforeClearReads, "clearing from chat must not load the hidden portrait");
+  assert.equal(context.apiPortraitSnapshot, null);
+  assert.equal(context.renderedApiPortraitKey, null);
+  assert.equal(context.renderedApiPortraitScopeKey, null);
+  assert.equal(context.profileCache.has(currentKey), false);
+  assert.equal(context.storedProfileSnapshots.has(currentKey), false);
+  assert.equal(context.profileCache.get(otherKey), other);
+  ui.switchView("persona"); await tick();
+  assert.equal(reads, beforeClearReads + 1, "the cancelled older GET cannot block the new read");
+  releaseOldRead(data); await tick();
+  assert.notEqual(byId("botSummaryText").textContent, data.nativeProfile.summary);
+  assert.notEqual(context.profileCache.get(currentKey)?.summary, data.nativeProfile.summary);
+  assert.notEqual(context.storedProfileSnapshots.get(currentKey)?.profile.summary, data.nativeProfile.summary);
+});
+
+it("does not invalidate the active portrait when another API source is cleared", async () => {
+  const data = nativePayload("friend", "api-b");
+  const harness = personaHarness(async (url, options) => url === "/api/analysis-cache/clear" ?
+    { cleared: true, ...JSON.parse(options.body) } : data);
+  harness.context.modelSourceSnapshot.sourceId = "api-b";
+  await harness.ui.loadProfile(); await tick();
+  const snapshot = harness.context.apiPortraitSnapshot;
+  const rendered = harness.context.renderedApiPortraitKey;
+  installApiCacheClear(harness, "api-a");
+  fire(harness.byId("btnConfirmAnalysisCacheClear"), "click"); await tick();
+  assert.equal(harness.context.apiPortraitSnapshot, snapshot);
+  assert.equal(harness.context.renderedApiPortraitKey, rendered);
+  assert.equal(harness.byId("botSummaryText").textContent, data.nativeProfile.summary);
+});
+
+it("marks the old portrait throughout rebuilding without hiding the actual failure reason", () => {
+  const data = { ...payload("api-a", "待替换的旧摘要"), rebuilding: true,
+    needsRebuild: false, progress: { processed: 0, total: 8, complete: false },
+    job: { id: "rebuild", status: "running", phase: "classifying" } };
+  const { ui, byId } = personaHarness(async () => data);
+  ui.renderApiPortrait(data);
+  assert.equal(byId("botSummaryText").textContent, "待替换的旧摘要");
+  assert.equal(byId("apiPortraitStatus").textContent, "正在按新规则分析，暂显示旧画像");
+  ui.renderApiPortrait({ ...data, job: { id: "rebuild", status: "error", error: "timeout" } });
+  assert.equal(byId("apiPortraitStatus").textContent, "模型响应超时 · 暂显示旧画像");
+  assert.equal(byId("botSummaryText").textContent, "待替换的旧摘要");
+  ui.renderApiPortrait({ ...data, job: { id: "rebuild", status: "error", error: "portrait-state-invalid" } });
+  assert.equal(byId("apiPortraitStatus").textContent,
+    "画像进度校验失败，请清除当前模型的分析缓存后重试 · 暂显示旧画像");
+});
+
+it("uses exact native MBTI boundaries and backend preferences without changing the local card", () => {
+  const { ui, byId } = personaHarness(async () => {});
+  const axes = Object.fromEntries(["EI", "SN", "TF", "JP"].map(key =>
+    [key, { leftShare: .6, rightShare: .4, evidenceCount: 40 }]));
+  const inference = { eligibleMessages: 120, minMessages: 100, minAxisMargin: .2, axes, type: null };
+  ui.renderMbti({ isGroup: false, apiSource: true, apiNativeProfile: true, mbtiInference: inference });
+  assert.equal(byId("heroMbti").textContent, "????");
+  assert.match(textOf(byId("mbtiScalesList")), /E 60% · I 40%/);
+  ui.renderMbti({ isGroup: false, mbtiInference: inference });
+  assert.equal(byId("heroMbti").textContent, "ESTJ", "local behavior remains unchanged in this scope");
+  ui.renderMbti({ isGroup: false, apiSource: true, apiNativeProfile: true,
+    mbtiInference: { ...inference, type: "ISFP" } });
+  assert.equal(byId("heroMbti").textContent, "ISFP");
+  ui.renderMbti({ isGroup: false, apiSource: true, apiNativeProfile: true,
+    mbtiInference: { ...inference, type: "ISFP", axes: { ...axes, EI: { ...axes.EI, preference: null } } } });
+  assert.equal(byId("heroMbti").textContent, "?SFP");
 });
 
 it("shows the Laya locked MBTI card for an API portrait below the evidence threshold", () => {
@@ -195,6 +522,36 @@ it("unlocks the shared local MBTI card automatically at 100 processed texts", ()
     eligibleMessages: 100, minMessages: 100, axes, sources: [] } });
   assert.equal(byId("mbtiScaleBadge").textContent, "ESTJ · 聊天倾向");
   assert.doesNotMatch(textOf(byId("mbtiScalesList")), /解锁人格|人格推测未解锁/);
+});
+
+it("keeps uncertain API MBTI axes undecided while preserving their actual percentages", () => {
+  for (const [score, expected] of [[null, "待判断"], [50, "????"], [51, "????"],
+    [55, "????"], [59, "????"], [60, "ESTJ"], [40, "INFP"], [45, "????"]]) {
+    const { ui, byId } = personaHarness(async () => {});
+    const data = payload("api-a", "合成人格边界样本");
+    data.available.targetTextCount = 120;
+    data.portrait.mbtiAxes = Object.fromEntries(["EI", "SN", "TF", "JP"].map(key => [key, score]));
+    ui.renderApiPortrait(data);
+    assert.equal(byId("heroMbti").textContent, expected, `score=${score}`);
+    if (score !== null) assert.match(textOf(byId("mbtiScalesList")),
+      new RegExp(`E ${score}% · I ${100 - score}%`));
+  }
+});
+
+it("uses the local MBTI margin, including float boundaries and explicit undecided preferences", () => {
+  const { ui, byId } = personaHarness(async () => {});
+  const axis = (leftShare, extra = {}) => ({ leftShare, rightShare: 1 - leftShare, evidenceCount: 40, ...extra });
+  const render = (axes, extra = {}) => ui.renderMbti({ isGroup: false, mbtiInference: {
+    eligibleMessages: 120, minMessages: 100, axes, type: null, status: "partial", ...extra } });
+  render({ EI: axis(0.51), SN: axis(0.55), TF: axis(0.6), JP: axis(0.4) });
+  assert.equal(byId("heroMbti").textContent, "??TP");
+  assert.equal(byId("mbtiScaleBadge").textContent, "部分维度待定");
+  assert.match(textOf(byId("mbtiScalesList")), /E 51% · I 49%/);
+  render({ EI: axis(0.65), SN: axis(0.65), TF: axis(0.65), JP: axis(0.65) }, { minAxisMargin: 0.4 });
+  assert.equal(byId("heroMbti").textContent, "????");
+  render({ EI: axis(0.7, { preference: null }), SN: axis(0.7, { preference: "S" }),
+    TF: axis(0.7, { preference: "invalid" }), JP: axis(0.3, { preference: "P" }) });
+  assert.equal(byId("heroMbti").textContent, "?S?P");
 });
 
 it("gates the API MBTI unlock on processed target evidence", () => {
@@ -218,7 +575,7 @@ it("uses exact processed target counts for the single-chat progress denominator"
   ui.renderApiPortrait(data);
   assert.equal(byId("stripMsgCount").textContent, "1385 条");
   assert.equal(byId("stripConfidence").textContent, "407 / 1385 条文本");
-  assert.match(byId("heroMbti").textContent, /^[EI][SN][TF][JP]$/);
+  assert.equal(byId("heroMbti").textContent, "EN?J");
 });
 
 it("uses the shared MBTI evidence state without an API-only unlock action", () => {
@@ -262,6 +619,139 @@ it("auto-continues an incomplete API portrait once, like local Laya, without loo
   await tick();
   assert.equal(posts.length, 1, "no repost once the saved portrait is up to date");
   assert.equal(byId("btnRetryApiPortrait").hidden, true);
+});
+
+it("keeps a completed empty portrait settled across repeated loads without posting another analysis", async () => {
+  const posts = [];
+  const data = payload("api-a", "");
+  data.portrait = {
+    summary: "", communication: "", emotionExpression: "", interactionPreferences: "",
+    topics: [], patterns: [], boundaries: [], uncertain: [], affinity: null,
+    mbtiAxes: { EI: null, SN: null, TF: null, JP: null },
+    traits: { socialEnergy: null, humor: null, composure: null, initiative: null, care: null, affection: null },
+  };
+  data.available = { messageCount: 150, textCount: 150, targetTextCount: 120, totalChars: 700 };
+  data.progress = { processed: 150, total: 150, processedTargetTexts: 120,
+    totalTargetTexts: 120, complete: true, batchIndex: 1, batchTotal: 1 };
+  data.needsRebuild = false;
+  const { ui, byId } = personaHarness(async (url, options) => {
+    if (options?.method === "POST") posts.push({ url, body: JSON.parse(options.body) });
+    return data;
+  });
+  for (let repeat = 0; repeat < 3; repeat++) {
+    await ui.loadProfile();
+    ui.renderApiPortrait(data);
+    await tick();
+  }
+  assert.equal(posts.length, 0, "empty observations are a completed judgment, not a request to infer again");
+  assert.equal(byId("apiPortraitStatus").textContent, "API 画像已更新");
+  assert.equal(byId("botSummaryText").textContent, "待判断");
+  assert.equal(byId("heroMbti").textContent, "待判断");
+  assert.equal(byId("btnRetryApiPortrait").hidden, true);
+});
+
+it("offers explicit reassessment of saved observations without restarting completed history", async () => {
+  const posts = [];
+  const data = payload("api-a", "已保存的交流观察");
+  data.available = { messageCount: 180, textCount: 150, targetTextCount: 120, totalChars: 900 };
+  data.progress = { processed: 150, total: 150, processedTargetTexts: 120,
+    totalTargetTexts: 120, complete: true, batchIndex: 2, batchTotal: 2 };
+  data.portrait.mbtiAxes = { EI: null, SN: null, TF: null, JP: null };
+  const { ui, byId } = personaHarness(async (url, options) => {
+    if (options?.method === "POST") {
+      posts.push(JSON.parse(options.body));
+      return { account: "acct", sourceId: "api-a", job: { id: "review", status: "running" } };
+    }
+    return data;
+  });
+  await ui.loadProfile(); await tick();
+  assert.equal(posts.length, 0);
+  assert.equal(byId("btnRetryApiPortrait").hidden, false);
+  assert.equal(byId("btnRetryApiPortrait").textContent, "重新评估 MBTI");
+  fire(byId("btnRetryApiPortrait"), "click"); await tick();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].refreshAxes, true);
+  assert.equal(byId("botSummaryText").textContent, "已保存的交流观察");
+  data.portrait.mbtiAxes.SN = 35;
+  data.mbtiBasis = { SN: { status: "supported", kind: "pattern",
+    reason: "讨论不同方案时持续关注概念联系，暂偏N。", evidenceCount: 2 } };
+  ui.renderApiPortrait(data);
+  assert.match(textOf(byId("mbtiSources")), /持续关注概念联系/);
+  assert.equal(byId("btnRetryApiPortrait").hidden, false, "a partial estimate may be explicitly reassessed again");
+  assert.equal(posts.length, 1, "rendering the result cannot schedule another review");
+});
+
+it("preserves a legacy portrait without automatic migration and posts once after an explicit update click", async () => {
+  const posts = [];
+  let updating = false;
+  const legacy = { ...payload("api-a", "迁移前保留的摘要"), needsRebuild: true };
+  const current = () => updating ? { ...legacy, needsRebuild: false,
+    progress: { processed: 0, total: 8, complete: false, batchIndex: 0, batchTotal: 1 },
+    job: { id: "migration", status: "running", phase: "observing" } } : legacy;
+  const { ui, byId } = personaHarness(async (url, options) => {
+    if (url === "/api/model-portrait" && options?.method === "POST") {
+      posts.push(JSON.parse(options.body));
+      updating = true;
+      return { account: "acct", sourceId: "api-a", job: current().job };
+    }
+    return current();
+  });
+  for (let repeat = 0; repeat < 3; repeat++) {
+    await ui.loadProfile();
+    ui.renderApiPortrait(legacy);
+    await tick();
+  }
+  assert.equal(posts.length, 0, "opening an old cache must not silently pay to rebuild history");
+  assert.equal(byId("botSummaryText").textContent, "迁移前保留的摘要");
+  assert.equal(byId("btnRetryApiPortrait").hidden, false);
+  assert.equal(byId("btnRetryApiPortrait").textContent, "更新画像");
+  fire(byId("btnRetryApiPortrait"), "click");
+  await tick();
+  await ui.loadProfile();
+  await tick();
+  assert.equal(posts.length, 1, "manual update starts one job and polling must not duplicate it");
+  assert.equal(posts[0].account, "acct");
+  assert.equal(posts[0].user, "friend");
+  assert.equal(byId("botSummaryText").textContent, "迁移前保留的摘要");
+  assert.equal(byId("apiPortraitStatus").textContent, "正在提取聊天观察");
+});
+
+it("cannot reassess a previous member or another chat while the current snapshot is loading", async () => {
+  for (const switchChat of [false, true]) {
+    const posts = [];
+    let hold = false, release;
+    const data = { ...payload("api-a", "已完成成员画像", {
+      username: "m1", name: "合成成员", isGroup: true, avatar: "", avatarCandidates: [],
+      members: [{ id: "m1", name: "成员一" }, { id: "m2", name: "成员二" }],
+    }), subject: "m1", available: { messageCount: 180, textCount: 150, targetTextCount: 120, totalChars: 900 },
+      progress: { processed: 150, total: 150, processedTargetTexts: 120, totalTargetTexts: 120, complete: true } };
+    const { ui, context, byId } = personaHarness(async (url, options) => {
+      if (options?.method === "POST") {
+        posts.push(JSON.parse(options.body));
+        return { account: "acct", sourceId: "api-a", job: { id: "review", status: "running" } };
+      }
+      if (hold) return new Promise(resolve => { release = resolve; });
+      return data;
+    });
+    context.currentUser = "room-a@chatroom";
+    await ui.loadProfile("m1"); await tick();
+    assert.equal(byId("btnRetryApiPortrait").hidden, false);
+    hold = true;
+    if (switchChat) context.currentUser = "room-b@chatroom";
+    else context.activeMember = "m2";
+    fire(byId("btnRetryApiPortrait"), "click"); await tick();
+    assert.equal(posts.length, 0, "a stale visible button must not post either reassessment or full history work");
+    assert.equal(byId("btnRetryApiPortrait").hidden, true);
+    hold = false;
+    release({ ...data, subject: switchChat ? "m1" : "m2",
+      identity: { ...data.identity, username: switchChat ? "m1" : "m2" } });
+    await tick();
+    fire(byId("btnRetryApiPortrait"), "click"); await tick();
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].user, context.currentUser);
+    assert.equal(posts[0].member, switchChat ? "m1" : "m2");
+    assert.equal(posts[0].refreshAxes, true);
+  }
 });
 
 it("shows a running state during submission and a visible error instead of idle after failure", async () => {
@@ -691,7 +1181,7 @@ it("keeps the current portrait visible while the same source changes its context
   await tick();
   const avatarNode = byId("heroAvatar").children[0];
   context.modelSourceSnapshot = { mode: "api", sourceId: "api-a",
-    api: { model: "synthetic", contextTokens: 16384 } };
+    api: { model: "synthetic", contextTokens: 32768 } };
   await ui.loadProfile();
   assert.equal(byId("botSummaryText").textContent, "当前画像");
   assert.strictEqual(byId("heroAvatar").children[0], avatarNode);
