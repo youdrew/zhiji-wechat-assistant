@@ -128,9 +128,15 @@ function prepare(input: ApiInsightInput): {
 }
 
 const SYSTEM = [
-  "人物：聊天。给聊天打上一个情感、一个意图标签，每个分别一个，限制 4 字以内。",
-  "输出为：\n姓名：\n聊天内容：\n情感：\n意图：",
+  "你在给微信聊天逐条打标签。",
+  "输入是 JSON：messages 是按时间排列的聊天，SELF 表示我，OTHER 表示对方；targetIds 里是要标注的消息编号。",
+  "对 targetIds 里的每个编号输出一个对象：{\"id\":\"编号\",\"emotion\":\"情感\",\"intent\":\"意图\"}。",
+  "emotion 和 intent 各限 4 个汉字以内；看不出情感或意图时写 无。",
+  "输出这些对象的 JSON 数组：每个编号一条，不多不少。不要输出解释、总结或重复聊天内容。",
 ].join("\n");
+
+/** A model that has no label to give often writes one of these placeholders. */
+const NO_LABEL = /^(?:无|没有|无情感|无意图|无情绪|无明显|未知|不确定|none|unknown|null)$/iu;
 
 /** Extract the first short Han phrase from a model field or a noisy text line. */
 function shortLabel(value: unknown): string {
@@ -138,6 +144,8 @@ function shortLabel(value: unknown): string {
   const text = value.trim().replace(/^(?:情绪|意图|语气|感受|互动)\s*[:：]\s*/u, "")
     .replace(/^[“"'「『【]+|[”"'」』】]+$/gu, "")
     .replace(/[。！？!？，,；;]+$/u, "").trim();
+  // An explicit "no label" placeholder is an empty label, not a Chinese label.
+  if (!text || NO_LABEL.test(text)) return "";
   const match = text.match(new RegExp(`\\p{Script=Han}{1,${MAX_LABEL_CHARACTERS}}`, "u"));
   if (!match) outputError();
   return match[0]!;
@@ -154,7 +162,8 @@ function normalizeAffect(value: unknown): ApiAffect | undefined {
   for (const key of ["feeling", "tone", "interaction"] as const) {
     const raw = record[key];
     if (raw === undefined || raw === null) continue;
-    affect.feeling = shortLabel(raw);
+    const label = shortLabel(raw);
+    if (label) affect.feeling = label;
     break;
   }
   return Object.keys(affect).length ? affect : undefined;
@@ -166,13 +175,17 @@ function normalizeIntents(value: unknown): string[] {
   if (!Array.isArray(values)) outputError();
   const first = values.slice(0, MAX_INTENTS)
     .find((raw) => typeof raw === "string" && raw.trim());
-  return first === undefined ? [] : [shortLabel(first)];
+  if (first === undefined) return [];
+  const label = shortLabel(first);
+  return label ? [label] : [];
 }
 
 function normalizeItem(value: unknown): ApiInsight {
   if (!value || typeof value !== "object" || Array.isArray(value)) outputError();
   const draft = value as Record<string, unknown>;
-  const id = draft.id;
+  // Small models often emit the numeric alias as a JSON number.
+  const rawId = draft.id;
+  const id = typeof rawId === "number" && Number.isInteger(rawId) ? String(rawId) : rawId;
   if (!validId(id)) outputError();
   const status = draft.status ?? "ok";
   if (status === "routine" || status === "uncertain" || status === "insufficient") {
@@ -275,16 +288,21 @@ function looseLabels(raw: string): LooseLabels[] {
  */
 function parseOutput(
   raw: GenerationResult, eligibleIds: readonly string[],
+  realIdToAlias?: ReadonlyMap<string, string>,
 ): Map<string, ApiInsight> {
   const text = typeof raw.text === "string" ? raw.text : "";
   const allowed = new Set(eligibleIds);
   const result = new Map<string, ApiInsight>();
   const unnamed: ApiInsight[] = [];
+  // A provider answers with the short alias it was given; a tolerant gateway or a
+  // test double may echo the original id instead. Both resolve to the alias key.
+  const aliasOf = (id: string) => realIdToAlias?.get(id) ?? id;
   for (const value of jsonValues(text).flatMap(jsonItems)) {
     try {
       const insight = normalizeItem(value);
-      if (allowed.has(insight.id) && !result.has(insight.id)) result.set(insight.id, insight);
-      else if (!allowed.has(insight.id)) unnamed.push(insight);
+      const key = aliasOf(insight.id);
+      if (allowed.has(key) && !result.has(key)) result.set(key, { ...insight, id: key });
+      else if (!allowed.has(key)) unnamed.push(insight);
     } catch { /* Keep scanning other JSON fragments and the text markers. */ }
   }
   for (const labels of looseLabels(text)) {
@@ -317,16 +335,31 @@ export async function analyzeApiInsights(
   if (eligibleIds.length === 0) {
     return { insights: input.targetIds.map((id) => insufficient(id)) };
   }
+  // Real message ids are 64-character hashes. They are meaningless to the model,
+  // bloat the prompt, and make it answer once for the whole batch instead of once
+  // per message, so the prompt carries a short 1-based alias and the original id
+  // is restored before returning.
+  const alias = new Map<string, string>();
+  const promptMessages = messages.map((message, index) => {
+    const id = String(index + 1);
+    alias.set(message.id, id);
+    return { ...message, id };
+  });
+  const promptTargetIds = eligibleIds.map((id) => alias.get(id)!);
   const response = await generate(config, {
     system: SYSTEM,
-    prompt: `CHAT_BATCH_JSON:\n${JSON.stringify({ messages, targetIds: eligibleIds })}`,
+    prompt: `CHAT_BATCH_JSON:\n${JSON.stringify({ messages: promptMessages, targetIds: promptTargetIds })}`,
     jsonMode: false,
     stream: true,
     ...(onTextDelta ? { onTextDelta } : {}),
   });
   const parseStarted = performance.now();
-  const parsed = parseOutput(response, eligibleIds);
-  const insights = input.targetIds.map((id) => emptyIds.has(id) ? insufficient(id) : parsed.get(id)!);
+  const parsed = parseOutput(response, promptTargetIds, alias);
+  const insights = input.targetIds.map((id) => {
+    if (emptyIds.has(id)) return insufficient(id);
+    const insight = parsed.get(alias.get(id)!);
+    return insight ? { ...insight, id } as ApiInsight : { id, status: "ok" as const, intents: [] };
+  });
   const timings = response.timings ? { ...response.timings, parseMs: performance.now() - parseStarted } : undefined;
   return { insights, ...(response.usage ? { usage: response.usage } : {}),
     ...(response.responseId ? { responseId: response.responseId } : {}),
