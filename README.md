@@ -275,7 +275,13 @@ WechatVibe 为独立项目，与腾讯、微信没有官方隶属、合作或背
 
 感谢 [morticuke](https://github.com/morticuke) 在 [Issue #5](https://github.com/tswawa/WechatVibe/issues/5) 中提供 Windows MIME 映射异常的排查过程和修复建议。
 
-感谢 [PR #12](https://github.com/tswawa/WechatVibe/pull/12)、[PR #13](https://github.com/tswawa/WechatVibe/pull/13) 和 [PR #16](https://github.com/tswawa/WechatVibe/pull/16) 的贡献者，提供添加会话入口、API 批量结果对应及手动数据目录等改进。本版结合现有代码采纳了相关改动。
+感谢 [Dl1447（Geekline）](https://github.com/Dl1447) 通过 [PR #12](https://github.com/tswawa/WechatVibe/pull/12) 修复选中首个会话后无法继续添加会话的问题。
+
+感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #13](https://github.com/tswawa/WechatVibe/pull/13) 改进 API 消息标签的批量结果对应。
+
+感谢 [Ch1cken-1145（Ch1cken_#）](https://github.com/Ch1cken-1145) 通过 [PR #16](https://github.com/tswawa/WechatVibe/pull/16) 加入手动设置微信聊天记录路径的功能。
+
+感谢 [LianYu-Ya](https://github.com/LianYu-Ya) 在 [Issue #14](https://github.com/tswawa/WechatVibe/issues/14) 中反馈自部署模型批量标签格式错误、只返回一条的问题。
 
 ## 赞助
 

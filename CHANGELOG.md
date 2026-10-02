@@ -39,7 +39,17 @@
 - **1.2.0 / 1.2.1 / 1.2.2 用户**：通过「设置 → 关于 → 当前版本」检查更新，保留现有数据与配置；旧 API 画像按上文说明手动重建。
 - **1.0.4 用户**：仍需手动下载，退出旧版后覆盖应用文件，并保留 `resources/client/.local` 与 `resources/client/.models`。
 
-感谢 [PR #12](https://github.com/tswawa/WechatVibe/pull/12)、[PR #13](https://github.com/tswawa/WechatVibe/pull/13)、[PR #16](https://github.com/tswawa/WechatVibe/pull/16) 的贡献者及反馈问题的用户。本版采纳了与当前流程兼容的改进；详细使用及升级说明见 [1.2.3 发布说明](docs/releases/1.2.3.md)。
+### 致谢
+
+感谢 [Dl1447](https://github.com/Dl1447) 提交 [PR #12](https://github.com/tswawa/WechatVibe/pull/12)，让已有会话时也能继续添加会话。
+
+感谢 [silicon-sbt](https://github.com/silicon-sbt) 提交 [PR #13](https://github.com/tswawa/WechatVibe/pull/13)，本版采纳了其中 API 消息标签的短编号与逐条对应方案。
+
+感谢 [Ch1cken-1145](https://github.com/Ch1cken-1145) 提交 [PR #16](https://github.com/tswawa/WechatVibe/pull/16)，加入手动设置微信聊天记录路径。
+
+感谢 [LianYu-Ya](https://github.com/LianYu-Ya) 在 [Issue #14](https://github.com/tswawa/WechatVibe/issues/14) 中反馈自部署模型批量标签格式错误、只返回一条的问题。
+
+本版采纳了与当前流程兼容的改进；详细使用及升级说明见 [1.2.3 发布说明](docs/releases/1.2.3.md)。
 
 ## [1.2.2](https://github.com/tswawa/WechatVibe/releases/tag/v1.2.2)
 
