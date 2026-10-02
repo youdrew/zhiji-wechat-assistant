@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 
-import { analyzeApiInsights, updateApiPortrait, type ApiInsightInput } from "../electron/api-insights";
+import { analyzeApiInsights, refreshApiPortraitAxes, updateApiPortrait,
+  type ApiInsightInput } from "../electron/api-insights";
 import { ModelConnectorError, type GenerationRequest, type ModelConfig } from "../electron/model-connectors";
 
 const config: ModelConfig = {
@@ -392,6 +393,58 @@ it("does not checkpoint an all-empty API portrait after analyzing messages", asy
     [{ id: "m1", sender: "OTHER", target: true, text: "嗯，稍后再说。" }],
     fake(JSON.stringify(empty))),
   (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+});
+
+it("accepts the keyed-list portrait shape a weak local model emits", async () => {
+  const messages = [{ id: "m1", sender: "OTHER" as const, target: true, text: "周六见。" }];
+  const result = await updateApiPortrait(config, null, messages, fake(JSON.stringify({
+    summary: "目标人物提议周六看展。", communication: "直接对话", emotionExpression: "积极",
+    interactionPreferences: ["安排活动"], topics: ["文化活动"], patterns: ["提议活动"],
+    boundaries: null, uncertain: ["null"], affinity: "80",
+    mbtiAxes: ["E: 70", "S: 60", "T: 50", "J: 40"],
+    traits: ["socialEnergy: 80", "humor: null", "composure: 70", "initiative: 60",
+      "care: 50", "affection: 40"],
+  })));
+  assert.deepEqual(result.portrait.mbtiAxes, { EI: 70, SN: 60, TF: 50, JP: 40 });
+  assert.deepEqual(result.portrait.traits, { socialEnergy: 80, humor: null, composure: 70,
+    initiative: 60, care: 50, affection: 40 });
+  assert.equal(result.portrait.interactionPreferences, "安排活动");
+  assert.deepEqual(result.portrait.boundaries, []);
+  assert.deepEqual(result.portrait.uncertain, []);
+  assert.equal(result.portrait.affinity, 80);
+});
+
+it("reads a missing nested group as no evidence but still rejects bad values", async () => {
+  const messages = [{ id: "m1", sender: "OTHER" as const, target: true, text: "周六见。" }];
+  const base = { summary: "见面", communication: "", emotionExpression: "",
+    interactionPreferences: "", topics: [], patterns: [], boundaries: [], uncertain: [],
+    affinity: null };
+  const partial = await updateApiPortrait(config, null, messages,
+    fake(JSON.stringify({ ...base, traits: ["humor 30"] })));
+  assert.equal(partial.portrait.affinity, null);
+  assert.deepEqual(partial.portrait.traits, { socialEnergy: null, humor: 30,
+    composure: null, initiative: null, care: null, affection: null });
+  await assert.rejects(() => updateApiPortrait(config, null, messages,
+    fake(JSON.stringify({ ...base, mbtiAxes: ["E: 120", "S: 60", "T: 50", "J: 40"] }))),
+  (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+  await assert.rejects(() => updateApiPortrait(config, null, messages,
+    fake(JSON.stringify({ ...base, extra: "private" }))),
+  (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-output");
+});
+
+it("refreshes axes from the same tolerant shapes", async () => {
+  const previous = { summary: "常讨论日程", communication: "", emotionExpression: "",
+    interactionPreferences: "", topics: [], patterns: [], boundaries: [], uncertain: [],
+    affinity: null, mbtiAxes: { EI: null, SN: null, TF: null, JP: null },
+    traits: { socialEnergy: null, humor: null, composure: null, initiative: null,
+      care: null, affection: null } };
+  const result = await refreshApiPortraitAxes(config, previous, fake(JSON.stringify({
+    mbtiAxes: { EI: "70%" }, traits: ["humor: 30"], affinity: "无",
+  })));
+  assert.deepEqual(result.mbtiAxes, { EI: 70, SN: null, TF: null, JP: null });
+  assert.deepEqual(result.traits, { socialEnergy: null, humor: 30, composure: null,
+    initiative: null, care: null, affection: null });
+  assert.equal(result.affinity, null);
 });
 
 it("rejects invalid portrait output and oversized history before a model request", async () => {

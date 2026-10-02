@@ -5,7 +5,7 @@ import {
   generateStructured,
   type ModelConfig, type ModelUsage,
 } from "./model-connectors";
-import { charCount, decodeJsonOutput, exactObject, inputError, outputError, validId } from "./api-analysis-json";
+import { charCount, decodeJsonOutput, inputError, outputError, validId } from "./api-analysis-json";
 
 export interface ApiPortrait {
   summary: string;
@@ -41,34 +41,111 @@ type Generator = typeof generateStructured;
 const MAX_PORTRAIT_MESSAGES = 20_000;
 const MAX_PORTRAIT_INPUT_CHARACTERS = 700_000;
 
+const PORTRAIT_KEYS = ["summary", "communication", "emotionExpression",
+  "interactionPreferences", "topics", "patterns", "boundaries", "uncertain",
+  "affinity", "mbtiAxes", "traits"] as const;
+const MBTI_KEYS = ["EI", "SN", "TF", "JP"] as const;
+const TRAIT_KEYS = ["socialEnergy", "humor", "composure", "initiative",
+  "care", "affection"] as const;
+const MBTI_ALIASES: Record<string, string> = {
+  e: "EI", i: "EI", s: "SN", n: "SN", t: "TF", f: "TF", j: "JP", p: "JP",
+};
+const TRAIT_ALIASES: Record<string, string> = Object.fromEntries(
+  TRAIT_KEYS.map((key) => [key.toLowerCase(), key]));
+
+/** A weak local model may omit an unsupported field; only unknown keys are rejected. */
+function portraitRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) outputError();
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!(PORTRAIT_KEYS as readonly string[]).includes(key)) outputError();
+  }
+  return record;
+}
+
 function portraitText(value: unknown, maximum: number): string {
-  if (typeof value !== "string" || charCount(value) > maximum ||
-      /[\u0000-\u001f\u007f]/u.test(value)) outputError();
-  return value.trim();
+  // A local model sometimes answers a prose field with a one-item list.
+  const raw = Array.isArray(value)
+    ? (value.every((entry) => typeof entry === "string") ? value.join("、") : value)
+    : value;
+  if (typeof raw !== "string" || charCount(raw) > maximum ||
+      /[\u0000-\u001f\u007f]/u.test(raw)) outputError();
+  return raw.trim();
 }
 
 function portraitScore(value: unknown): number | null {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase().replace(/%$/u, "").trim();
+    if (!text || text === "null" || text === "none" || text === "无" || text === "未知") return null;
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) outputError();
+    value = parsed;
+  }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100)
     outputError();
   return value;
 }
 
+/** The prompt asks for a number or null; a missing field means no evidence. */
+function scoreOrNull(value: unknown): number | null {
+  return value === undefined ? null : portraitScore(value);
+}
+
+/** Split "humor: 80", "humor：80", "humor=80", or "humor 80" into a key and value. */
+function splitScoreEntry(entry: string): [string, string] | null {
+  const text = entry.trim();
+  if (!text) return null;
+  const separator = text.search(/[:：=]/u);
+  if (separator > 0) return [text.slice(0, separator).trim(), text.slice(separator + 1).trim()];
+  const parts = text.split(/\s+/u);
+  const last = parts[parts.length - 1]!;
+  return parts.length >= 2 && /^[-+]?\d/u.test(last)
+    ? [parts.slice(0, -1).join(" ").trim(), last] : null;
+}
+
+/**
+ * Nested axes/traits must arrive as an object, but weak local models often send a
+ * keyed list instead ("E: 70", "humor: null"). Both shapes are accepted; every
+ * recognized value still passes the same integer-and-range check, and an unknown
+ * key in the object shape is still rejected.
+ */
+function scoreGroups(value: unknown, keys: readonly string[],
+  aliases: Readonly<Record<string, string>>): Record<string, unknown> {
+  if (value === undefined || value === null) return {};
+  if (!Array.isArray(value)) {
+    if (typeof value !== "object") outputError();
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) if (!keys.includes(key)) outputError();
+    return record;
+  }
+  const grouped: Record<string, unknown> = {};
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const pair = splitScoreEntry(entry);
+    if (!pair) continue;
+    const key = keys.includes(pair[0]) ? pair[0] : aliases[pair[0].toLowerCase()];
+    if (!key || key in grouped) continue;
+    grouped[key] = pair[1];
+  }
+  return grouped;
+}
+
 function checkedPortrait(value: unknown): ApiPortrait {
-  const data = exactObject(value, ["summary", "communication", "emotionExpression",
-    "interactionPreferences", "topics", "patterns", "boundaries", "uncertain",
-    "affinity", "mbtiAxes", "traits"]);
-  const axes = exactObject(data.mbtiAxes, ["EI", "SN", "TF", "JP"]);
-  const traits = exactObject(data.traits, ["socialEnergy", "humor", "composure",
-    "initiative", "care", "affection"]);
+  const data = portraitRecord(value);
+  const axes = scoreGroups(data.mbtiAxes, MBTI_KEYS, MBTI_ALIASES);
+  const traits = scoreGroups(data.traits, TRAIT_KEYS, TRAIT_ALIASES);
   const summary = portraitText(data.summary, 240);
   const communication = portraitText(data.communication, 120);
   const emotionExpression = portraitText(data.emotionExpression, 120);
   const interactionPreferences = portraitText(data.interactionPreferences, 120);
   function phrases(value: unknown, maximum: number): string[] {
-    if (!Array.isArray(value) || value.length > 6) outputError();
-    const entries = value.map((entry) => portraitText(entry, maximum));
-    if (entries.some((entry) => !entry) || new Set(entries).size !== entries.length) outputError();
+    // null, a single string, and a list are all valid "no evidence" or one-item answers.
+    const list = value === null || value === undefined ? [] : Array.isArray(value) ? value : [value];
+    if (list.length > 6) outputError();
+    const entries = list.map((entry) => portraitText(entry, maximum))
+      .filter((entry) => entry && !/^(?:null|none|无|未知|不确定)$/iu.test(entry));
+    if (new Set(entries).size !== entries.length) outputError();
     return entries;
   }
   return {
@@ -76,12 +153,12 @@ function checkedPortrait(value: unknown): ApiPortrait {
     topics: phrases(data.topics, 30), patterns: phrases(data.patterns, 80),
     boundaries: phrases(data.boundaries, 80), uncertain: phrases(data.uncertain, 80),
     affinity: portraitScore(data.affinity),
-    mbtiAxes: { EI: portraitScore(axes.EI), SN: portraitScore(axes.SN),
-      TF: portraitScore(axes.TF), JP: portraitScore(axes.JP) },
-    traits: { socialEnergy: portraitScore(traits.socialEnergy),
-      humor: portraitScore(traits.humor), composure: portraitScore(traits.composure),
-      initiative: portraitScore(traits.initiative), care: portraitScore(traits.care),
-      affection: portraitScore(traits.affection) },
+    mbtiAxes: { EI: scoreOrNull(axes.EI), SN: scoreOrNull(axes.SN),
+      TF: scoreOrNull(axes.TF), JP: scoreOrNull(axes.JP) },
+    traits: { socialEnergy: scoreOrNull(traits.socialEnergy),
+      humor: scoreOrNull(traits.humor), composure: scoreOrNull(traits.composure),
+      initiative: scoreOrNull(traits.initiative), care: scoreOrNull(traits.care),
+      affection: scoreOrNull(traits.affection) },
   };
 }
 
@@ -161,18 +238,19 @@ export async function refreshApiPortraitAxes(
     timeoutMs: 45_000,
   });
   if (typeof response.text !== "string" || response.text.length > 8192) outputError();
-  const data = exactObject(decodeJsonOutput(response.text), ["mbtiAxes", "traits", "affinity"]);
-  const axes = exactObject(data.mbtiAxes, ["EI", "SN", "TF", "JP"]);
-  const traits = exactObject(data.traits, ["socialEnergy", "humor", "composure",
-    "initiative", "care", "affection"]);
+  // This endpoint answers with the three numeric groups only. The same tolerant
+  // shape handling applies, and a missing group reads as "no evidence" (null).
+  const parsed = portraitRecord(decodeJsonOutput(response.text));
+  const axes = scoreGroups(parsed.mbtiAxes, MBTI_KEYS, MBTI_ALIASES);
+  const traits = scoreGroups(parsed.traits, TRAIT_KEYS, TRAIT_ALIASES);
   return {
-    mbtiAxes: { EI: portraitScore(axes.EI), SN: portraitScore(axes.SN),
-      TF: portraitScore(axes.TF), JP: portraitScore(axes.JP) },
-    traits: { socialEnergy: portraitScore(traits.socialEnergy),
-      humor: portraitScore(traits.humor), composure: portraitScore(traits.composure),
-      initiative: portraitScore(traits.initiative), care: portraitScore(traits.care),
-      affection: portraitScore(traits.affection) },
-    affinity: portraitScore(data.affinity),
+    mbtiAxes: { EI: scoreOrNull(axes.EI), SN: scoreOrNull(axes.SN),
+      TF: scoreOrNull(axes.TF), JP: scoreOrNull(axes.JP) },
+    traits: { socialEnergy: scoreOrNull(traits.socialEnergy),
+      humor: scoreOrNull(traits.humor), composure: scoreOrNull(traits.composure),
+      initiative: scoreOrNull(traits.initiative), care: scoreOrNull(traits.care),
+      affection: scoreOrNull(traits.affection) },
+    affinity: portraitScore(parsed.affinity),
     ...(response.usage ? { usage: response.usage } : {}),
   };
 }
