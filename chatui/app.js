@@ -104,8 +104,6 @@ chatState.sessions = new Map();
 chatState.selectedConversations = new Set();
 chatState.selectionLoadedAccount = null;
 chatState.conversationSelectionBusy = false;
-chatState.allConversationsTracked = false;
-chatState.seenConversations = new Set();
 chatState.sessionCache = new Map();
 portraitState.profileCache = new Map();
 const sessionCacheMessageLimit = 80;
@@ -755,48 +753,75 @@ function validConversationSelection(state, account) {
 }
 async function loadConversationSelection(account, request) {
   if (chatState.selectionLoadedAccount === account) return;
-  let state = await api("/api/conversation-selection");
+  const state = await api("/api/conversation-selection");
   if (request !== chatState.sessionRequest || accountClearedExiting) return;
   if (!validConversationSelection(state, account))
     throw new Error("Invalid conversation selection response");
-  if (state.initialized === false) {
-    // First launch for this account: put every conversation into the sidebar at once.
-    try {
-      const filled = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
-        expectedAccount: account, all: true,
-      }) });
-      if (request !== chatState.sessionRequest || accountClearedExiting) return;
-      if (validConversationSelection(filled, account)) state = filled;
-    } catch { /* keep the empty selection and let the user add conversations manually */ }
-  }
+  // A new or cleared account starts with an empty sidebar and without following new chats.
+  if (state.initialized === false) forgetConversationFollow(account);
   chatState.selectedConversations.clear();
   for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
   chatState.selectionLoadedAccount = account;
 }
-// Once every conversation is in the sidebar, keep conversations that appear later
-// in sync, so a chat started afterwards does not silently stay out of the list.
-async function trackNewConversations(account) {
-  if (chatState.conversationSelectionBusy || !chatState.selectionLoadedAccount ||
-      account !== chatState.currentAccount) return;
-  // Only a conversation we have never seen before brings the list back to "everything";
-  // re-posting on every refresh would undo one the user removed by hand.
-  let fresh = false;
-  for (const id of chatState.sessions.keys()) {
-    if (!chatState.seenConversations.has(id)) { chatState.seenConversations.add(id); fresh = true; }
-  }
-  if (!fresh) return;
-  chatState.conversationSelectionBusy = true;
+// After "add all", conversations that appear later join the sidebar as well. Only ids that
+// were never seen are added, so a conversation the user removed by hand stays removed.
+const conversationFollowKey = "conversation-follow-v1";
+function readConversationFollow() {
   try {
-    const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
-      expectedAccount: account, all: true,
-    }) });
-    if (account !== chatState.currentAccount || !validConversationSelection(state, account)) return;
-    chatState.selectedConversations.clear();
-    for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
-    renderSessions();
-    if (!byId("conversationManager").hidden) renderConversationManager();
-  } catch { /* retry on the next session refresh */ }
-  finally { chatState.conversationSelectionBusy = false; }
+    const data = JSON.parse(localStorage.getItem(conversationFollowKey) || "{}");
+    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  } catch {
+    return {};
+  }
+}
+function rememberConversations(account, ids) {
+  const data = readConversationFollow();
+  const known = new Set(Array.isArray(data[account]?.known) ? data[account].known : []);
+  for (const id of ids) known.add(id);
+  data[account] = { known: [...known] };
+  localStorage.setItem(conversationFollowKey, JSON.stringify(data));
+}
+function forgetConversationFollow(account) {
+  const data = readConversationFollow();
+  if (!(account in data)) return;
+  delete data[account];
+  localStorage.setItem(conversationFollowKey, JSON.stringify(data));
+}
+async function trackNewConversations(account) {
+  if (chatState.conversationSelectionBusy || chatState.selectionLoadedAccount !== account ||
+      account !== chatState.currentAccount) return;
+  const entry = readConversationFollow()[account];
+  if (!Array.isArray(entry?.known)) return;
+  const known = new Set(entry.known);
+  const fresh = [...chatState.sessions.keys()].filter(id => !known.has(id));
+  if (!fresh.length) return;
+  chatState.conversationSelectionBusy = true;
+  const added = [];
+  try {
+    for (const id of fresh) {
+      if (account !== chatState.currentAccount) return;
+      if (chatState.selectedConversations.has(id)) {
+        added.push(id);
+        continue;
+      }
+      try {
+        const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
+          expectedAccount: account, session: id, selected: true,
+        }) });
+        if (account !== chatState.currentAccount || !validConversationSelection(state, account)) return;
+        chatState.selectedConversations.clear();
+        for (const selected of state.selectedSessions) chatState.selectedConversations.add(selected);
+        added.push(id);
+      } catch { /* stays unknown, so the next session refresh tries it again */ }
+    }
+  } finally {
+    chatState.conversationSelectionBusy = false;
+    if (added.length && account === chatState.currentAccount) {
+      rememberConversations(account, added);
+      renderSessions();
+      if (!byId("conversationManager").hidden) renderConversationManager();
+    }
+  }
 }
 async function addAllConversations() {
   const account = chatState.currentAccount;
@@ -813,7 +838,7 @@ async function addAllConversations() {
       throw new Error("选择结果不匹配");
     chatState.selectedConversations.clear();
     for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
-    chatState.allConversationsTracked = true;
+    rememberConversations(account, chatState.sessions.keys());
     renderSessions();
     text("conversationManagerStatus", "已添加 " + chatState.selectedConversations.size + " 个会话");
     if (!chatState.currentUser) {
@@ -1160,10 +1185,7 @@ async function loadSessions(retryChanged = true) {
     pruneSessionCache(data.account, nextSessions);
     renderSessions();
     if (!byId("conversationManager").hidden) renderConversationManager();
-    if (!chatState.allConversationsTracked && chatState.sessions.size &&
-        [...chatState.sessions.keys()].every(id => chatState.selectedConversations.has(id)))
-      chatState.allConversationsTracked = true;
-    if (chatState.allConversationsTracked) void trackNewConversations(data.account);
+    void trackNewConversations(data.account);
     byId("sessionList").scrollTop = scroll;
     if (!await preloadSessionWindows(data.account, nextSessions, request)) return;
     if (request !== chatState.sessionRequest || chatState.currentAccount !== data.account) return;
