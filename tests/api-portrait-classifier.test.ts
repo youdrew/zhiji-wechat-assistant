@@ -94,7 +94,8 @@ it("ships all 59 exact local questions in one API call and never generates a sum
   assert.equal(input.messages.length, 100);
   assert.equal(input.messages.at(-1).text, "合成文本99");
   assert.equal(result.targetCount, 100);
-  assert.equal(sent!.maxOutputTokens, API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS);
+  // No output cap: a thinking model's reasoning shares the cap and used up 8192.
+  assert.equal(sent!.maxOutputTokens, undefined);
   assert.equal(sent!.jsonMode, true);
   assert.doesNotMatch(sent!.system, /0\.65|Multiply each group's/u);
   assert.ok(API_PORTRAIT_CLASSIFIER_FIXED_CHARACTERS < 26000);
@@ -348,9 +349,19 @@ it("obeys the Python wire budget without truncating messages or reserving the fi
   assert.equal(calls, 1);
 });
 
-it("leaves room for an answer to every supplied question within the configured context", async () => {
-  // Models often answer all 59 supplied questions, not only the routed subset. A
-  // 2048-token cap cut such answers mid-array and every retry failed the same way.
+it("sends no output cap, and on Anthropic leaves room for every supplied answer", async () => {
+  // Models often answer all 59 supplied questions, not only the routed subset, and
+  // thinking models spend 13K-24K tokens reasoning before the JSON. Caps of 2048 and
+  // 8192 cut such answers, so only Anthropic, which requires max_tokens, gets one.
+  for (const protocol of ["responses", "chat_completions", "gemini", "ollama"] as const) {
+    let sent: GenerationRequest | undefined;
+    const result = await classifyApiPortraitBatch({ ...config, protocol },
+      { ...request(), contextTokens: 131072 }, fake(allChoiceAnswers(), value => { sent = value; }));
+    assert.ok(result.result);
+    assert.ok(sent);
+    assert.equal(sent.maxOutputTokens, undefined, protocol);
+  }
+  const anthropic: ModelConfig = { ...config, protocol: "anthropic" };
   // Each token covers at least one character of this ASCII JSON, so its character
   // count bounds the tokens of a compact four-decimal answer for any tokenizer.
   const full = JSON.stringify({ answers: Object.fromEntries(Object.keys(API_PORTRAIT_CLASSIFIER_QUESTIONS)
@@ -358,12 +369,13 @@ it("leaves room for an answer to every supplied question within the configured c
   assert.ok(full.length > 2048, `${full.length}`);
   for (const contextTokens of [24576, 65536, 1000000]) {
     let sent: GenerationRequest | undefined;
-    const result = await classifyApiPortraitBatch(config, { ...request(), contextTokens },
+    const result = await classifyApiPortraitBatch(anthropic, { ...request(), contextTokens },
       fake(allChoiceAnswers(), value => { sent = value; }));
     assert.ok(result.result);
     assert.ok(sent!.maxOutputTokens! >= full.length,
       `context ${contextTokens}: cap ${sent!.maxOutputTokens} < ${full.length}-character answer`);
     assert.ok(sent!.maxOutputTokens! <= API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS);
+    if (contextTokens === 1000000) assert.equal(sent!.maxOutputTokens, 32768);
   }
   // At the smallest supported context, a full batch still keeps prompt + output inside it.
   const contextTokens = API_PORTRAIT_CLASSIFIER_MIN_CONTEXT;
@@ -371,7 +383,7 @@ it("leaves room for an answer to every supplied question within the configured c
   const base = { id: "i".repeat(150), sender: "OTHER" as const, target: true, text: "" };
   const text = "字".repeat(budget - (Array.from(JSON.stringify(base)).length + 1));
   let sent: GenerationRequest | undefined;
-  await classifyApiPortraitBatch(config, { ...request(), contextTokens, messages: [{ ...base, text }] },
+  await classifyApiPortraitBatch(anthropic, { ...request(), contextTokens, messages: [{ ...base, text }] },
     fake(ordinaryAnswers(), value => { sent = value; }));
   assert.ok(sent!.maxOutputTokens! >= API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS);
   assert.ok(API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + budget + sent!.maxOutputTokens! <= contextTokens);

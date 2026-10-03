@@ -416,7 +416,7 @@ export async function generateStructured(
   if (!request || typeof request.system !== "string" || typeof request.prompt !== "string" ||
       !request.prompt.trim() ||
       (outputLimit !== undefined && (!Number.isInteger(outputLimit) ||
-        outputLimit < 1 || outputLimit > 8192)) ||
+        outputLimit < 1 || outputLimit > 32768)) ||
       (request.jsonMode !== undefined && typeof request.jsonMode !== "boolean") ||
       (request.stream !== undefined && typeof request.stream !== "boolean") ||
       (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) ||
@@ -559,7 +559,11 @@ export async function generateStructured(
           messages: [{ role: "user", content: request.prompt }] };
         // Anthropic's SDK type requires max_tokens even when a compatible gateway
         // accepts the provider default. Keep the field absent on the wire.
-        const response = await client.messages.create(params as any, { signal: request.signal });
+        // An explicit per-request timeout stops the SDK refusing large non-streaming
+        // caps (over ~21K tokens) by its own duration estimate. 600000 ms is the
+        // SDK's own default when no timeout is configured.
+        const response = await client.messages.create(params as any,
+          { signal: request.signal, timeout: timeoutMs ?? 600_000 });
         if (response.stop_reason === "max_tokens") outputTruncated();
         result = { text: response.content.filter((item) => item.type === "text")
           .map((item) => item.text).join("\n"),

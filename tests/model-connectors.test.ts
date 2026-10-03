@@ -183,6 +183,34 @@ it("uses each SDK's generation format and returns only raw text and usage", asyn
   }
 });
 
+it("sends an output cap only when the caller sets one, up to 32768", async () => {
+  // The portrait classifier omits the cap so a thinking model can finish reasoning;
+  // Anthropic needs max_tokens, so that caller asks for 32768.
+  const capFields = ["max_output_tokens", "max_tokens", "maxOutputTokens", "num_predict"];
+  const capOf = (body: any): unknown[] => [body, body.generationConfig, body.options]
+    .flatMap(part => part ? capFields.filter(key => key in part).map(key => part[key]) : []);
+  for (const protocol of Object.keys(configs) as Protocol[]) {
+    for (const maxOutputTokens of [undefined, 32768]) {
+      let caps: unknown[] = [];
+      await withMockFetch((_url, init) => {
+        caps = capOf(JSON.parse(String(init?.body || "{}")));
+        return json(generationFixture(protocol));
+      }, () => generateStructured(configs[protocol], {
+        system: "Return JSON.", prompt: "synthetic prompt", jsonMode: true, maxOutputTokens,
+      }));
+      assert.deepEqual(caps, maxOutputTokens === undefined ? [] : [maxOutputTokens],
+        `${protocol} ${maxOutputTokens}`);
+    }
+  }
+  let calls = 0;
+  await withMockFetch(() => { calls++; return json(generationFixture("responses")); }, async () => {
+    await assert.rejects(() => generateStructured(configs.responses, {
+      system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 32769,
+    }), (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-request");
+  });
+  assert.equal(calls, 0);
+});
+
 function truncatedFixture(protocol: Protocol): unknown {
   // Each provider's own "stopped at the output cap" marker, with the cut-off JSON.
   const text = '{"answers":{"intent_detail_flirt":[0.05,0.05';

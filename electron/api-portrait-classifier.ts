@@ -16,13 +16,13 @@ import { toInternal } from "./laya/questions";
 import type { Answer, ChoiceAnswer, Question } from "./laya/types";
 
 export const API_PORTRAIT_CLASSIFIER_VERSION = `api-laya-portrait-v1+${CATALOG_VERSION}+${MBTI_QUESTION_VERSION}+style-v1`;
-// Output cap for the one classification call. Models commonly answer every
-// supplied branch rather than only the routed ones: all 59 questions are 663
-// numbers, ~3K tokens compact and ~4.3K pretty-printed (DeepSeek V3 tokenizer),
-// and reasoning models spend part of the same cap before any JSON appears.
-// 2048 cut such answers mid-array. 8192 is the connector's upper limit.
-export const API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS = 8192;
-// Smallest cap ever requested; the required answer subset (173 numbers) is ~1.2K tokens.
+// The classification call sends no output cap: models commonly answer every
+// supplied branch (all 59 questions are 663 numbers, ~3K tokens compact), and a
+// thinking model spends 13K-24K tokens reasoning first (measured on DeepSeek V4.1
+// Flash). A 2048 or 8192 cap cut that reasoning before any JSON appeared.
+// Anthropic requires max_tokens, so only that protocol gets a large explicit cap.
+export const API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS = 32768;
+// Smallest explicit cap; the required answer subset (173 numbers) is ~1.2K tokens.
 export const API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS = 2048;
 // Planning estimate, not a provider tokenizer measurement: complete fixed question
 // tree + routing instructions (~8K tokens reserved), then at least a 2K-token answer.
@@ -129,8 +129,8 @@ const identifier = (value: unknown): value is string => typeof value === "string
   !!value.trim() && charCount(value) <= 200 && !/[\u0000-\u001f\u007f]/u.test(value);
 const nonnegative = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-/** Output cap for one batch: grow into context the batch leaves unused, never past
- * the configured window. Wire characters stand in as a token upper bound. */
+/** Anthropic output cap for one batch: grow into context the batch leaves unused,
+ * never past the configured window. Wire characters stand in as a token upper bound. */
 export function apiPortraitClassifierOutputTokens(contextTokens: number, wireChars: number): number {
   return Math.min(API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS, Math.max(API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS,
     contextTokens - API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS - wireChars));
@@ -214,7 +214,8 @@ export async function classifyApiPortraitBatch(config: ModelConfig, request: Api
       ...(message.speaker === undefined ? {} : { speaker: message.speaker }),
       ...(message.time === undefined ? {} : { time: message.time }),
       ...(message.complete === undefined ? {} : { complete: message.complete }) })) });
-  const maxOutputTokens = apiPortraitClassifierOutputTokens(request.contextTokens, wireChars);
+  const maxOutputTokens = config.protocol === "anthropic" ?
+    apiPortraitClassifierOutputTokens(request.contextTokens, wireChars) : undefined;
   const response = await generate(config, { system, prompt, jsonMode: true, maxOutputTokens, timeoutMs: 120000 });
   let usage = addUsage(undefined, response.usage);
   let modelCalls = 1;
