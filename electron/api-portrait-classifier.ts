@@ -263,20 +263,31 @@ export async function classifyApiPortraitBatch(config: ModelConfig, request: Api
     const remaining = deadline - Date.now();
     if (reasks >= API_PORTRAIT_CLASSIFIER_REASKS || remaining < MIN_REASK_MS) outputError();
     const expected = Object.fromEntries([...miscounted].map(name => [name, optionLabels.get(name)!.length]));
+    const reaskOptions = Object.fromEntries([...miscounted].map(name => [name, optionLabels.get(name)!]));
+    // Keying each probability by its option label lets a miscount show up as a
+    // missing or unknown label instead of a silently shifted array.
     const retry = await generate(config, {
       system: system + "\nRE-ASK: The previous answer had the wrong number of probabilities for some questions. " +
-        "Answer ONLY these question IDs from LOCAL_QUESTION_CONTRACT, with the same instructions and option order, " +
-        "for the same INPUT_JSON. Each array must contain exactly the listed number of values, summing to 1. " +
-        "Return JSON {answers:{questionId:[...]}}.\nEXPECTED_VALUE_COUNTS:\n" + JSON.stringify(expected),
+        "Answer ONLY the question IDs in REASK_OPTIONS, with the same LOCAL_QUESTION_CONTRACT instructions and " +
+        "options, for the same INPUT_JSON. Give every listed option label exactly once with a probability from 0 " +
+        "to 1, summing to 1 per question. Return JSON {answers:{questionId:{optionLabel:probability}}}." +
+        "\nEXPECTED_VALUE_COUNTS:\n" + JSON.stringify(expected) + "\nREASK_OPTIONS:\n" + JSON.stringify(reaskOptions),
       prompt, jsonMode: true, maxOutputTokens, timeoutMs: Math.min(120000, Math.floor(remaining)),
     });
     usage = addUsage(usage, retry.usage);
     modelCalls++;
     const reparsed = portraitJson(retry.text);
     if (!object(reparsed) || !object(reparsed.answers)) outputError();
-    // Merge only the re-asked questions; accepted answers are never replaced.
-    for (const name of miscounted)
-      if (Object.hasOwn(reparsed.answers, name)) rawAnswers[name] = reparsed.answers[name];
+    // Merge only the re-asked questions; accepted answers are never replaced. A
+    // label map is accepted only with exactly the option labels, then put back
+    // in option order; otherwise the miscount stands and may be re-asked again.
+    for (const name of miscounted) {
+      const value = reparsed.answers[name];
+      const labels = optionLabels.get(name)!;
+      if (Array.isArray(value)) rawAnswers[name] = value;
+      else if (object(value) && Object.keys(value).length === labels.length &&
+          labels.every(label => Object.hasOwn(value, label))) rawAnswers[name] = labels.map(label => value[label]);
+    }
   }
   if (!emotion?.length || !intent?.scores.length) outputError();
   const relationship = answerFor("relationship")!;

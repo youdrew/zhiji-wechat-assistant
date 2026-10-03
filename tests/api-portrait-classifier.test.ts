@@ -387,7 +387,8 @@ function scripted(replies: Array<Record<string, unknown>>, sent: GenerationReque
 }
 const reasked = (value: GenerationRequest) => {
   const marker = "EXPECTED_VALUE_COUNTS:\n";
-  return value.system.includes(marker) ? JSON.parse(value.system.split(marker)[1]!) as Record<string, number> : null;
+  return value.system.includes(marker) ?
+    JSON.parse(value.system.split(marker)[1]!.split("\nREASK_OPTIONS:\n")[0]!) as Record<string, number> : null;
 };
 /** Two routed families, so both base and routed answers are exercised. */
 function routedAnswers(): Record<string, number[]> {
@@ -411,8 +412,11 @@ it("re-asks only miscounted answers, keeps the counted ones and merges the resul
     intent_detail_conversation: [...good.intent_detail_conversation!, 0], // routed leaf, one extra
     emotion_detail_sad: [0.5, 0.5] }; // routed emotion branch, 2 values for 6 options
   const sent: GenerationRequest[] = [];
+  // A label map in any key order is put back in option order.
+  const labelled = (name: string) => Object.fromEntries(options(name)
+    .map((label, index) => [label, good[name]![index]]).reverse());
   const result = await classifyApiPortraitBatch(config, request(), scripted([first, {
-    mbti_EI: good.mbti_EI, intent_detail_conversation: good.intent_detail_conversation,
+    mbti_EI: labelled("mbti_EI"), intent_detail_conversation: labelled("intent_detail_conversation"),
     emotion_detail_sad: good.emotion_detail_sad,
     relationship: distribution("relationship", 0), // never asked: must not replace the accepted answer
   }], sent));
@@ -425,6 +429,7 @@ it("re-asks only miscounted answers, keeps the counted ones and merges the resul
   assert.equal(sent[1]!.prompt, sent[0]!.prompt);
   assert.equal(sent[1]!.maxOutputTokens, sent[0]!.maxOutputTokens);
   assert.ok(sent[1]!.timeoutMs! <= 120000);
+  assert.deepEqual(JSON.parse(sent[1]!.system.split("\nREASK_OPTIONS:\n")[1]!).mbti_EI, options("mbti_EI"));
   assert.deepEqual(result.result, expected);
   assert.equal(result.modelCalls, 2);
   assert.deepEqual(result.usage, { inputTokens: 300, outputTokens: 30 }, "usage covers both calls");
@@ -465,6 +470,16 @@ it("falls back to invalid-output after the bounded re-asks or when the count err
   await assert.rejects(() => classifyApiPortraitBatch(config, request(), scripted([wrong, { mbti_EI: [1] }], sent)),
     fails("invalid-output"));
   assert.equal(sent.length, 3, "first call plus two targeted re-asks, then the outer retry policy applies");
+  // A label map missing an option is still a miscount: re-asked again, never padded.
+  const partial = Object.fromEntries(options("mbti_EI").slice(1).map(label => [label, 0.5]));
+  const maps: GenerationRequest[] = [];
+  const fixed = await classifyApiPortraitBatch(config, request(),
+    scripted([wrong, { mbti_EI: partial }, { mbti_EI: good.mbti_EI }], maps));
+  assert.equal(maps.length, 3);
+  assert.deepEqual(reasked(maps[2]!), { mbti_EI: 3 });
+  assert.equal(fixed.modelCalls, 3);
+  await assert.rejects(() => classifyApiPortraitBatch(config, request(),
+    scripted([wrong, { mbti_EI: partial }], [])), fails("invalid-output"));
   // Values that are not a miscount are never re-asked or padded.
   for (const value of [[0.5, 0.5, 0.5], [0.5, "0.5"], [], [0.5, 1.5]]) {
     const once: GenerationRequest[] = [];
