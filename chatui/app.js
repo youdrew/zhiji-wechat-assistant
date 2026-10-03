@@ -61,7 +61,7 @@ function getVisibleUnreadCount(session) {
   if (hasNewTime || hasNewPreview) return serverUnread;
   return 0;
 }
-const defaults = { theme: "dark", zoom: "1.0", intent: true, backgroundAnalyze: true };
+const defaults = { theme: "dark", zoom: "1.0", intent: true, backgroundAnalyze: false };
 const CURRENT_LABEL_SCHEMA = "generic-v9";
 const GENERIC_INTENT_LABELS = Object.freeze({
   small_talk: "闲聊", share_news: "分享", ask_question: "提问", seek_help: "求助", deny: "否认",
@@ -98,7 +98,9 @@ delete settingsState.settings.historyLimit;
 if (!["dark", "light"].includes(settingsState.settings.theme)) settingsState.settings.theme = "dark";
 if (!["0.9", "1.0", "1.1", "1.25", "1.5"].includes(settingsState.settings.zoom)) settingsState.settings.zoom = "1.0";
 if (typeof settingsState.settings.intent !== "boolean") settingsState.settings.intent = true;
-if (typeof settingsState.settings.backgroundAnalyze !== "boolean") settingsState.settings.backgroundAnalyze = true;
+// Analysing every added chat in the background is opt-in: it can keep the CPU or GPU busy
+// for hours on a large account.
+if (typeof settingsState.settings.backgroundAnalyze !== "boolean") settingsState.settings.backgroundAnalyze = false;
 const save = () => localStorage.setItem("real-ui-settings-1", JSON.stringify(settingsState.settings));
 chatState.sessions = new Map();
 chatState.selectedConversations = new Set();
@@ -889,10 +891,17 @@ async function backgroundAnalyzeAll() {
 // Whole-account progress behind the sidebar bar: how many conversations the local
 // background sweep has walked to the end of their history.
 async function loadAnalysisOverview() {
+  // With the sweep off there is nothing to show, so the sidebar stays quiet and unpolled.
+  if (!settingsState.settings.backgroundAnalyze || !canAnalyzeLocal()) {
+    byId("sweepProgress").hidden = true;
+    return;
+  }
   if (settingsState.overviewBusy) return;
   settingsState.overviewBusy = true;
   try {
-    const data = await api("/api/analysis-overview");
+    const [data, workers] = await Promise.all([api("/api/analysis-overview"),
+      api("/api/analysis-workers").catch(() => null)]);
+    if (workers) settingsState.workerSettings = workers;
     if (data && typeof data.conversations === "number") {
       settingsState.analysisOverviewSnapshot = data;
       renderAnalysisOverview(data);
@@ -909,8 +918,11 @@ function renderAnalysisOverview(data) {
   }
   const analyzed = Math.max(0, Number(data.analyzed) || 0);
   const total = Math.max(0, Number(data.textTotal) || 0);
-  const percent = total > 0 ? Math.min(100, 100 * analyzed / total) : 0;
   const complete = Math.max(0, Math.min(Number(data.complete) || 0, data.conversations));
+  // The total is a plain message count and can sit slightly above what is analysable,
+  // so a finished sweep reads 100% instead of stopping just short of it.
+  const percent = complete >= data.conversations ? 100 :
+    total > 0 ? Math.min(100, 100 * analyzed / total) : 0;
   panel.hidden = false;
   byId("sweepProgressFill").style.width = percent.toFixed(2) + "%";
   byId("sweepProgressValue").textContent =
@@ -921,10 +933,10 @@ function renderAnalysisOverview(data) {
   const details = ["已分析 " + analyzed + " / " + total + " 条文本（" + percent.toFixed(1) + "%）",
     "完成 " + complete + " / " + data.conversations + " 个会话",
     "已开始 " + (Number(data.scanned) || 0) + " 个"];
-  const workers = data.workers;
-  if (workers && Number(workers.max) > 1) {
-    details.push(workers.elastic ? "并行档位 " + workers.limit + " / " + workers.max + "（随负载自动调整）"
-      : "并行 " + workers.limit + " 路");
+  const workers = settingsState.workerSettings;
+  if (workers && Number(workers.workers) > 1) {
+    details.push(workers.elastic ? "并行 " + workers.limit + " / " + workers.workers + " 路（随负载调整）"
+      : "并行 " + workers.workers + " 路");
   }
   if (workers && typeof workers.gpu === "number") details.push("GPU " + Math.round(workers.gpu) + "%");
   if (workers && typeof workers.gpuFreeMiB === "number") {
