@@ -2985,6 +2985,11 @@ body.theme-light .inline-intent-row .intent-item.primary { color: #4a4a4c; }
 #localModelSettings .settings-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); column-gap: 14px; min-height: 32px; }
 #localModelSettings .settings-row > :first-child { white-space: nowrap; }
 #localModelSettings .settings-row > :last-child { justify-self: end; min-width: 0; }
+/* Parallel analysis and the background switch: their labels are wider than the 96px column. */
+#localModelSettings .settings-row.settings-row-wide { grid-template-columns: auto minmax(0, 1fr); }
+#localModelSettings .worker-hint-row { display: none; }
+#localModelSettings .worker-hint-row.show { display: block; }
+#localModelSettings .worker-hint-row.show > span { white-space: normal; }
 #localModelSettings .runtime-control, .local-model-control { justify-content: flex-end; }
 .local-model-control { min-width: 0; padding-left: 110px; flex-wrap: wrap; }
 .local-model-control .settings-action-btn { flex: none; white-space: nowrap; }

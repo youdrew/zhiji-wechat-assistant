@@ -441,6 +441,22 @@
             <div class="model-source-actions" id="localModelActions" hidden>
               <button type="button" class="settings-action-btn" id="btnActivateLocal">启用本地模型</button>
             </div>
+            <div class="settings-row settings-row-wide">
+              <span>本地分析并行数</span>
+              <span class="worker-stepper">
+                <button type="button" class="settings-action-btn" id="btnWorkerMinus" aria-label="减少并行数">−</button>
+                <strong id="workerLimitValue">—</strong>
+                <button type="button" class="settings-action-btn" id="btnWorkerPlus" aria-label="增加并行数">+</button>
+                <button type="button" class="settings-action-btn" id="btnToggleElasticWorkers">跟随负载</button>
+              </span>
+            </div>
+            <div class="settings-row worker-hint-row">
+              <span id="workerLimitHint" class="model-source-status" role="status"></span>
+            </div>
+            <div class="settings-row settings-row-wide">
+              <span>后台分析已添加的会话</span>
+              <button type="button" class="settings-action-btn" id="btnToggleBackgroundAnalyze">已关闭</button>
+            </div>
           </section>
           <section class="model-source-panel api-model-settings" id="apiModelSettings" hidden>
             <div class="settings-row">
@@ -493,22 +509,6 @@
           <div class="settings-row">
             <span>信息列表</span>
             <button type="button" class="settings-action-btn" id="btnManageConversations">管理会话</button>
-          </div>
-          <div class="settings-row">
-            <span>后台分析已添加的会话</span>
-            <button type="button" class="settings-action-btn" id="btnToggleBackgroundAnalyze">已关闭</button>
-          </div>
-          <div class="settings-row">
-            <span>本地分析并行数</span>
-            <span class="worker-stepper">
-              <button type="button" class="settings-action-btn" id="btnWorkerMinus" aria-label="减少并行数">−</button>
-              <strong id="workerLimitValue">—</strong>
-              <button type="button" class="settings-action-btn" id="btnWorkerPlus" aria-label="增加并行数">+</button>
-              <button type="button" class="settings-action-btn" id="btnToggleElasticWorkers">跟随负载</button>
-            </span>
-          </div>
-          <div class="settings-row worker-hint-row">
-            <span id="workerLimitHint" class="model-source-status" role="status"></span>
           </div>
           <section class="conversation-manager" id="conversationManager" hidden>
             <div class="conversation-manager-head">

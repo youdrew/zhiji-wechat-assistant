@@ -18,6 +18,19 @@ it("ships the sidebar progress bar plus the settings rows it drives", () => {
   assert.match(css, /\.worker-hint-row\.show \{ display: flex; \}/u);
 });
 
+it("keeps both local-only switches inside the local model settings", () => {
+  // In the general settings they read as if they also applied to API mode.
+  const html = read("chatui", "index.html").replace(/\r/gu, "");
+  const start = html.indexOf('id="localModelSettings"');
+  const local = html.slice(start, html.indexOf("</section>", start));
+  for (const id of ["btnToggleBackgroundAnalyze", "btnWorkerMinus", "btnWorkerPlus",
+                    "btnToggleElasticWorkers", "workerLimitHint"]) {
+    assert.ok(local.includes(`id="${id}"`), `#${id} must sit in the local model settings`);
+  }
+  // The section's own row rule would otherwise keep the hint row visible all the time.
+  assert.match(read("chatui", "style.css"), /#localModelSettings \.worker-hint-row \{ display: none; \}/u);
+});
+
 it("defines the sweep, overview and worker-settings entry points", () => {
   const app = read("chatui", "app.js");
   for (const name of ["backgroundAnalyzeAll", "renderAnalysisOverview", "loadAnalysisOverview",
