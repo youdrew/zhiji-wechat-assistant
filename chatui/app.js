@@ -749,10 +749,6 @@ async function preloadSessionWindows(account, nextSessions, request) {
   }
   return true;
 }
-function validConversationSelection(state, account) {
-  return Boolean(state) && state.account === account && Array.isArray(state.selectedSessions) &&
-    state.selectedSessions.every(id => typeof id === "string");
-}
 async function loadConversationSelection(account, request) {
   if (chatState.selectionLoadedAccount === account) return;
   const state = await api("/api/conversation-selection");
@@ -764,6 +760,38 @@ async function loadConversationSelection(account, request) {
   chatState.selectedConversations.clear();
   for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
   chatState.selectionLoadedAccount = account;
+}
+function validConversationSelection(state, account) {
+  return Boolean(state) && state.account === account && Array.isArray(state.selectedSessions) &&
+    state.selectedSessions.every(id => typeof id === "string");
+}
+function clearUnselectedConversation() {
+  if (chatState.currentUser) {
+    cacheCurrentSession({ messages: chatState.messages, results: labelState.results, mood: chatState.conversationMood,
+      scrollTop: byId("chatMessages").scrollTop, followLatest: chatState.followLatest });
+    cancelHistoryRequest();
+    chatState.historyState = null;
+    resetHistorySearch();
+    clearReplyPrediction();
+    chatState.controller?.abort();
+    chatState.controller = null;
+    chatState.advance("generation");
+    portraitState.profileGeneration++;
+    cancelApiInsightWork();
+    cancelApiPortraitPoll();
+    chatState.currentUser = null;
+    chatState.messages = [];
+    labelState.results = {};
+    chatState.conversationMood = null;
+    portraitState.activeMember = "";
+    clearProfileView("人物画像");
+  }
+  text("chatTitle", "聊天");
+  showChatEmptyState();
+  byId("btnChatHistory").disabled = true;
+  updateHistoryNavigation();
+  renderMood();
+  switchView("chat");
 }
 // After "add all", conversations that appear later join the sidebar as well. Only ids that
 // were never seen are added, so a conversation the user removed by hand stays removed.
@@ -990,34 +1018,6 @@ async function changeWorkerSettings(delta, elastic) {
     return;
   }
   renderWorkerSettings();
-}
-function clearUnselectedConversation() {
-  if (chatState.currentUser) {
-    cacheCurrentSession({ messages: chatState.messages, results: labelState.results, mood: chatState.conversationMood,
-      scrollTop: byId("chatMessages").scrollTop, followLatest: chatState.followLatest });
-    cancelHistoryRequest();
-    chatState.historyState = null;
-    resetHistorySearch();
-    clearReplyPrediction();
-    chatState.controller?.abort();
-    chatState.controller = null;
-    chatState.advance("generation");
-    portraitState.profileGeneration++;
-    cancelApiInsightWork();
-    cancelApiPortraitPoll();
-    chatState.currentUser = null;
-    chatState.messages = [];
-    labelState.results = {};
-    chatState.conversationMood = null;
-    portraitState.activeMember = "";
-    clearProfileView("人物画像");
-  }
-  text("chatTitle", "聊天");
-  showChatEmptyState();
-  byId("btnChatHistory").disabled = true;
-  updateHistoryNavigation();
-  renderMood();
-  switchView("chat");
 }
 function showChatEmptyState() {
   const container = byId("chatMessages");

@@ -18,7 +18,7 @@ it("ships one entry beside the conversation search that adds everything at once"
 // Runs the selection, follow and add-all code from app.js against a fake bridge.
 function harness(selected = [], { initialized = true } = {}) {
   const app = read("chatui", "app.js");
-  const first = app.indexOf("function validConversationSelection(");
+  const first = app.indexOf("async function loadConversationSelection(");
   const last = app.indexOf("settingsState.sweepBusy = false;", first);
   assert.ok(first >= 0 && last > first, "selection code must stay together in app.js");
   const session = id => ({ username: id, name: id });

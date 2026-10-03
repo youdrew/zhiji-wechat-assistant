@@ -71,6 +71,7 @@ function harness(responses, selectedByAccount = {}) {
     };
     const loadProfile = () => { throw new Error("profile must not run in chat view"); };
     const renderConversationManager = () => events.push("manager");
+    const trackNewConversations = async () => {};
     const accountChangedError = () => false;
     const accountUnavailableError = () => false;
     const contactSnapshotStaleError = () => false;
