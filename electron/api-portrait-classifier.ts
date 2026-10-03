@@ -30,6 +30,12 @@ export const API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS = 8192;
 export const API_PORTRAIT_CLASSIFIER_RESERVED_TOKENS =
   API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS;
 export const API_PORTRAIT_CLASSIFIER_MIN_CONTEXT = 12288;
+// Answers with a wrong number of values are re-asked on their own, at most this
+// many times per batch, before the batch fails as invalid-output.
+export const API_PORTRAIT_CLASSIFIER_REASKS = 2;
+// The first call plus any re-asks stay inside Python's 180-second IPC wait.
+export const API_PORTRAIT_CLASSIFIER_DEADLINE_MS = 170000;
+const MIN_REASK_MS = 10000;
 
 const baseQuestions = { ...ANALYSIS_QUESTIONS, ...PERSONALITY_QUESTIONS, ...STYLE_QUESTIONS };
 const questionEntries: Array<[string, Question]> = Object.entries(baseQuestions);
@@ -112,6 +118,9 @@ export interface ApiPortraitClassifierResult {
   /** Target codepoints actually presented, including partial-message fragments. */
   targetChars: number;
   durationMs: number;
+  /** Provider calls for this batch: 1, plus one per targeted re-ask. */
+  modelCalls: number;
+  /** Summed over every provider call of this batch. */
   usage?: ModelUsage;
 }
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -149,6 +158,20 @@ function parsedAnswer(name: string, value: unknown): ChoiceAnswer {
   const choice = labels.reduce((best, label) => probabilities[label]! > probabilities[best]! ? label : best);
   return { type: "choice", choice, probabilities, confidence: probabilities[choice]!, action: { act_probability: 1 } };
 }
+/** A well-formed probability array whose length differs from the option count. Only
+ * this case is re-asked; missing, non-numeric or out-of-range answers stay invalid. */
+function miscountedAnswer(name: string, value: unknown): boolean {
+  const labels = optionLabels.get(name);
+  return !!labels && Array.isArray(value) && value.length > 0 && value.length !== labels.length &&
+    value.every(probability => typeof probability === "number" && Number.isFinite(probability) &&
+      probability >= 0 && probability <= 1);
+}
+function addUsage(total: ModelUsage | undefined, usage: ModelUsage | undefined): ModelUsage | undefined {
+  if (!usage) return total;
+  const sum = (a?: number, b?: number) => a === undefined ? b : b === undefined ? a : a + b;
+  return { inputTokens: sum(total?.inputTokens, usage.inputTokens),
+    outputTokens: sum(total?.outputTokens, usage.outputTokens) };
+}
 const scores = (answer: ChoiceAnswer): LabelScore[] => Object.entries(answer.probabilities)
   .map(([label, probability]) => ({ label, probability })).sort((a, b) => b.probability - a.probability);
 const displayScores = (values: LabelScore[], translate: (label: string) => string): ApiPortraitWireScore[] =>
@@ -182,45 +205,84 @@ export async function classifyApiPortraitBatch(config: ModelConfig, request: Api
   }
   if (wireChars > budget) throw new ModelConnectorError("context-too-long", "当前画像批次超过已配置的上下文容量");
   const base = { batchVersion: API_PORTRAIT_CLASSIFIER_VERSION, targetCount: completed.size, targetChars };
-  if (!targetChars) return { ...base, result: null, durationMs: Date.now() - started };
-  const response = await generate(config, {
-    system: rules + "\nLOCAL_QUESTION_CONTRACT:\n" + fixedPrompt,
-    prompt: "INPUT_JSON:\n" + JSON.stringify({ subjectKind: request.subjectKind,
-      messages: request.messages.map((message, index) => ({ id: `m${index + 1}`,
-        sender: message.sender, target: message.target, text: message.text,
-        ...(message.speaker === undefined ? {} : { speaker: message.speaker }),
-        ...(message.time === undefined ? {} : { time: message.time }),
-        ...(message.complete === undefined ? {} : { complete: message.complete }) })) }),
-    jsonMode: true, maxOutputTokens: apiPortraitClassifierOutputTokens(request.contextTokens, wireChars),
-    timeoutMs: 120000,
-  });
+  if (!targetChars) return { ...base, result: null, durationMs: Date.now() - started, modelCalls: 0 };
+  const deadline = started + API_PORTRAIT_CLASSIFIER_DEADLINE_MS;
+  const system = rules + "\nLOCAL_QUESTION_CONTRACT:\n" + fixedPrompt;
+  const prompt = "INPUT_JSON:\n" + JSON.stringify({ subjectKind: request.subjectKind,
+    messages: request.messages.map((message, index) => ({ id: `m${index + 1}`,
+      sender: message.sender, target: message.target, text: message.text,
+      ...(message.speaker === undefined ? {} : { speaker: message.speaker }),
+      ...(message.time === undefined ? {} : { time: message.time }),
+      ...(message.complete === undefined ? {} : { complete: message.complete }) })) });
+  const maxOutputTokens = apiPortraitClassifierOutputTokens(request.contextTokens, wireChars);
+  const response = await generate(config, { system, prompt, jsonMode: true, maxOutputTokens, timeoutMs: 120000 });
+  let usage = addUsage(undefined, response.usage);
+  let modelCalls = 1;
   const parsed = portraitJson(response.text);
   if (!object(parsed) || !object(parsed.answers)) outputError();
-  const rawAnswers = parsed.answers;
+  const rawAnswers: Record<string, unknown> = { ...parsed.answers };
   const answers: Record<string, Answer> = {};
-  const answerFor = (name: string): ChoiceAnswer => {
+  const miscounted = new Set<string>();
+  const answerFor = (name: string): ChoiceAnswer | null => {
     const existing = answers[name];
     if (existing?.type === "choice") return existing;
+    if (miscountedAnswer(name, rawAnswers[name])) { miscounted.add(name); return null; }
     const answer = parsedAnswer(name, rawAnswers[name]);
     answers[name] = answer;
     return answer;
   };
-  for (const name of Object.keys(baseQuestions)) answerFor(name);
-  // These callbacks only consume the one provider answer. The real local routing
+  // These callbacks only consume provider answers. The real local routing
   // functions retain their branch thresholds, conditional weighting and ordering.
+  // A miscounted branch is left out of this pass and re-asked, then routing runs
+  // again from the start over the merged answers. Once a pass has a miscount, its
+  // later selections may name branches the corrected routing never asks for, so
+  // their absence is not final; only a pass without miscounts is accepted.
+  const tentative = (name: string): ChoiceAnswer | null => {
+    try { return answerFor(name); } catch (error) {
+      if (error instanceof ModelConnectorError && error.code === "invalid-output") return null;
+      throw error;
+    }
+  };
   const routedAnswers = async (questions: Record<string, Question>) => Object.fromEntries(
-    Object.entries(questions).map(([name, question]) => {
+    Object.entries(questions).flatMap(([name, question]) => {
       const bankName = questionNames.get(questionIdentity(question));
       if (!bankName) outputError();
-      return [name, answerFor(bankName)];
+      const answer = miscounted.size ? tentative(bankName) : answerFor(bankName);
+      return answer ? [[name, answer]] : [];
     }));
-  const intent = await routeIntent(answers.intent, routedAnswers);
-  const emotion = await routeEmotion(answers.emotion, routedAnswers);
-  if (!emotion.length || !intent.scores.length) outputError();
-  const relationship = answerFor("relationship");
+  let intent: Awaited<ReturnType<typeof routeIntent>> | undefined;
+  let emotion: LabelScore[] | undefined;
+  for (let reasks = 0; ; reasks++) {
+    miscounted.clear();
+    for (const name of Object.keys(baseQuestions)) answerFor(name);
+    // Each route needs only its own broad answer, so one miscounted broad answer
+    // does not hide miscounted branches of the other route from this re-ask.
+    intent = answers.intent ? await routeIntent(answers.intent, routedAnswers) : undefined;
+    emotion = answers.emotion ? await routeEmotion(answers.emotion, routedAnswers) : undefined;
+    if (!miscounted.size) break;
+    const remaining = deadline - Date.now();
+    if (reasks >= API_PORTRAIT_CLASSIFIER_REASKS || remaining < MIN_REASK_MS) outputError();
+    const expected = Object.fromEntries([...miscounted].map(name => [name, optionLabels.get(name)!.length]));
+    const retry = await generate(config, {
+      system: system + "\nRE-ASK: The previous answer had the wrong number of probabilities for some questions. " +
+        "Answer ONLY these question IDs from LOCAL_QUESTION_CONTRACT, with the same instructions and option order, " +
+        "for the same INPUT_JSON. Each array must contain exactly the listed number of values, summing to 1. " +
+        "Return JSON {answers:{questionId:[...]}}.\nEXPECTED_VALUE_COUNTS:\n" + JSON.stringify(expected),
+      prompt, jsonMode: true, maxOutputTokens, timeoutMs: Math.min(120000, Math.floor(remaining)),
+    });
+    usage = addUsage(usage, retry.usage);
+    modelCalls++;
+    const reparsed = portraitJson(retry.text);
+    if (!object(reparsed) || !object(reparsed.answers)) outputError();
+    // Merge only the re-asked questions; accepted answers are never replaced.
+    for (const name of miscounted)
+      if (Object.hasOwn(reparsed.answers, name)) rawAnswers[name] = reparsed.answers[name];
+  }
+  if (!emotion?.length || !intent?.scores.length) outputError();
+  const relationship = answerFor("relationship")!;
   const result: ApiPortraitClassifierSignal = {
     emotion: displayScores(emotion, emotionLabel), intent: displayScores(intent.scores, intentLabel),
-    intentBroad: displayScores(scores(answerFor("intent")), intentLabel),
+    intentBroad: displayScores(scores(answerFor("intent")!), intentLabel),
     relationship: scores(relationship), score: messageScore({ relationship: relationship.probabilities }),
     styleEvidence: styleEvidenceFromAnswers(answers),
     personalityEvidence: request.subjectKind === "group" ? null : personalityEvidenceFromAnswers(answers),
@@ -228,5 +290,5 @@ export async function classifyApiPortraitBatch(config: ModelConfig, request: Api
     intentLabel: intentLabel(intent.scores[0]!.label), emotionP: emotion[0]!.probability,
     intentP: intent.scores[0]!.probability,
   };
-  return { ...base, result, durationMs: Date.now() - started, ...(response.usage ? { usage: response.usage } : {}) };
+  return { ...base, result, durationMs: Date.now() - started, modelCalls, ...(usage ? { usage } : {}) };
 }

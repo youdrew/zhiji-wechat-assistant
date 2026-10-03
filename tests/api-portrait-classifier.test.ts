@@ -377,6 +377,117 @@ it("leaves room for an answer to every supplied question within the configured c
   assert.ok(API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + budget + sent!.maxOutputTokens! <= contextTokens);
 });
 
+/** Scripted provider: one answer object per call, recording each request. */
+function scripted(replies: Array<Record<string, unknown>>, sent: GenerationRequest[]) {
+  return async (_config: ModelConfig, value: GenerationRequest) => {
+    sent.push(value);
+    const answers = replies[Math.min(sent.length, replies.length) - 1];
+    return { text: JSON.stringify({ answers }), usage: { inputTokens: 100 * sent.length, outputTokens: 10 * sent.length } };
+  };
+}
+const reasked = (value: GenerationRequest) => {
+  const marker = "EXPECTED_VALUE_COUNTS:\n";
+  return value.system.includes(marker) ? JSON.parse(value.system.split(marker)[1]!) as Record<string, number> : null;
+};
+/** Two routed families, so both base and routed answers are exercised. */
+function routedAnswers(): Record<string, number[]> {
+  const answers = ordinaryAnswers();
+  answers.emotion = distribution("emotion", { happy: 0.6, sad: 0.4 });
+  answers.emotion_detail_happy = distribution("emotion_detail_happy", { happy: 0.25, excited: 0.75 });
+  answers.emotion_detail_sad = distribution("emotion_detail_sad", { sad: 0.5, lonely: 0.5 });
+  answers.intent = distribution("intent", { "small talk": 0.6, "share news": 0.4 });
+  answers.intent_group_small_talk = [0.25, 0.75, 0];
+  answers.intent_group_share_news = [0.7, 0.3];
+  answers.intent_detail_conversation = distribution("intent_detail_conversation", 1);
+  answers.intent_detail_sharing = distribution("intent_detail_sharing", 2);
+  return answers;
+}
+
+it("re-asks only miscounted answers, keeps the counted ones and merges the result", async () => {
+  const good = routedAnswers();
+  const expected = (await classifyApiPortraitBatch(config, request(), fake(good))).result;
+  const first: Record<string, unknown> = { ...good,
+    mbti_EI: good.mbti_EI!.slice(1), // base question, one value short
+    intent_detail_conversation: [...good.intent_detail_conversation!, 0], // routed leaf, one extra
+    emotion_detail_sad: [0.5, 0.5] }; // routed emotion branch, 2 values for 6 options
+  const sent: GenerationRequest[] = [];
+  const result = await classifyApiPortraitBatch(config, request(), scripted([first, {
+    mbti_EI: good.mbti_EI, intent_detail_conversation: good.intent_detail_conversation,
+    emotion_detail_sad: good.emotion_detail_sad,
+    relationship: distribution("relationship", 0), // never asked: must not replace the accepted answer
+  }], sent));
+  assert.equal(sent.length, 2);
+  assert.equal(reasked(sent[0]!), null);
+  assert.deepEqual(reasked(sent[1]!), { mbti_EI: 3, emotion_detail_sad: 6,
+    intent_detail_conversation: options("intent_detail_conversation").length });
+  // Same question contract and same chat, within the same output budget.
+  assert.ok(sent[1]!.system.startsWith(sent[0]!.system));
+  assert.equal(sent[1]!.prompt, sent[0]!.prompt);
+  assert.equal(sent[1]!.maxOutputTokens, sent[0]!.maxOutputTokens);
+  assert.ok(sent[1]!.timeoutMs! <= 120000);
+  assert.deepEqual(result.result, expected);
+  assert.equal(result.modelCalls, 2);
+  assert.deepEqual(result.usage, { inputTokens: 300, outputTokens: 30 }, "usage covers both calls");
+});
+
+it("routes a re-asked answer with the unchanged local routing before asking for its branches", async () => {
+  const good = routedAnswers();
+  const expected = (await classifyApiPortraitBatch(config, request(), fake(good))).result;
+  // The broad intent is miscounted, so no intent branch can be chosen yet; the
+  // re-asked broad answer then selects a family whose leaf is miscounted too.
+  const first: Record<string, unknown> = { ...good, intent: [0.6, 0.4],
+    intent_detail_sharing: good.intent_detail_sharing!.slice(1) };
+  const sent: GenerationRequest[] = [];
+  const result = await classifyApiPortraitBatch(config, request(), scripted([first,
+    { intent: good.intent }, { intent_detail_sharing: good.intent_detail_sharing }], sent));
+  assert.deepEqual(sent.map(reasked), [null, { intent: options("intent").length },
+    { intent_detail_sharing: options("intent_detail_sharing").length }]);
+  assert.deepEqual(result.result, expected);
+  assert.equal(result.modelCalls, 3);
+
+  // A re-asked group answer decides which leaf the local routing asks for.
+  const regrouped: Record<string, unknown> = { ...good, intent_group_small_talk: [1] };
+  delete regrouped.intent_detail_conversation; // the corrected routing must not ask for it
+  const greeting = { ...regrouped, intent_detail_greeting: distribution("intent_detail_greeting", 0) };
+  const sentAgain: GenerationRequest[] = [];
+  const rerouted = await classifyApiPortraitBatch(config, request(), scripted([greeting,
+    { intent_group_small_talk: [0.9, 0.1, 0] }], sentAgain));
+  assert.deepEqual(sentAgain.map(reasked), [null, { intent_group_small_talk: 3 }]);
+  const groupOf = (id: string) => INTENTS.find(intent => intent.id === id)?.group;
+  assert.equal(groupOf(rerouted.result!.intent[0]!.rawLabel), "greeting", "the corrected group picks the greeting leaf");
+  assert.equal(rerouted.result!.intent.some(score => groupOf(score.rawLabel) === "conversation"), false);
+});
+
+it("falls back to invalid-output after the bounded re-asks or when the count error persists", async () => {
+  const good = routedAnswers();
+  const wrong = { ...good, mbti_EI: [0.5, 0.5] };
+  const sent: GenerationRequest[] = [];
+  await assert.rejects(() => classifyApiPortraitBatch(config, request(), scripted([wrong, { mbti_EI: [1] }], sent)),
+    fails("invalid-output"));
+  assert.equal(sent.length, 3, "first call plus two targeted re-asks, then the outer retry policy applies");
+  // Values that are not a miscount are never re-asked or padded.
+  for (const value of [[0.5, 0.5, 0.5], [0.5, "0.5"], [], [0.5, 1.5]]) {
+    const once: GenerationRequest[] = [];
+    await assert.rejects(() => classifyApiPortraitBatch(config, request(),
+      scripted([{ ...good, mbti_EI: value }], once)), fails("invalid-output"));
+    assert.equal(once.length, 1, JSON.stringify(value));
+  }
+  // A re-ask that would start too close to the IPC deadline is skipped.
+  const realNow = Date.now;
+  const late: GenerationRequest[] = [];
+  try {
+    await assert.rejects(() => classifyApiPortraitBatch(config, request(), async (_config, value) => {
+      late.push(value);
+      const now = realNow();
+      Date.now = () => now + 165000;
+      return { text: JSON.stringify({ answers: wrong }) };
+    }), fails("invalid-output"));
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(late.length, 1);
+});
+
 it("rejects invalid batch identity and keeps provider failures visible", async () => {
   const duplicate = request(); duplicate.messages.push({ ...duplicate.messages[0]! });
   const selfTarget = request(); selfTarget.messages[0]!.sender = "SELF";
