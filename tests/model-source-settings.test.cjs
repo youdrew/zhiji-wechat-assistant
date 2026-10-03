@@ -84,7 +84,7 @@ it("shows both deployment paths and keeps the key in a password field", () => {
 });
 
 it("loads the active source and disables local device changes while API is active", async () => {
-  const { ui, byId, cardClasses } = harness(async () => response(apiState));
+  const { ui, byId } = harness(async () => response(apiState));
   await ui.loadModelSource();
   assert.equal(byId("selectModelSource").value, "api");
   assert.equal(byId("modelSourceActive").textContent, "当前 API");
@@ -93,7 +93,23 @@ it("loads the active source and disables local device changes while API is activ
   assert.equal(byId("apiKeySaved").hidden, false);
   assert.equal(byId("selectRuntimeProvider").disabled, true);
   assert.equal(byId("localModelSettings").hidden, true);
-  assert.equal(cardClasses.has("api-source-open"), true);
+});
+
+it("keeps the settings window the same size for local and API sources", async () => {
+  const css = readFileSync(path.join(root, "chatui/style.css"), "utf8");
+  const card = css.match(/(?:^|\n)\.settings-modal-card \{([^}]*)\}/);
+  assert.ok(card, "base settings card rule");
+  assert.match(card[1], /width: min\(650px, calc\(100vw - 32px\)\);/);
+  assert.match(card[1], /height: min\(680px, calc\(100vh - 40px\)\);/);
+  assert.doesNotMatch(css, /\.settings-modal-card\.[\w-]+[^{]*\{[^}]*\b(?:width|height)\s*:/,
+    "no mode or manager class may resize the card");
+  for (const state of [localState, apiState]) {
+    const { ui, byId, cardClasses } = harness(async () => response(state));
+    await ui.loadModelSource();
+    assert.equal(byId("localModelSettings").hidden, state.mode === "api");
+    assert.equal(byId("apiModelSettings").hidden, state.mode !== "api");
+    assert.deepEqual([...cardClasses], [], state.mode);
+  }
 });
 
 it("only offers reuse of a saved key for its original protocol and Base URL", () => {

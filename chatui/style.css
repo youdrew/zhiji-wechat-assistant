@@ -2663,9 +2663,11 @@ body.theme-light .settings-row select {
 .settings-modal-overlay.show {
   display: flex;
 }
+/* One size for every tab, model source and manager: switching 本地部署 / API 接入
+   must not resize the window under the pointer. Long sections scroll inside. */
 .settings-modal-card {
-  width: 520px;
-  height: 420px;
+  width: min(650px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 40px));
   background: #28282a;
   border: 1px solid #3c3c3f;
   border-radius: 8px;
@@ -2673,9 +2675,6 @@ body.theme-light .settings-row select {
   overflow: hidden;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
 }
-.settings-modal-card.account-open { height: min(520px, calc(100vh - 40px)); }
-.settings-modal-card.api-source-open { width: min(650px, calc(100vw - 32px)); height: min(680px, calc(100vh - 40px)); }
-.settings-modal-card.conversation-open { width: min(650px, calc(100vw - 32px)); height: min(680px, calc(100vh - 40px)); }
 .settings-sidebar {
   width: 140px;
   background: #232325;
@@ -3015,7 +3014,7 @@ body.theme-light .inline-intent-row .intent-item.primary { color: #4a4a4c; }
 #apiKeySaved { margin-left: 5px; color: var(--color-green); }
 #apiKeySaved[hidden], #btnClearApiKey[hidden] { display: none; }
 @media (max-width: 580px) {
-  .settings-modal-card, .settings-modal-card.api-source-open { width: calc(100vw - 20px); }
+  .settings-modal-card { width: calc(100vw - 20px); }
   .settings-sidebar { width: 105px; flex: 0 0 105px; }
   .settings-content { padding: 18px 14px; }
   .model-source-choice { flex-direction: column; align-items: flex-end; }

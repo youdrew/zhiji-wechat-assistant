@@ -1065,14 +1065,12 @@ function openConversationManager() {
   if (!byId("settingsModal").classList.contains("show")) byId("btnSettings").click();
   document.querySelector('.settings-tab-btn[data-tab="general"]')?.click();
   byId("conversationManager").hidden = false;
-  byId("settingsModal").querySelector(".settings-modal-card").classList.add("conversation-open");
   text("btnManageConversations", "收起");
   renderConversationManager();
   byId("conversationSearch").focus();
 }
 function closeConversationManager() {
   byId("conversationManager").hidden = true;
-  byId("settingsModal").querySelector(".settings-modal-card").classList.remove("conversation-open");
   text("btnManageConversations", "管理会话");
 }
 async function toggleConversationSelected(user) {
@@ -3725,7 +3723,6 @@ function showModelSourceMode() {
   const isApi = byId("selectModelSource").value === "api";
   byId("localModelSettings").hidden = isApi;
   byId("apiModelSettings").hidden = !isApi;
-  byId("settingsModal").querySelector(".settings-modal-card").classList.toggle("api-source-open", isApi);
   updateModelSourceControls();
 }
 function clearModelList() {
@@ -5158,7 +5155,6 @@ byId("settingsModal").addEventListener("click", event => { if (event.target === 
 byId("btnManageAccounts").addEventListener("click", () => {
   const panel = byId("accountManager");
   panel.hidden = !panel.hidden;
-  byId("settingsModal").querySelector(".settings-modal-card").classList.toggle("account-open", !panel.hidden);
   text("btnManageAccounts", panel.hidden ? "查看账号" : "收起");
   if (!panel.hidden) void loadAccounts();
 });
@@ -5182,8 +5178,6 @@ byId("btnConfirmDeleteAccount").addEventListener("click", () => { void deleteMan
 document.querySelectorAll(".settings-tab-btn").forEach(tab => tab.addEventListener("click", () => {
   document.querySelectorAll(".settings-tab-btn").forEach(node => node.classList.toggle("active", node === tab));
   document.querySelectorAll(".settings-panel").forEach(node => node.classList.toggle("active", node.id === ({ general: "panelGeneral", about: "panelAbout" })[tab.dataset.tab]));
-  byId("settingsModal").querySelector(".settings-modal-card").classList.toggle("account-open", tab.dataset.tab === "general" && !byId("accountManager").hidden);
-  byId("settingsModal").querySelector(".settings-modal-card").classList.toggle("conversation-open", tab.dataset.tab === "general" && !byId("conversationManager").hidden);
   if (tab.dataset.tab === "about") void loadAboutVersion();
 }));
 byId("btnEmoji").addEventListener("click", event => { event.stopPropagation(); byId("emojiPopover").classList.toggle("show"); });
