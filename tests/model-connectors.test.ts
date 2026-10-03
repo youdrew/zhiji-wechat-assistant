@@ -183,6 +183,45 @@ it("uses each SDK's generation format and returns only raw text and usage", asyn
   }
 });
 
+function truncatedFixture(protocol: Protocol): unknown {
+  // Each provider's own "stopped at the output cap" marker, with the cut-off JSON.
+  const text = '{"answers":{"intent_detail_flirt":[0.05,0.05';
+  const fixture = generationFixture(protocol) as Record<string, any>;
+  switch (protocol) {
+    case "responses": return { ...fixture, status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [{ type: "message", role: "assistant", content: [
+        { type: "output_text", text, annotations: [] }] }] };
+    case "chat_completions": return { ...fixture,
+      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "length" }] };
+    case "anthropic": return { ...fixture, content: [{ type: "text", text }], stop_reason: "max_tokens" };
+    case "gemini": return { ...fixture,
+      candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "MAX_TOKENS" }] };
+    case "ollama": return { ...fixture, message: { role: "assistant", content: text },
+      done_reason: "length" };
+  }
+}
+
+it("reports output cut at the provider's cap as truncated, not as a format error", async () => {
+  for (const protocol of Object.keys(configs) as Protocol[]) {
+    let calls = 0;
+    await withMockFetch(() => { calls++; return json(truncatedFixture(protocol)); }, async () => {
+      await assert.rejects(() => generateStructured(configs[protocol], {
+        system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64, jsonMode: true,
+      }), (error: unknown) => {
+        assert.ok(error instanceof ModelConnectorError, protocol);
+        assert.equal(error.code, "output-truncated", protocol);
+        return true;
+      });
+    });
+    assert.equal(calls, 1, protocol);
+  }
+  // The connection probe only needs an answer, so its small cap is not a failure.
+  const probe = await withMockFetch(() => json(truncatedFixture("chat_completions")),
+    () => testConnection(configs.chat_completions));
+  assert.equal(probe.ok, true);
+});
+
 it("connection test sends only a fixed synthetic prompt", async () => {
   const result = await withMockFetch((_url, init) => {
     const body = typeof init?.body === "string" ? init.body : "";

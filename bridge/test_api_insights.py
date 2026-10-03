@@ -1681,6 +1681,22 @@ class ApiInsightTests(unittest.TestCase):
         self.assertEqual(len(calls), 11, "initial call plus ten retries")
         self.assertEqual(failed["progress"]["processed"], 0)
 
+    def test_portrait_reports_truncated_output_by_name_and_retries_it(self):
+        self.activate()
+        calls = []
+        def truncated(*args):
+            calls.append(1)
+            raise RuntimeError("output-truncated")
+        self.analyzer.classify_portrait_batch = truncated
+        with patch("backend_service.API_MODEL_RETRY_SECONDS", .001):
+            self.backend.start_model_portrait("account-a", "friend")
+            failed = self.wait_portrait()
+        self.assertEqual(failed["job"]["status"], "error")
+        self.assertEqual(failed["job"]["error"], "output-truncated",
+                         "a cut-off answer is shown as truncated, not as a format error")
+        self.assertEqual(len(calls), 11, "same bounded retries as other transient model failures")
+        self.assertEqual(failed["progress"]["processed"], 0)
+
     def test_clear_one_api_source_deletes_only_it_and_leaves_it_usable(self):
         first = self.activate()
         self.backend.start_model_insights("account-a", "friend", 1)

@@ -59,7 +59,7 @@ export interface GenerationResult {
 export type ConnectorErrorCode =
   | "invalid-url" | "invalid-request" | "cancelled" | "timeout"
   | "response-too-large" | "context-too-long" | "auth" | "rate-limit" | "unsupported"
-  | "provider-error" | "invalid-output" | "network" | "empty-response";
+  | "provider-error" | "invalid-output" | "network" | "empty-response" | "output-truncated";
 
 export class ModelConnectorError extends Error {
   constructor(
@@ -253,6 +253,12 @@ function errorStatus(error: unknown): number | undefined {
   const value = error as Record<string, unknown>;
   const status = value.status ?? value.statusCode ?? value.status_code;
   return typeof status === "number" && Number.isInteger(status) ? status : undefined;
+}
+
+// A provider that stops at the output cap returns syntactically broken JSON. Report
+// that cut explicitly instead of letting callers misread it as a format error.
+function outputTruncated(): never {
+  throw new ModelConnectorError("output-truncated", "模型输出达到长度上限被截断");
 }
 
 function streamFormatError(error: unknown): boolean {
@@ -487,6 +493,8 @@ export async function generateStructured(
             ...(officialDeepSeekJson ? { reasoning: { effort: "none" as const } } : {}) },
           { signal: request.signal });
         }
+        if ((response as any).status === "incomplete" &&
+            (response as any).incomplete_details?.reason === "max_output_tokens") outputTruncated();
         if (response.output_text) markFirstBody();
         result = { text: response.output_text || "",
           responseId: typeof response.id === "string" ? response.id : undefined,
@@ -532,6 +540,7 @@ export async function generateStructured(
           if (!streamFormat && !streamRejected && !jsonRejected) throw error;
           response = await client.chat.completions.create(params, { signal: request.signal });
         }
+        if ((response.choices[0] as any)?.finish_reason === "length") outputTruncated();
         if (response.choices[0]?.message.content) markFirstBody();
         result = { text: response.choices[0]?.message.content ?? "",
           usage: usage(response.usage?.prompt_tokens, response.usage?.completion_tokens) };
@@ -551,6 +560,7 @@ export async function generateStructured(
         // Anthropic's SDK type requires max_tokens even when a compatible gateway
         // accepts the provider default. Keep the field absent on the wire.
         const response = await client.messages.create(params as any, { signal: request.signal });
+        if (response.stop_reason === "max_tokens") outputTruncated();
         result = { text: response.content.filter((item) => item.type === "text")
           .map((item) => item.text).join("\n"),
           usage: usage(response.usage.input_tokens, response.usage.output_tokens) };
@@ -567,6 +577,7 @@ export async function generateStructured(
             ...(request.maxOutputTokens !== undefined ?
               { maxOutputTokens: request.maxOutputTokens } : {}),
             abortSignal: request.signal } });
+        if (response.candidates?.[0]?.finishReason === "MAX_TOKENS") outputTruncated();
         result = { text: response.text ?? "",
           usage: usage(response.usageMetadata?.promptTokenCount,
             response.usageMetadata?.candidatesTokenCount) };
@@ -583,6 +594,7 @@ export async function generateStructured(
             { role: "user", content: request.prompt }],
           options: { ...(request.maxOutputTokens !== undefined ?
             { num_predict: request.maxOutputTokens } : {}) } });
+        if (response.done_reason === "length") outputTruncated();
         result = { text: response.message?.content ?? "",
           usage: usage(response.prompt_eval_count, response.eval_count) };
         break;
@@ -600,13 +612,18 @@ export async function testConnection(config: ModelConfig): Promise<{
   ok: true; latencyMs: number; model: string;
 }> {
   const start = performance.now();
-  await generateStructured(config, {
-    system: "This is a connection test. Return only a JSON object.",
-    prompt: 'Reply with JSON {"ok":true}.',
-    maxOutputTokens: 128,
-    jsonMode: true,
-    // Keep the probe finite so the settings buttons never stay busy for long.
-    timeoutMs: 15_000,
-  });
+  try {
+    await generateStructured(config, {
+      system: "This is a connection test. Return only a JSON object.",
+      prompt: 'Reply with JSON {"ok":true}.',
+      maxOutputTokens: 128,
+      jsonMode: true,
+      // Keep the probe finite so the settings buttons never stay busy for long.
+      timeoutMs: 15_000,
+    });
+  } catch (error) {
+    // A reasoning model can spend the small probe cap before finishing; it still answered.
+    if (!(error instanceof ModelConnectorError && error.code === "output-truncated")) throw error;
+  }
   return { ok: true, latencyMs: Math.round(performance.now() - start), model: config.model.trim() };
 }

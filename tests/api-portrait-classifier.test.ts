@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { classifyApiPortraitBatch, apiPortraitClassifierWireBudget,
   API_PORTRAIT_CLASSIFIER_QUESTIONS, API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS,
-  API_PORTRAIT_CLASSIFIER_FIXED_CHARACTERS, type ApiPortraitClassifierRequest } from "../electron/api-portrait-classifier";
+  API_PORTRAIT_CLASSIFIER_FIXED_CHARACTERS, API_PORTRAIT_CLASSIFIER_MIN_CONTEXT,
+  API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS, API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS,
+  type ApiPortraitClassifierRequest } from "../electron/api-portrait-classifier";
 import { ANALYSIS_QUESTIONS } from "../electron/laya/options";
 import { PERSONALITY_QUESTIONS, personalityEvidenceFromAnswers } from "../electron/laya/personality";
 import { STYLE_QUESTIONS, styleEvidenceFromAnswers } from "../electron/laya/style";
@@ -346,6 +348,35 @@ it("obeys the Python wire budget without truncating messages or reserving the fi
   assert.equal(calls, 1);
 });
 
+it("leaves room for an answer to every supplied question within the configured context", async () => {
+  // Models often answer all 59 supplied questions, not only the routed subset. A
+  // 2048-token cap cut such answers mid-array and every retry failed the same way.
+  // Each token covers at least one character of this ASCII JSON, so its character
+  // count bounds the tokens of a compact four-decimal answer for any tokenizer.
+  const full = JSON.stringify({ answers: Object.fromEntries(Object.keys(API_PORTRAIT_CLASSIFIER_QUESTIONS)
+    .map(name => [name, options(name).map(() => 0.0123)])) });
+  assert.ok(full.length > 2048, `${full.length}`);
+  for (const contextTokens of [24576, 65536, 1000000]) {
+    let sent: GenerationRequest | undefined;
+    const result = await classifyApiPortraitBatch(config, { ...request(), contextTokens },
+      fake(allChoiceAnswers(), value => { sent = value; }));
+    assert.ok(result.result);
+    assert.ok(sent!.maxOutputTokens! >= full.length,
+      `context ${contextTokens}: cap ${sent!.maxOutputTokens} < ${full.length}-character answer`);
+    assert.ok(sent!.maxOutputTokens! <= API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS);
+  }
+  // At the smallest supported context, a full batch still keeps prompt + output inside it.
+  const contextTokens = API_PORTRAIT_CLASSIFIER_MIN_CONTEXT;
+  const budget = apiPortraitClassifierWireBudget(contextTokens);
+  const base = { id: "i".repeat(150), sender: "OTHER" as const, target: true, text: "" };
+  const text = "字".repeat(budget - (Array.from(JSON.stringify(base)).length + 1));
+  let sent: GenerationRequest | undefined;
+  await classifyApiPortraitBatch(config, { ...request(), contextTokens, messages: [{ ...base, text }] },
+    fake(ordinaryAnswers(), value => { sent = value; }));
+  assert.ok(sent!.maxOutputTokens! >= API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS);
+  assert.ok(API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + budget + sent!.maxOutputTokens! <= contextTokens);
+});
+
 it("rejects invalid batch identity and keeps provider failures visible", async () => {
   const duplicate = request(); duplicate.messages.push({ ...duplicate.messages[0]! });
   const selfTarget = request(); selfTarget.messages[0]!.sender = "SELF";
@@ -355,7 +386,9 @@ it("rejects invalid batch identity and keeps provider failures visible", async (
     await assert.rejects(() => classifyApiPortraitBatch(config, batch,
       fake(ordinaryAnswers(), () => { calls++; })), fails("invalid-request"));
   assert.equal(calls, 0);
-  const failure = new ModelConnectorError("timeout", "synthetic timeout");
-  await assert.rejects(() => classifyApiPortraitBatch(config, request(), async () => { throw failure; }),
-    error => error === failure);
+  for (const code of ["timeout", "output-truncated"] as const) {
+    const failure = new ModelConnectorError(code, "synthetic failure");
+    await assert.rejects(() => classifyApiPortraitBatch(config, request(), async () => { throw failure; }),
+      error => error === failure);
+  }
 });

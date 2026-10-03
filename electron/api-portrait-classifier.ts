@@ -16,10 +16,19 @@ import { toInternal } from "./laya/questions";
 import type { Answer, ChoiceAnswer, Question } from "./laya/types";
 
 export const API_PORTRAIT_CLASSIFIER_VERSION = `api-laya-portrait-v1+${CATALOG_VERSION}+${MBTI_QUESTION_VERSION}+style-v1`;
-export const API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS = 2048;
+// Output cap for the one classification call. Models commonly answer every
+// supplied branch rather than only the routed ones: all 59 questions are 663
+// numbers, ~3K tokens compact and ~4.3K pretty-printed (DeepSeek V3 tokenizer),
+// and reasoning models spend part of the same cap before any JSON appears.
+// 2048 cut such answers mid-array. 8192 is the connector's upper limit.
+export const API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS = 8192;
+// Smallest cap ever requested; the required answer subset (173 numbers) is ~1.2K tokens.
+export const API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS = 2048;
 // Planning estimate, not a provider tokenizer measurement: complete fixed question
-// tree + routing instructions (~8K tokens reserved), then a 2K-token answer budget.
-export const API_PORTRAIT_CLASSIFIER_RESERVED_TOKENS = 10240;
+// tree + routing instructions (~8K tokens reserved), then at least a 2K-token answer.
+export const API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS = 8192;
+export const API_PORTRAIT_CLASSIFIER_RESERVED_TOKENS =
+  API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS;
 export const API_PORTRAIT_CLASSIFIER_MIN_CONTEXT = 12288;
 
 const baseQuestions = { ...ANALYSIS_QUESTIONS, ...PERSONALITY_QUESTIONS, ...STYLE_QUESTIONS };
@@ -111,6 +120,13 @@ const identifier = (value: unknown): value is string => typeof value === "string
   !!value.trim() && charCount(value) <= 200 && !/[\u0000-\u001f\u007f]/u.test(value);
 const nonnegative = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+/** Output cap for one batch: grow into context the batch leaves unused, never past
+ * the configured window. Wire characters stand in as a token upper bound. */
+export function apiPortraitClassifierOutputTokens(contextTokens: number, wireChars: number): number {
+  return Math.min(API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS, Math.max(API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS,
+    contextTokens - API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS - wireChars));
+}
+
 /** Same public-wire character calculation as Python api_portrait_plan. */
 export function apiPortraitClassifierWireBudget(contextTokens: number): number {
   if (!Number.isSafeInteger(contextTokens) || contextTokens < 4096 || contextTokens > 1000000) inputError();
@@ -175,7 +191,8 @@ export async function classifyApiPortraitBatch(config: ModelConfig, request: Api
         ...(message.speaker === undefined ? {} : { speaker: message.speaker }),
         ...(message.time === undefined ? {} : { time: message.time }),
         ...(message.complete === undefined ? {} : { complete: message.complete }) })) }),
-    jsonMode: true, maxOutputTokens: API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS, timeoutMs: 120000,
+    jsonMode: true, maxOutputTokens: apiPortraitClassifierOutputTokens(request.contextTokens, wireChars),
+    timeoutMs: 120000,
   });
   const parsed = portraitJson(response.text);
   if (!object(parsed) || !object(parsed.answers)) outputError();

@@ -3115,6 +3115,7 @@ function renderApiPortrait(data) {
     "portrait-state-invalid": "画像进度校验失败，请清除当前模型的分析缓存后重试",
     "timeout": "模型响应超时", "rate-limit": "接口请求受限",
     "empty-response": "模型未返回内容", "response-too-large": "模型返回内容过长",
+    "output-truncated": "模型输出达到长度上限被截断",
     "auth": "API Key 无效", "network": "网络连接失败",
     "provider-error": "模型服务返回错误",
   };
@@ -3823,6 +3824,7 @@ function modelSourceRequestError(error) {
     network: "无法连接服务", "invalid-url": "地址格式有误",
     "response-too-large": "服务响应过大", "empty-response": "模型未返回内容",
     "provider-error": "模型服务返回错误", "invalid-output": "模型返回格式不正确",
+    "output-truncated": "模型输出达到长度上限被截断",
   };
   if (typeof error?.code === "string" && reasons[error.code]) return reasons[error.code];
   return Number.isInteger(error?.status) ? `HTTP ${error.status}` : "网络或服务错误";
@@ -4282,6 +4284,7 @@ async function fetchApiInsightResults(work) {
       "rate-limit": "接口请求受限", "timeout": "模型响应超时",
       "network": "网络连接失败", "provider-error": "模型服务返回错误",
       "response-too-large": "模型返回内容过长", "empty-response": "模型未返回内容",
+      "output-truncated": "模型输出达到长度上限被截断",
       "unsupported": "当前接口不支持分析", "model-source-changed": "模型来源已切换",
     };
     entry.error = entry.job.status === "error" ? insightErrors[entry.job.error] || "分析失败" : "";

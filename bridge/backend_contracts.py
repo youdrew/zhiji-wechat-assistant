@@ -22,6 +22,7 @@ class ModelSourceUnavailable(RuntimeError):
 MODEL_CONNECTOR_ERRORS = frozenset({
     "invalid-url", "invalid-request", "context-too-long", "auth", "rate-limit", "timeout", "unsupported",
     "network", "provider-error", "invalid-output", "response-too-large", "empty-response",
+    "output-truncated",
 })
 
 
@@ -49,6 +50,7 @@ API_MODEL_RETRY_SECONDS = 5
 API_MODEL_RETRYABLE = frozenset({
     "invalid-output", "invalid-portrait", "timeout",
     "empty-response", "response-too-large", "network", "provider-error", "rate-limit",
+    "output-truncated",
 })
 
 # Message insight calls follow OpenCode's shorter transient-error policy. Format
