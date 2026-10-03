@@ -210,6 +210,8 @@ class Backend:
         self._analyzers[0] = value
 
     def _start_workers(self):
+        while len(self._analyzers) < self.worker_count:
+            self._analyzers.append(NodeAnalysis())
         self.workers = [threading.Thread(target=self._worker, args=(index,), daemon=True)
                         for index in range(len(self._analyzers))]
         for worker in self.workers:
@@ -1299,10 +1301,12 @@ class Backend:
         with self.load_condition:
             count = (self.worker_count if workers is None else
                      max(1, min(MAX_ANALYSIS_WORKERS, int(workers))))
-            if elastic is not None:
-                self.elastic_workers = bool(elastic) and count > 1
+            preferred = self.elastic_workers if elastic is None else bool(elastic)
+            self.elastic_workers = preferred and count > 1
             self.worker_count = count
-            if self.workers:
+            # While paused for an account clear or shutting down, only remember the choice;
+            # _start_workers tops the pool up when the workers come back.
+            if self.workers and not self.closing:
                 for index in range(len(self._analyzers), count):
                     self._analyzers.append(NodeAnalysis())
                     thread = threading.Thread(target=self._worker, args=(index,), daemon=True)
@@ -2114,7 +2118,7 @@ class Backend:
                     current["requested"] = {"mode": "incremental", "limit": None}
                     if key in self.recent_windows and current["status"] == "done":
                         self.recent_windows[key]["background_pending"] = True
-                    elif (key not in self.recent_windows and
+                    elif (not self.batch_engine and key not in self.recent_windows and
                           not self._stored_progress(account, user, version, store)["complete"]):
                         self.priority_recent[key] = max(self.priority_recent.get(key, 0), 80)
                 elif mode == "incremental" and current["requested"]["mode"] == "incremental":
@@ -2123,7 +2127,7 @@ class Backend:
                     current["requested"] = {"mode": "history", "limit": limit}
                     if key in self.recent_windows and current["status"] == "done":
                         self.recent_windows[key]["background_pending"] = True
-                    if limit == "all":
+                    if limit == "all" and not self.batch_engine:
                         self.priority_recent[key] = max(self.priority_recent.get(key, 0), 80)
                 return dict(current)
             job = {"id": uuid.uuid4().hex, "status": "queued", "total": 0, "processed": 0,
@@ -2132,11 +2136,9 @@ class Backend:
             if mode == "recent":
                 self._schedule_recent(key, store, job, (account, workdir), limit, standalone=True)
                 return dict(job)
-            # Newest first: the engine consumes this before scanning history, and it is a
-            # packed pass rather than a per-message window, so it cannot starve the UI.
-            if ((mode == "incremental" and
-                 not self._stored_progress(account, user, version, store)["complete"]) or
-                    (mode == "history" and limit == "all")):
+            if (not self.batch_engine and
+                    ((mode == "incremental" and not self._stored_progress(account, user, version, store)["complete"]) or
+                     (mode == "history" and limit == "all"))):
                 self.priority_recent[key] = 80
             self._enqueue((key, mode, limit, store, job, (account, workdir)))
             return dict(job)
@@ -2810,12 +2812,18 @@ class Backend:
     def _load_monitor(self):
         try:
             while True:
+                # Turning "follow load" off hands the limit back to the fixed count, so the
+                # sampler must stop rather than keep moving it.
                 with self.load_condition:
-                    if self.closing:
+                    if self.closing or not self.elastic_workers:
                         return
-                self._apply_load_sample(self._sample_load())
+                sample = self._sample_load()
                 with self.load_condition:
-                    if self.closing:
+                    if self.closing or not self.elastic_workers:
+                        return
+                self._apply_load_sample(sample)
+                with self.load_condition:
+                    if self.closing or not self.elastic_workers:
                         return
                     self.load_condition.wait(timeout=ELASTIC_SAMPLE_SECONDS)
         finally:
@@ -2829,18 +2837,19 @@ class Backend:
         # Each worker drives its own model process; the property resolves it per thread.
         self._analyzer_ctx.index = index
         while True:
-            if self.elastic_workers:
-                with self.load_condition:
-                    while not self.closing and index >= self.worker_limit:
-                        self.load_condition.wait(timeout=5)
-                if index >= self.worker_limit and index not in self.worker_busy:
-                    self._release_worker(index)
+            # The limit is the elastic level or, with a fixed count, the configured number;
+            # a lowered fixed count must park the extra workers too, not just release them.
+            with self.load_condition:
+                while not self.closing and index >= self.worker_limit:
+                    self.load_condition.wait(timeout=5)
+            if index >= self.worker_limit and index not in self.worker_busy:
+                self._release_worker(index)
             item = self.tasks.get()
             _, _, task = item
             if task is None:
                 self.tasks.task_done()
                 return
-            if self.elastic_workers and not self.closing and index >= self.worker_limit:
+            if not self.closing and index >= self.worker_limit:
                 # The limit can drop while this worker is already blocked on the queue. Hand
                 # the task back so only workers the limit still allows start it, then park at
                 # the top of the loop; without this a zero limit kept starting inferences.

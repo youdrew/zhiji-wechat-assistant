@@ -365,7 +365,7 @@ def make_handler(backend, accounts=None, control_token=None):
                 limit = (None if mode == "incremental" else
                          "all" if mode == "history" and request.get("limit") == "all" else
                          integer(request.get("limit"), 80 if mode == "recent" else 500,
-                                 300 if mode == "recent" else 5000))
+                                 80 if mode == "recent" else 5000))
                 return self.send(202, {"job": backend.start(user, mode, limit,
                                                              expected_account=expected_account)})
             except ForecastRequestError as exc:

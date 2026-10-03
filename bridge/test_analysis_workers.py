@@ -170,5 +170,41 @@ class ElasticWorkerTests(unittest.TestCase):
         self.assertIsNot(second, first)
         backend.closing = True
 
+    def test_a_lowered_fixed_count_parks_the_extra_worker(self):
+        # Without elastic mode the parking branch was skipped, so lowering the fixed count
+        # only released the extra model, which relaunched on the next task.
+        backend = self._elastic_backend(workers=2)
+        backend.elastic_workers = False
+        ran = []
+
+        def run_one(task):
+            # Long enough that an idle second worker would get its turn at the queue.
+            ran.append(backend._analyzer_ctx.index)
+            time.sleep(0.05)
+            backend.tasks.task_done()
+
+        backend._run_one = run_one
+        backend._start_workers()
+        with mock.patch("backend_service.save_worker_settings"):
+            backend.set_worker_settings(1, False)
+        time.sleep(0.3)
+        for number in range(6):
+            backend.tasks.put((1, next(backend.task_serial), (f"session-{number}",)))
+        backend.tasks.join()
+        self.assertEqual(set(ran), {0})
+
+    def test_turning_follow_load_off_stops_the_sampler(self):
+        # A running sampler kept moving the limit after "follow load" was switched off,
+        # overriding the fixed count the user had just chosen.
+        backend = self._elastic_backend(workers=2)
+        backend._start_workers()
+        monitor = backend.load_monitor_thread
+        self.assertIsNotNone(monitor)
+        with mock.patch("backend_service.save_worker_settings"):
+            status = backend.set_worker_settings(2, False)
+        monitor.join(timeout=2)
+        self.assertFalse(monitor.is_alive())
+        self.assertEqual(status["limit"], 2)
+
 if __name__ == "__main__":
     unittest.main()
