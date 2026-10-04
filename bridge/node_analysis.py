@@ -265,7 +265,9 @@ class NodeAnalysis:
                 self.stream_callbacks.pop(request_id, None)
                 raise
             response_timeout = (16 if payload.get("cmd") == "model:list" else
-                                18 if payload.get("cmd") == "model:test" else 180)
+                                18 if payload.get("cmd") == "model:test" else
+                                270 if payload.get("cmd") == "model:portrait" and
+                                payload.get("phase") == "classify" else 180)
             deadline = time.monotonic() + response_timeout
             while request_id not in self.pending and time.monotonic() < deadline and process.poll() is None:
                 self.condition.wait(timeout=1)

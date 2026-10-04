@@ -211,6 +211,23 @@ it("sends an output cap only when the caller sets one, up to 32768", async () =>
   assert.equal(calls, 0);
 });
 
+it("accepts a 240 second timeout and rejects anything longer", async () => {
+  let calls = 0;
+  await withMockFetch(() => {
+    calls++;
+    return json(generationFixture("responses"));
+  }, async () => {
+    const result = await generateStructured(configs.responses, {
+      system: "Return JSON.", prompt: "synthetic prompt", timeoutMs: 240_000,
+    });
+    assert.equal(result.text, '{"ok":true}');
+    await assert.rejects(() => generateStructured(configs.responses, {
+      system: "Return JSON.", prompt: "synthetic prompt", timeoutMs: 240_001,
+    }), (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-request");
+  });
+  assert.equal(calls, 1);
+});
+
 function truncatedFixture(protocol: Protocol): unknown {
   // Each provider's own "stopped at the output cap" marker, with the cut-off JSON.
   const text = '{"answers":{"intent_detail_flirt":[0.05,0.05';

@@ -4,6 +4,7 @@ import { classifyApiPortraitBatch, apiPortraitClassifierWireBudget,
   API_PORTRAIT_CLASSIFIER_QUESTIONS, API_PORTRAIT_CLASSIFIER_OUTPUT_TOKENS,
   API_PORTRAIT_CLASSIFIER_FIXED_CHARACTERS, API_PORTRAIT_CLASSIFIER_MIN_CONTEXT,
   API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS, API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS,
+  API_PORTRAIT_CLASSIFIER_TIMEOUT_MS,
   type ApiPortraitClassifierRequest } from "../electron/api-portrait-classifier";
 import { ANALYSIS_QUESTIONS } from "../electron/laya/options";
 import { PERSONALITY_QUESTIONS, personalityEvidenceFromAnswers } from "../electron/laya/personality";
@@ -97,7 +98,8 @@ it("ships all 59 exact local questions in one API call and never generates a sum
   assert.equal(result.targetCount, 100);
   // No output cap: a thinking model's reasoning shares the cap and used up 8192.
   assert.equal(sent!.maxOutputTokens, undefined);
-  assert.equal(sent!.timeoutMs, 120000);
+  assert.equal(API_PORTRAIT_CLASSIFIER_TIMEOUT_MS, 240000);
+  assert.equal(sent!.timeoutMs, API_PORTRAIT_CLASSIFIER_TIMEOUT_MS);
   assert.equal(sent!.jsonMode, true);
   assert.equal(result.modelCalls, 1);
   assert.doesNotMatch(sent!.system, /0\.65|highest two|rank the broad|routing/u);

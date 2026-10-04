@@ -30,6 +30,8 @@ export const API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS = 8192;
 export const API_PORTRAIT_CLASSIFIER_RESERVED_TOKENS =
   API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + API_PORTRAIT_CLASSIFIER_MIN_OUTPUT_TOKENS;
 export const API_PORTRAIT_CLASSIFIER_MIN_CONTEXT = 12288;
+// A thinking model already spends 70-91s on a short batch, so this call waits 240s.
+export const API_PORTRAIT_CLASSIFIER_TIMEOUT_MS = 240000;
 
 const baseQuestions = { ...ANALYSIS_QUESTIONS, ...PERSONALITY_QUESTIONS, ...STYLE_QUESTIONS };
 const questionEntries: Array<[string, Question]> = Object.entries(baseQuestions);
@@ -201,7 +203,8 @@ export async function classifyApiPortraitBatch(config: ModelConfig, request: Api
       ...(message.complete === undefined ? {} : { complete: message.complete }) })) });
   const maxOutputTokens = config.protocol === "anthropic" ?
     apiPortraitClassifierOutputTokens(request.contextTokens, wireChars) : undefined;
-  const response = await generate(config, { system, prompt, jsonMode: true, maxOutputTokens, timeoutMs: 120000 });
+  const response = await generate(config, { system, prompt, jsonMode: true, maxOutputTokens,
+    timeoutMs: API_PORTRAIT_CLASSIFIER_TIMEOUT_MS });
   const parsed = portraitJson(response.text);
   if (!object(parsed) || !object(parsed.answers)) outputError();
   const rawAnswers: Record<string, unknown> = { ...parsed.answers };

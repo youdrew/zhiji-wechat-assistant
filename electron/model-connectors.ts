@@ -420,7 +420,7 @@ export async function generateStructured(
       (request.jsonMode !== undefined && typeof request.jsonMode !== "boolean") ||
       (request.stream !== undefined && typeof request.stream !== "boolean") ||
       (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) ||
-        request.timeoutMs < 1000 || request.timeoutMs > 120_000)) ||
+        request.timeoutMs < 1000 || request.timeoutMs > 240_000)) ||
       Buffer.byteLength(request.system, "utf8") + Buffer.byteLength(request.prompt, "utf8") > MAX_PROMPT_BYTES) {
     invalid("生成请求超出允许范围");
   }
