@@ -28,7 +28,8 @@ from api_portrait_statistics import (append_batch, profile_from_statistics,
 from backend_contracts import (
     API_INSIGHT_RETRYABLE, API_INSIGHT_RETRY_MAX, API_INSIGHT_RETRY_SECONDS,
     API_JOB_CACHE_LIMIT, API_MODEL_RETRYABLE, API_MODEL_RETRY_MAX,
-    API_MODEL_RETRY_SECONDS, API_PORTRAIT_COUNT_KEYS, API_PORTRAIT_INVENTORY_CACHE_BYTES,
+    API_MODEL_RETRY_SECONDS, API_PORTRAIT_COUNT_KEYS, API_PORTRAIT_FORMAT_ERRORS,
+    API_PORTRAIT_FORMAT_RETRY_MAX, API_PORTRAIT_INVENTORY_CACHE_BYTES,
     API_PORTRAIT_PIECE_CHARS, AccountChangedError, AccountUnavailableError,
     FORECAST_CACHE_LIMIT, FORECAST_SOURCE_WINDOW,
     ForecastRequestError, MAX_ISSUED_IMAGES,
@@ -1842,7 +1843,9 @@ class Backend:
                 wire = context + wire
                 batch_started = time.monotonic()
                 job.update(batchStartedAtMs=int(time.time() * 1000), phase="classifying")
-                for attempt in range(API_MODEL_RETRY_MAX + 1):
+                # Format failures stop after a short retry. Transport failures keep
+                # the longer budget. The loop covers whichever cap is larger.
+                for attempt in range(max(API_MODEL_RETRY_MAX, API_PORTRAIT_FORMAT_RETRY_MAX) + 1):
                     self._assert_scope(scope)
                     self._assert_api_portrait_job(job_key, job, store, config)
                     try:
@@ -1861,11 +1864,13 @@ class Backend:
                             raise RuntimeError("invalid-portrait") from exc
                     except Exception as exc:
                         code = str(exc)
-                        if attempt >= API_MODEL_RETRY_MAX or code not in API_MODEL_RETRYABLE:
+                        retry_max = (API_PORTRAIT_FORMAT_RETRY_MAX if code in API_PORTRAIT_FORMAT_ERRORS
+                                     else API_MODEL_RETRY_MAX)
+                        if attempt >= retry_max or code not in API_MODEL_RETRYABLE:
                             raise
                         self._assert_scope(scope)
                         self._wait_api_model_retry(self.api_portrait_jobs, job_key, job,
-                                                   store, code, attempt + 1)
+                                                   store, code, attempt + 1, retry_max=retry_max)
                         continue
                     break
                 # Local coverage/state faults cannot be fixed by regenerating the

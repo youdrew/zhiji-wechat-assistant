@@ -1429,7 +1429,8 @@ class ApiInsightTests(unittest.TestCase):
     def test_api_portrait_requires_classification_signal_instead_of_free_axis_numbers(self):
         self.activate()
         self.analyzer.classify_portrait_batch=lambda *args: {"mbtiAxes":{"EI":90,"SN":90,"TF":90,"JP":90}}
-        with patch("backend_service.API_MODEL_RETRY_MAX",0):
+        with (patch("backend_service.API_MODEL_RETRY_MAX", 0),
+              patch("backend_service.API_PORTRAIT_FORMAT_RETRY_MAX", 0)):
             self.backend.start_model_portrait("account-a","friend")
             done=self.wait_portrait()
         self.assertEqual(done["job"]["status"],"error")
@@ -1666,7 +1667,7 @@ class ApiInsightTests(unittest.TestCase):
         self.assertEqual((saved["batchIndex"], saved["processed"], saved["complete"]),
                          (0, 0, False), "retry cancellation must leave the cursor unadvanced")
 
-    def test_portrait_stops_after_ten_spaced_retries_without_advancing_checkpoint(self):
+    def test_portrait_stops_format_failure_after_two_retries_without_advancing_checkpoint(self):
         self.activate()
         calls = []
         def invalid(*args):
@@ -1678,7 +1679,7 @@ class ApiInsightTests(unittest.TestCase):
             failed = self.wait_portrait()
         self.assertEqual(failed["job"]["status"], "error")
         self.assertEqual(failed["job"]["error"], "invalid-output")
-        self.assertEqual(len(calls), 11, "initial call plus ten retries")
+        self.assertEqual(len(calls), 3, "initial call plus two format retries")
         self.assertEqual(failed["progress"]["processed"], 0)
 
     def test_portrait_reports_truncated_output_by_name_and_retries_it(self):
@@ -1693,9 +1694,39 @@ class ApiInsightTests(unittest.TestCase):
             failed = self.wait_portrait()
         self.assertEqual(failed["job"]["status"], "error")
         self.assertEqual(failed["job"]["error"], "output-truncated",
-                         "a cut-off answer is shown as truncated, not as a format error")
-        self.assertEqual(len(calls), 11, "same bounded retries as other transient model failures")
+                         "a cut-off answer is shown as truncated, not renamed")
+        self.assertEqual(len(calls), 3, "a truncated portrait is retried twice")
         self.assertEqual(failed["progress"]["processed"], 0)
+
+    def test_portrait_invalid_portrait_stops_after_two_retries(self):
+        self.activate()
+        calls = []
+        def invalid(*args):
+            calls.append(1)
+            raise RuntimeError("invalid-portrait")
+        self.analyzer.classify_portrait_batch = invalid
+        with patch("backend_service.API_MODEL_RETRY_SECONDS", .001):
+            self.backend.start_model_portrait("account-a", "friend")
+            failed = self.wait_portrait()
+        self.assertEqual(failed["job"]["status"], "error")
+        self.assertEqual(failed["job"]["error"], "invalid-portrait")
+        self.assertEqual(len(calls), 3, "invalid-portrait uses the format retry cap")
+        self.assertEqual(failed["progress"]["processed"], 0)
+
+    def test_portrait_transport_failure_keeps_ten_retries(self):
+        self.activate()
+        calls = []
+        def failed(*args):
+            calls.append(1)
+            raise RuntimeError("timeout")
+        self.analyzer.classify_portrait_batch = failed
+        with patch("backend_service.API_MODEL_RETRY_SECONDS", .001):
+            self.backend.start_model_portrait("account-a", "friend")
+            failed_job = self.wait_portrait()
+        self.assertEqual(failed_job["job"]["status"], "error")
+        self.assertEqual(failed_job["job"]["error"], "timeout")
+        self.assertEqual(len(calls), 11, "transport failures keep the longer retry budget")
+        self.assertEqual(failed_job["progress"]["processed"], 0)
 
     def test_clear_one_api_source_deletes_only_it_and_leaves_it_usable(self):
         first = self.activate()

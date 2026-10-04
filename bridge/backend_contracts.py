@@ -53,6 +53,14 @@ API_MODEL_RETRYABLE = frozenset({
     "output-truncated",
 })
 
+
+# The same portrait prompt rarely repairs a format failure on a later identical call.
+API_PORTRAIT_FORMAT_RETRY_MAX = 2
+
+
+API_PORTRAIT_FORMAT_ERRORS = frozenset({"invalid-output", "invalid-portrait", "output-truncated"})
+
+
 # Message insight calls follow OpenCode's shorter transient-error policy. Format
 # and provider-parameter failures terminate immediately instead of looping.
 API_INSIGHT_RETRY_MAX = 5
