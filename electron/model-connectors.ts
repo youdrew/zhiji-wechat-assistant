@@ -620,13 +620,15 @@ export async function testConnection(config: ModelConfig): Promise<{
     await generateStructured(config, {
       system: "This is a connection test. Return only a JSON object.",
       prompt: 'Reply with JSON {"ok":true}.',
-      maxOutputTokens: 128,
       jsonMode: true,
-      // Keep the probe finite so the settings buttons never stay busy for long.
+      // Anthropic requires max_tokens. 128 is enough for this probe's JSON.
+      // Other protocols send no cap: a small cap is spent by reasoning before
+      // any JSON appears. The timeout keeps the settings buttons from staying busy.
+      ...(config.protocol === "anthropic" ? { maxOutputTokens: 128 } : {}),
       timeoutMs: 15_000,
     });
   } catch (error) {
-    // A reasoning model can spend the small probe cap before finishing; it still answered.
+    // A gateway can still cut the reply at its own default cap. The endpoint answered.
     if (!(error instanceof ModelConnectorError && error.code === "output-truncated")) throw error;
   }
   return { ok: true, latencyMs: Math.round(performance.now() - start), model: config.model.trim() };

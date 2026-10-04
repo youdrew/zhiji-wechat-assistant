@@ -244,21 +244,30 @@ it("reports output cut at the provider's cap as truncated, not as a format error
     });
     assert.equal(calls, 1, protocol);
   }
-  // The connection probe only needs an answer, so its small cap is not a failure.
-  const probe = await withMockFetch(() => json(truncatedFixture("chat_completions")),
-    () => testConnection(configs.chat_completions));
-  assert.equal(probe.ok, true);
+  // A gateway that cuts the reply is not a connection failure, including Anthropic's small probe cap.
+  for (const protocol of ["chat_completions", "anthropic"] as const) {
+    const probe = await withMockFetch(() => json(truncatedFixture(protocol)),
+      () => testConnection(configs[protocol]));
+    assert.equal(probe.ok, true, protocol);
+  }
 });
 
-it("connection test sends only a fixed synthetic prompt", async () => {
-  const result = await withMockFetch((_url, init) => {
-    const body = typeof init?.body === "string" ? init.body : "";
-    assert.match(body, /Reply with JSON/u);
-    assert.doesNotMatch(body, /private chat/u);
-    return json(generationFixture("chat_completions"));
-  }, () => testConnection(configs.chat_completions));
-  assert.deepEqual({ ok: result.ok, model: result.model }, { ok: true, model: "test-model" });
-  assert.ok(result.latencyMs >= 0);
+it("connection test sends a fixed synthetic prompt, and only Anthropic sets a small output cap", async () => {
+  const capFields = ["max_output_tokens", "max_tokens", "maxOutputTokens", "num_predict"];
+  const capsOf = (body: any): unknown[] => [body, body.generationConfig, body.options]
+    .flatMap(part => part ? capFields.filter(key => key in part).map(key => part[key]) : []);
+  for (const protocol of Object.keys(configs) as Protocol[]) {
+    const result = await withMockFetch((_url, init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      assert.match(body, /Reply with JSON/u, protocol);
+      assert.doesNotMatch(body, /private chat/u, protocol);
+      assert.deepEqual(capsOf(JSON.parse(body)), protocol === "anthropic" ? [128] : [], protocol);
+      return json(generationFixture(protocol));
+    }, () => testConnection(configs[protocol]));
+    assert.equal(result.ok, true, protocol);
+    assert.equal(result.model, "test-model", protocol);
+    assert.ok(result.latencyMs >= 0);
+  }
 });
 
 it("keeps official DeepSeek structured requests out of default thinking mode", async () => {
