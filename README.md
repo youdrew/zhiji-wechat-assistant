@@ -162,7 +162,7 @@ WechatVibe 只读读取本机已登录的 Windows 微信，分析聊天中的情
 <details>
 <summary>启动时提示「本地服务未就绪」或无法打开</summary>
 
-下载 [WechatVibe-diagnose.bat](https://github.com/tswawa/WechatVibe/releases/download/v1.2.3/WechatVibe-diagnose.bat)，放到 `WechatVibe.exe` 所在目录后双击运行。它会检查文件、运行环境和启动错误并生成报告；不启动应用或模型，不读取聊天数据库和 API Key，也不会自动上传。详见[启动诊断说明](docs/startup-diagnostics.md)。
+下载 [WechatVibe-diagnose.bat](https://github.com/tswawa/WechatVibe/releases/download/v1.2.4/WechatVibe-diagnose.bat)，放到 `WechatVibe.exe` 所在目录后双击运行。它会检查文件、运行环境和启动错误并生成报告；不启动应用或模型，不读取聊天数据库和 API Key，也不会自动上传。详见[启动诊断说明](docs/startup-diagnostics.md)。
 
 </details>
 
@@ -286,6 +286,7 @@ WechatVibe 为独立项目，与腾讯、微信没有官方隶属、合作或背
 - 感谢 [morticuke](https://github.com/morticuke) 在 [Issue #5](https://github.com/tswawa/WechatVibe/issues/5) 中提供 Windows MIME 映射异常的排查过程和修复建议。
 - 感谢 [Dl1447（Geekline）](https://github.com/Dl1447) 通过 [PR #12](https://github.com/tswawa/WechatVibe/pull/12) 修复选中首个会话后无法继续添加会话的问题。
 - 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #13](https://github.com/tswawa/WechatVibe/pull/13) 改进 API 消息标签的批量结果对应。
+- 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #10](https://github.com/tswawa/WechatVibe/pull/10)、[PR #18](https://github.com/tswawa/WechatVibe/pull/18)、[PR #19](https://github.com/tswawa/WechatVibe/pull/19)、[PR #20](https://github.com/tswawa/WechatVibe/pull/20) 和 [PR #21](https://github.com/tswawa/WechatVibe/pull/21) 加入本地多路并行分析、过滤服务号与系统会话、一键添加全部会话、只读的整账号分析进度与耗时，以及后台分析开关。
 - 感谢 [Ch1cken-1145（Ch1cken_#）](https://github.com/Ch1cken-1145) 通过 [PR #16](https://github.com/tswawa/WechatVibe/pull/16) 加入手动设置微信聊天记录路径的功能。
 - 感谢 [LianYu-Ya](https://github.com/LianYu-Ya) 在 [Issue #14](https://github.com/tswawa/WechatVibe/issues/14) 中反馈自部署模型批量标签格式错误、只返回一条的问题。
 
