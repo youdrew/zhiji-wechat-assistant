@@ -211,6 +211,8 @@ function showStartup(stage, message, options = {}) {
 function unlockStartupUi() {
   byId("startupOverlay").hidden = true;
   byId("appWindow").removeAttribute("inert");
+  // The scheduler lives with the update flow. A startup slice can run this alone.
+  if (typeof scheduleBackgroundUpdateChecks === "function") scheduleBackgroundUpdateChecks();
 }
 function completeStartup() {
   accountCheckStatus(chatState.preloadTotal ? `聊天记录就绪 ${chatState.preloadDone}/${chatState.preloadTotal}` : "微信账号已就绪");
@@ -4909,6 +4911,9 @@ byId("btnActivateApi").addEventListener("click", () => { void activateModelSourc
 byId("btnClearApiKey").addEventListener("click", () => { void clearStoredApiKey(); });
 const OFFICIAL_RELEASES_URL = "https://github.com/tswawa/WechatVibe/releases";
 const UPDATE_BUSY_PHASES = new Set(["downloading", "verifying", "extracting", "installing", "restarting"]);
+const UPDATE_BACKGROUND_CHECK_DELAY_MS = 10_000;
+const UPDATE_BACKGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let updateBackgroundChecksScheduled = false;
 let aboutVersionPromise = null;
 let versionLoadFailed = false;
 let updateState = { phase: "idle" };
@@ -5028,6 +5033,14 @@ function renderUpdateState() {
   byId("btnBeginUpdate").hidden = !canBegin;
   byId("btnBeginUpdate").disabled = updateCheckPending || updateActionPending;
   text("btnBeginUpdate", phase === "ready" ? "立即安装" : "下载并安装");
+
+  const notice = byId("btnUpdateNotice");
+  const showNotice = phase === "available" || phase === "ready" || UPDATE_BUSY_PHASES.has(phase);
+  const noticeLabel = latest ? `更新 ${latest}` : "更新";
+  notice.hidden = !showNotice;
+  notice.title = noticeLabel;
+  notice.setAttribute("aria-label", noticeLabel);
+  notice.textContent = "更新";
 }
 function applyUpdateState(next) {
   if (!updatePhase(next)) return false;
@@ -5037,22 +5050,34 @@ function applyUpdateState(next) {
   renderUpdateState();
   return true;
 }
-async function checkForUpdates() {
+async function checkForUpdates(quiet = false) {
   if (updateCheckPending || updateActionPending || typeof window.desktopHost?.checkForUpdates !== "function" ||
       UPDATE_BUSY_PHASES.has(updatePhase(updateState))) return;
-  updateCheckedOnce = true;
+  // A quiet check publishes only a definitive result. A miss leaves the first modal check unused.
+  if (!quiet) updateCheckedOnce = true;
   updateCheckPending = true;
   renderUpdateState();
   const before = updateStateSequence;
   try {
     const result = await window.desktopHost.checkForUpdates();
-    if (before === updateStateSequence) applyUpdateState(result);
+    const phase = updatePhase(result);
+    const applicable = !quiet || ["available", "ready", "current", "preview-current"].includes(phase);
+    if (applicable && before === updateStateSequence && applyUpdateState(result)) updateCheckedOnce = true;
   } catch {
-    if (before === updateStateSequence) applyUpdateState({ phase: "server-error" });
+    // A background check must not surface a failure the user did not ask about.
+    if (!quiet && before === updateStateSequence) applyUpdateState({ phase: "server-error" });
   } finally {
     updateCheckPending = false;
     renderUpdateState();
   }
+}
+function scheduleBackgroundUpdateChecks() {
+  if (updateBackgroundChecksScheduled || typeof window.desktopHost?.checkForUpdates !== "function") return;
+  updateBackgroundChecksScheduled = true;
+  setTimeout(() => {
+    void checkForUpdates(true);
+    setInterval(() => { void checkForUpdates(true); }, UPDATE_BACKGROUND_CHECK_INTERVAL_MS);
+  }, UPDATE_BACKGROUND_CHECK_DELAY_MS);
 }
 async function refreshUpdateState() {
   if (typeof window.desktopHost?.getUpdateState === "function") {
@@ -5130,6 +5155,11 @@ byId("btnSettings").addEventListener("click", () => {
   void loadDataRoot();
   if (typeof window.desktopHost?.getModelDownloadState === "function")
     void window.desktopHost.getModelDownloadState().then(showLocalModelDownload);
+});
+byId("btnUpdateNotice").addEventListener("click", () => {
+  byId("btnSettings").click();
+  document.querySelector('.settings-tab-btn[data-tab="about"]')?.click();
+  openUpdateModal();
 });
 byId("btnAddConversation").addEventListener("click", openConversationManager);
 byId("btnManageConversations").addEventListener("click", () => {
@@ -5313,6 +5343,7 @@ if (updateValidationMode) {
   }).catch(() => {});
 } else {
   void startInitialLoad();
+  scheduleBackgroundUpdateChecks();
 }
 if (!updateValidationMode) {
   void loadModelSource();

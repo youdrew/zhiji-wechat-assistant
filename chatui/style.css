@@ -253,6 +253,36 @@ body {
   align-items: center;
   gap: 18px;
 }
+.nav-update-notice {
+  width: 36px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #929294;
+  font: inherit;
+  font-size: 12px;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  appearance: none;
+}
+.nav-update-notice:hover {
+  color: #d1d1d1;
+  background-color: var(--bg-rail-hover);
+}
+body.theme-light .nav-update-notice {
+  color: #5d6c75;
+}
+body.theme-light .nav-update-notice:hover {
+  color: var(--text-main);
+  background-color: var(--bg-rail-hover);
+}
+.nav-update-notice:focus-visible {
+  outline: 2px solid var(--color-green);
+  outline-offset: 2px;
+}
 
 /* ========================================================
    COLUMN 2: Middle Session List (270px)
