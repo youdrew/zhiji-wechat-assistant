@@ -83,6 +83,7 @@ it("ships all 59 exact local questions in one API call and never generates a sum
   }));
   assert.equal(calls, 1);
   const contract = JSON.parse(sent!.system.split("LOCAL_QUESTION_CONTRACT:\n")[1]!);
+  assert.deepEqual(Object.keys(contract).sort(), ["instructions", "questions"]);
   for (const [name, question] of Object.entries(expected)) {
     const local = toInternal(question);
     assert.equal(local.t, "choice");
@@ -96,8 +97,11 @@ it("ships all 59 exact local questions in one API call and never generates a sum
   assert.equal(result.targetCount, 100);
   // No output cap: a thinking model's reasoning shares the cap and used up 8192.
   assert.equal(sent!.maxOutputTokens, undefined);
+  assert.equal(sent!.timeoutMs, 120000);
   assert.equal(sent!.jsonMode, true);
-  assert.doesNotMatch(sent!.system, /0\.65|Multiply each group's/u);
+  assert.equal(result.modelCalls, 1);
+  assert.doesNotMatch(sent!.system, /0\.65|highest two|rank the broad|routing/u);
+  assert.match(sent!.system, /score maps/u);
   assert.ok(API_PORTRAIT_CLASSIFIER_FIXED_CHARACTERS < 26000);
   assert.equal(result.usage?.inputTokens, 20);
   assert.equal(Object.hasOwn(result.result!, "affinity"), false);
@@ -126,10 +130,12 @@ it("reuses local routed weighting, relationship weights, style and personality c
   });
   const result = (await classifyApiPortraitBatch(config, request(), fake(answers))).result!;
   const localAnswers: Record<string, Answer> = Object.fromEntries(Object.entries(answers).map(([name, values]) => {
-    const probabilities = Object.fromEntries(options(name).map((label, index) => [label, values[index]!]));
-    const highest = Math.max(...values);
-    return [name, { type: "choice", choice: options(name)[values.indexOf(highest)]!,
-      probabilities, confidence: highest, action: { act_probability: 1 } }];
+    const weights = values.map(value => value > 0 ? value : 0);
+    const total = weights.reduce((sum, value) => sum + value, 0);
+    const probabilities = Object.fromEntries(options(name).map((label, index) => [label, weights[index]! / total]));
+    const choice = options(name).reduce((best, label) => probabilities[label]! > probabilities[best]! ? label : best);
+    return [name, { type: "choice", choice, probabilities, confidence: probabilities[choice]!,
+      action: { act_probability: 1 } }];
   }));
   const predict = async (questions: Record<string, Question>) => Object.fromEntries(
     Object.entries(questions).map(([name, question]) => {
@@ -199,27 +205,32 @@ it("preserves TARGET/BACKGROUND and counts completed targets independently from 
   ] }, fake(ordinaryAnswers(), () => { calls++; }));
   assert.equal(calls, 0);
   assert.equal(background.result, null);
+  assert.equal(background.modelCalls, 0);
   assert.equal(background.targetCount, 0);
 });
 
-it("rejects invalid probability output and missing routed answers without fabricating zero scores", async () => {
+it("rejects a missing or all-zero base question and unusable JSON", async () => {
   for (const edit of [
     (answer: Record<string, unknown>) => { delete answer.mbti_scope; },
-    (answer: Record<string, unknown>) => { delete answer.intent_detail_greeting; },
     (answer: Record<string, unknown>) => { answer.mbti_EI = [0, 0, 0]; },
-    (answer: Record<string, unknown>) => { answer.mbti_EI = [0.2, 0.2, 0.2]; },
-    (answer: Record<string, unknown>) => { answer.mbti_EI = [0, 65, 35]; },
+    (answer: Record<string, unknown>) => { answer.mbti_EI = { "not an option": 80 }; },
     (answer: Record<string, unknown>) => { answer.mbti_EI = [0, true, 0]; },
-    (answer: Record<string, unknown>) => { answer.mbti_EI = [0, "1", 0]; },
-    (answer: Record<string, unknown>) => { answer.mbti_EI = [0, -0.2, 1.2]; },
     (answer: Record<string, unknown>) => { answer.mbti_EI = [0, 1]; },
-    (answer: Record<string, unknown>) => { answer.mbti_EI = [0, null, 1]; },
+    (answer: Record<string, unknown>) => { answer.relationship = []; },
+    (answer: Record<string, unknown>) => { answer.relationship = 1; },
   ]) {
     const answers: Record<string, unknown> = ordinaryAnswers(); edit(answers);
-    await assert.rejects(() => classifyApiPortraitBatch(config, request(), fake(answers)), fails("invalid-output"));
+    let calls = 0;
+    await assert.rejects(() => classifyApiPortraitBatch(config, request(),
+      fake(answers, () => { calls++; })), fails("invalid-output"));
+    assert.equal(calls, 1, JSON.stringify(answers.mbti_EI ?? answers.relationship));
   }
-  await assert.rejects(() => classifyApiPortraitBatch(config, request(), async () => ({
-    text: JSON.stringify({ affinity: 90, mbtiAxes: { EI: 80, SN: 80, TF: 80, JP: 80 } }) })), fails("invalid-output"));
+  let calls = 0;
+  await assert.rejects(() => classifyApiPortraitBatch(config, request(), async () => {
+    calls++;
+    return { text: JSON.stringify({ affinity: 90, mbtiAxes: { EI: 80, SN: 80, TF: 80, JP: 80 } }) };
+  }), fails("invalid-output"));
+  assert.equal(calls, 1);
 });
 
 it("allows bounded decimal rounding but still applies local uncertainty comparisons", async () => {
@@ -246,19 +257,26 @@ it("permits cumulative decimal rounding for a 26-option routed question", async 
   assert.ok(result.intent.every(value => Math.abs(value.probability - 1 / 26) < 1e-12));
 });
 
-it("requests no extra model calls for routing and requires only branches selected at the local threshold", async () => {
-  const answers = ordinaryAnswers();
+it("requests no extra model calls and skips an unusable branch the threshold opens", async () => {
+  const answers: Record<string, unknown> = ordinaryAnswers();
   answers.emotion = distribution("emotion", { happy: 0.65, sad: 0.35 });
   answers.intent = distribution("intent", { "small talk": 0.65, "share news": 0.35 });
   answers.emotion_detail_sad = [99]; // Unused branches do not invalidate usable answers.
   answers.intent_group_share_news = [99];
   let calls = 0;
-  await classifyApiPortraitBatch(config, request(), fake(answers, () => { calls++; }));
+  const happy = new Set<string>(EMOTION_BUCKETS.happy);
+  const narrow = (await classifyApiPortraitBatch(config, request(), fake(answers, () => { calls++; }))).result!;
   assert.equal(calls, 1);
+  assert.equal(narrow.emotion.some(score => !happy.has(score.rawLabel)), false);
   answers.emotion = distribution("emotion", { happy: 0.649, sad: 0.351 });
+  const opened = (await classifyApiPortraitBatch(config, request(), fake(answers, () => { calls++; }))).result!;
+  assert.equal(calls, 2, "one request per invocation, never a hidden branch-generation request");
+  assert.equal(opened.emotion.some(score => !happy.has(score.rawLabel)), false);
+  assert.ok(opened.emotion.some(score => happy.has(score.rawLabel) && score.probability > 0));
+  delete answers.emotion_detail_happy;
   await assert.rejects(() => classifyApiPortraitBatch(config, request(), fake(answers, () => { calls++; })),
     fails("invalid-output"));
-  assert.equal(calls, 2, "one request per invocation, never a hidden branch-generation request");
+  assert.equal(calls, 3);
 });
 
 it("supplies both dominant-family leaves while safely ignoring the second family's extra answers", async () => {
@@ -389,19 +407,6 @@ it("sends no output cap, and on Anthropic leaves room for every supplied answer"
   assert.ok(API_PORTRAIT_CLASSIFIER_PROMPT_TOKENS + budget + sent!.maxOutputTokens! <= contextTokens);
 });
 
-/** Scripted provider: one answer object per call, recording each request. */
-function scripted(replies: Array<Record<string, unknown>>, sent: GenerationRequest[]) {
-  return async (_config: ModelConfig, value: GenerationRequest) => {
-    sent.push(value);
-    const answers = replies[Math.min(sent.length, replies.length) - 1];
-    return { text: JSON.stringify({ answers }), usage: { inputTokens: 100 * sent.length, outputTokens: 10 * sent.length } };
-  };
-}
-const reasked = (value: GenerationRequest) => {
-  const marker = "EXPECTED_VALUE_COUNTS:\n";
-  return value.system.includes(marker) ?
-    JSON.parse(value.system.split(marker)[1]!.split("\nREASK_OPTIONS:\n")[0]!) as Record<string, number> : null;
-};
 /** Two routed families, so both base and routed answers are exercised. */
 function routedAnswers(): Record<string, number[]> {
   const answers = ordinaryAnswers();
@@ -416,103 +421,102 @@ function routedAnswers(): Record<string, number[]> {
   return answers;
 }
 
-it("re-asks only miscounted answers, keeps the counted ones and merges the result", async () => {
-  const good = routedAnswers();
-  const expected = (await classifyApiPortraitBatch(config, request(), fake(good))).result;
-  const first: Record<string, unknown> = { ...good,
-    mbti_EI: good.mbti_EI!.slice(1), // base question, one value short
-    intent_detail_conversation: [...good.intent_detail_conversation!, 0], // routed leaf, one extra
-    emotion_detail_sad: [0.5, 0.5] }; // routed emotion branch, 2 values for 6 options
-  const sent: GenerationRequest[] = [];
-  // A label map in any key order is put back in option order.
-  const labelled = (name: string) => Object.fromEntries(options(name)
-    .map((label, index) => [label, good[name]![index]]).reverse());
-  const result = await classifyApiPortraitBatch(config, request(), scripted([first, {
-    mbti_EI: labelled("mbti_EI"), intent_detail_conversation: labelled("intent_detail_conversation"),
-    emotion_detail_sad: good.emotion_detail_sad,
-    relationship: distribution("relationship", 0), // never asked: must not replace the accepted answer
-  }], sent));
-  assert.equal(sent.length, 2);
-  assert.equal(reasked(sent[0]!), null);
-  assert.deepEqual(reasked(sent[1]!), { mbti_EI: 3, emotion_detail_sad: 6,
-    intent_detail_conversation: options("intent_detail_conversation").length });
-  // Same question contract and same chat, within the same output budget.
-  assert.ok(sent[1]!.system.startsWith(sent[0]!.system));
-  assert.equal(sent[1]!.prompt, sent[0]!.prompt);
-  assert.equal(sent[1]!.maxOutputTokens, sent[0]!.maxOutputTokens);
-  assert.ok(sent[1]!.timeoutMs! <= 120000);
-  assert.deepEqual(JSON.parse(sent[1]!.system.split("\nREASK_OPTIONS:\n")[1]!).mbti_EI, options("mbti_EI"));
-  assert.deepEqual(result.result, expected);
-  assert.equal(result.modelCalls, 2);
-  assert.deepEqual(result.usage, { inputTokens: 300, outputTokens: 30 }, "usage covers both calls");
+it("normalizes relative scores, and an exact-length array matches the same ratios", async () => {
+  const arrays = ordinaryAnswers();
+  arrays.emotion = distribution("emotion", { happy: 0.5, sad: 0.5 });
+  arrays.emotion_detail_happy = distribution("emotion_detail_happy", { happy: 0.25, excited: 0.75 });
+  arrays.emotion_detail_sad = distribution("emotion_detail_sad", { sad: 0.5, lonely: 0.5 });
+  arrays.relationship = distribution("relationship", { warm: 0.75, neutral: 0.25 });
+  const maps: Record<string, unknown> = Object.fromEntries(Object.entries(arrays).map(([name, values]) =>
+    [name, Object.fromEntries(options(name).map((label, index) => [label, values[index]! * 100]))]));
+  // 20+20 is not 100. The unknown key and the omitted labels must not change the ratios.
+  maps.emotion = { " Happy ": 20, SAD: 20, "not an emotion": 999 };
+  maps.relationship = { warm: 30, neutral: 10, "not a signal": 500 };
+  let calls = 0;
+  const fromArrays = await classifyApiPortraitBatch(config, request(), fake(arrays, () => { calls++; }));
+  const fromMaps = await classifyApiPortraitBatch(config, request(), fake(maps, () => { calls++; }));
+  assert.equal(calls, 2);
+  assert.equal(fromArrays.modelCalls, 1);
+  assert.equal(fromMaps.modelCalls, 1);
+  assert.deepEqual(fromMaps.result, fromArrays.result);
+  assert.equal(fromMaps.usage?.outputTokens, 10);
 });
 
-it("routes a re-asked answer with the unchanged local routing before asking for its branches", async () => {
-  const good = routedAnswers();
-  const expected = (await classifyApiPortraitBatch(config, request(), fake(good))).result;
-  // The broad intent is miscounted, so no intent branch can be chosen yet; the
-  // re-asked broad answer then selects a family whose leaf is miscounted too.
-  const first: Record<string, unknown> = { ...good, intent: [0.6, 0.4],
-    intent_detail_sharing: good.intent_detail_sharing!.slice(1) };
-  const sent: GenerationRequest[] = [];
-  const result = await classifyApiPortraitBatch(config, request(), scripted([first,
-    { intent: good.intent }, { intent_detail_sharing: good.intent_detail_sharing }], sent));
-  assert.deepEqual(sent.map(reasked), [null, { intent: options("intent").length },
-    { intent_detail_sharing: options("intent_detail_sharing").length }]);
-  assert.deepEqual(result.result, expected);
-  assert.equal(result.modelCalls, 3);
+it("accepts loose labels and numeric strings, and ignores negative or NaN weights", async () => {
+  const arrays: Record<string, unknown> = ordinaryAnswers();
+  arrays.mbti_scope = [0, "4"];
+  arrays.mbti_EI = ["0", -3, "80"];
+  const maps: Record<string, unknown> = ordinaryAnswers();
+  maps.mbti_scope = { " No Enduring Preference Stated ": "0",
+    "SENDER STATES A RECURRING PERSONAL PREFERENCE": "4", extra: 9 };
+  maps.mbti_EI = { "no stated energy preference": "NaN",
+    " outward interaction restores energy ": -3,
+    "Inward Reflection Restores Energy": "80", bonus: null };
+  const fromArrays = (await classifyApiPortraitBatch(config, request(), fake(arrays))).result!;
+  const fromMaps = (await classifyApiPortraitBatch(config, request(), fake(maps))).result!;
+  assert.deepEqual(fromArrays.personalityEvidence!.EI, { E: 0, I: 1, insufficient: 0 });
+  assert.deepEqual(fromMaps.personalityEvidence, fromArrays.personalityEvidence);
+});
 
-  // A re-asked group answer decides which leaf the local routing asks for.
-  const regrouped: Record<string, unknown> = { ...good, intent_group_small_talk: [1] };
-  delete regrouped.intent_detail_conversation; // the corrected routing must not ask for it
-  const greeting = { ...regrouped, intent_detail_greeting: distribution("intent_detail_greeting", 0) };
-  const sentAgain: GenerationRequest[] = [];
-  const rerouted = await classifyApiPortraitBatch(config, request(), scripted([greeting,
-    { intent_group_small_talk: [0.9, 0.1, 0] }], sentAgain));
-  assert.deepEqual(sentAgain.map(reasked), [null, { intent_group_small_talk: 3 }]);
+it("skips a missing conditional branch and keeps the other scores in one call", async () => {
+  const good = routedAnswers();
+  const expected = (await classifyApiPortraitBatch(config, request(), fake(good))).result!;
   const groupOf = (id: string) => INTENTS.find(intent => intent.id === id)?.group;
-  assert.equal(groupOf(rerouted.result!.intent[0]!.rawLabel), "greeting", "the corrected group picks the greeting leaf");
-  assert.equal(rerouted.result!.intent.some(score => groupOf(score.rawLabel) === "conversation"), false);
+  const sharing = (scores: typeof expected.intent) => scores.filter(score => groupOf(score.rawLabel) === "sharing");
+  const happy = new Set<string>(EMOTION_BUCKETS.happy);
+  const happyScores = (scores: typeof expected.emotion) => scores.filter(score => happy.has(score.rawLabel));
+  for (const edit of [
+    (answer: Record<string, unknown>) => { delete answer.intent_detail_conversation; },
+    (answer: Record<string, unknown>) => { answer.intent_detail_conversation = [1]; },
+    (answer: Record<string, unknown>) => { answer.intent_detail_conversation = { nope: 5, leftover: 0 }; },
+  ]) {
+    const answers: Record<string, unknown> = { ...good }; edit(answers);
+    answers.intent_detail_flirt = distribution("intent_detail_flirt", 0);
+    let calls = 0;
+    const batch = await classifyApiPortraitBatch(config, request(), fake(answers, () => { calls++; }));
+    const result = batch.result!;
+    assert.equal(calls, 1);
+    assert.equal(batch.modelCalls, 1);
+    assert.equal(result.intent.some(score => groupOf(score.rawLabel) === "conversation"), false);
+    assert.equal(result.intent.some(score => groupOf(score.rawLabel) === "flirt"), false);
+    assert.deepEqual(sharing(result.intent), sharing(expected.intent));
+    assert.deepEqual(result.emotion, expected.emotion);
+    assert.deepEqual(result.relationship, expected.relationship);
+    assert.deepEqual(result.styleEvidence, expected.styleEvidence);
+    assert.deepEqual(result.personalityEvidence, expected.personalityEvidence);
+  }
+  for (const edit of [
+    (answer: Record<string, unknown>) => { delete answer.emotion_detail_sad; },
+    (answer: Record<string, unknown>) => { answer.emotion_detail_sad = [0.5, 0.5]; },
+    (answer: Record<string, unknown>) => { answer.emotion_detail_sad = { sad: 0, lonely: -1, nope: 4 }; },
+  ]) {
+    const answers: Record<string, unknown> = { ...good }; edit(answers);
+    let calls = 0;
+    const result = (await classifyApiPortraitBatch(config, request(),
+      fake(answers, () => { calls++; }))).result!;
+    assert.equal(calls, 1);
+    assert.deepEqual(happyScores(result.emotion), happyScores(expected.emotion));
+    assert.equal(result.emotion.some(score => !happy.has(score.rawLabel)), false);
+    assert.deepEqual(result.intent, expected.intent);
+  }
 });
 
-it("falls back to invalid-output after the bounded re-asks or when the count error persists", async () => {
-  const good = routedAnswers();
-  const wrong = { ...good, mbti_EI: [0.5, 0.5] };
-  const sent: GenerationRequest[] = [];
-  await assert.rejects(() => classifyApiPortraitBatch(config, request(), scripted([wrong, { mbti_EI: [1] }], sent)),
-    fails("invalid-output"));
-  assert.equal(sent.length, 3, "first call plus two targeted re-asks, then the outer retry policy applies");
-  // A label map missing an option is still a miscount: re-asked again, never padded.
-  const partial = Object.fromEntries(options("mbti_EI").slice(1).map(label => [label, 0.5]));
-  const maps: GenerationRequest[] = [];
-  const fixed = await classifyApiPortraitBatch(config, request(),
-    scripted([wrong, { mbti_EI: partial }, { mbti_EI: good.mbti_EI }], maps));
-  assert.equal(maps.length, 3);
-  assert.deepEqual(reasked(maps[2]!), { mbti_EI: 3 });
-  assert.equal(fixed.modelCalls, 3);
-  await assert.rejects(() => classifyApiPortraitBatch(config, request(),
-    scripted([wrong, { mbti_EI: partial }], [])), fails("invalid-output"));
-  // Values that are not a miscount are never re-asked or padded.
-  for (const value of [[0.5, 0.5, 0.5], [0.5, "0.5"], [], [0.5, 1.5]]) {
-    const once: GenerationRequest[] = [];
+it("fails when every selected branch is missing and does not borrow another branch", async () => {
+  for (const edit of [
+    (answer: Record<string, unknown>) => { delete answer.intent_detail_greeting; },
+    (answer: Record<string, unknown>) => { answer.intent_detail_greeting = [1]; },
+    (answer: Record<string, unknown>) => { answer.intent_detail_greeting = {}; },
+    (answer: Record<string, unknown>) => {
+      answer.intent_detail_greeting = options("intent_detail_greeting").map(() => 0);
+    },
+  ]) {
+    const answers: Record<string, unknown> = ordinaryAnswers(); edit(answers);
+    answers.intent_detail_flirt = distribution("intent_detail_flirt", 0);
+    let calls = 0;
     await assert.rejects(() => classifyApiPortraitBatch(config, request(),
-      scripted([{ ...good, mbti_EI: value }], once)), fails("invalid-output"));
-    assert.equal(once.length, 1, JSON.stringify(value));
+      fake(answers, () => { calls++; })), fails("invalid-output"));
+    assert.equal(calls, 1);
   }
-  // A re-ask that would start too close to the IPC deadline is skipped.
-  const realNow = Date.now;
-  const late: GenerationRequest[] = [];
-  try {
-    await assert.rejects(() => classifyApiPortraitBatch(config, request(), async (_config, value) => {
-      late.push(value);
-      const now = realNow();
-      Date.now = () => now + 165000;
-      return { text: JSON.stringify({ answers: wrong }) };
-    }), fails("invalid-output"));
-  } finally {
-    Date.now = realNow;
-  }
-  assert.equal(late.length, 1);
 });
 
 it("rejects invalid batch identity and keeps provider failures visible", async () => {
