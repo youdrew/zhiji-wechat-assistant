@@ -1,0 +1,17 @@
+# Line endings
+#
+# The repo runs with core.autocrlf=true, so the index is LF and a Windows checkout is
+# CRLF: that is what every other file already does.
+#
+# chatui/index.html and chatui/style.css were the exception — they were committed with
+# mixed endings inside the same blob, so a Windows editor saving one of them produced a
+# whole-file diff (358/337 and 419/402 lines) around a 21 and 17 line change. Declaring
+# them text keeps the index LF and makes the diff show only what actually changed.
+#
+# Deliberately NOT `* text=auto`: re-normalising the remaining CRLF-index files
+# (LICENSE, electron/laya/LICENSE, python-requirements.lock.txt and the
+# scripts/*-source.json analysis inputs) would rewrite bytes that release and catalog
+# tooling read. Scope the policy to the files that need it.
+chatui/*.html text
+chatui/*.css text
+chatui/*.js text
