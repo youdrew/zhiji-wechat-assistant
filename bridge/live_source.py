@@ -38,6 +38,47 @@ CONFIG_SCAN_PAIR_HITS = 16_384
 CONFIG_SCAN_METRICS = ("anchors", "pairs", "scan_bytes", "scan_regions",
                        "read_gaps", "candidates")
 
+# One Restart Manager session per account costs 300-500 ms, and a single HTTP request asks the
+# identical ownership question several times: the account scope check, the reader resolution and
+# the final scope check all end up in `_account_from_file_owners`. Reusing the answer for a short
+# window collapses those repeats into one session instead of four.
+#
+# This is bounded staleness, not a cached answer. The ownership is re-read once the window
+# expires, so a scan that outlives the window still re-checks before it commits a reader, and an
+# account replaced mid-request is still noticed — just not within the window. Set to 0 to always
+# re-read, which is what the ownership test does.
+OWNERSHIP_TTL_SECONDS = 1.5
+_OWNERSHIP_CACHE_LIMIT = 64
+_ownership_cache: dict[tuple[str, ...], tuple[float, tuple]] = {}
+_ownership_lock = threading.Lock()
+
+
+def reset_ownership_cache():
+    """Drop the short-lived ownership answers, for an explicit refresh or a test."""
+    with _ownership_lock:
+        _ownership_cache.clear()
+
+
+def _owned_processes(paths):
+    """`file_owners` for `paths`, reused for `OWNERSHIP_TTL_SECONDS`.
+
+    Keyed on the exact resource list, so a new message shard or a different account is never
+    answered from another account's result.
+    """
+    key = tuple(dict.fromkeys(str(path) for path in paths))
+    if not key or OWNERSHIP_TTL_SECONDS <= 0:
+        return file_owners(key)
+    with _ownership_lock:
+        cached = _ownership_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < OWNERSHIP_TTL_SECONDS:
+            return cached[1]
+    owners = file_owners(key)
+    with _ownership_lock:
+        if len(_ownership_cache) >= _OWNERSHIP_CACHE_LIMIT:
+            _ownership_cache.clear()
+        _ownership_cache[key] = (time.monotonic(), owners)
+    return owners
+
 
 @dataclass(frozen=True)
 class ActiveSelection:
@@ -74,7 +115,7 @@ def _account_from_file_owners(accounts, processes):
     matches = {}
     for account in accounts:
         owned = set()
-        for pid, created in file_owners(_account_database_files(account)):
+        for pid, created in _owned_processes(_account_database_files(account)):
             if pid not in known or discovery.psutil is None:
                 continue
             try:

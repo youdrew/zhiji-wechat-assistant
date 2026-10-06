@@ -154,7 +154,10 @@ class DataRootSourceTests(unittest.TestCase):
         def file_owners(paths):
             return [(42, 10.0)] if any(Path(path).parent.parent.name in owners for path in paths) else []
 
+        # The reuse policy itself is tested separately; this test is about the mapping from raw
+        # ownership to a selection, so it must see every call.
         with patch.object(live_source, "file_owners", side_effect=file_owners), \
+                patch.object(live_source, "OWNERSHIP_TTL_SECONDS", 0), \
                 patch.object(discovery, "psutil", fake_psutil):
             processes = [discovery.WeixinProcess(pid=42)]
             self.assertIsNone(live_source._account_from_file_owners(accounts, processes))
@@ -167,6 +170,50 @@ class DataRootSourceTests(unittest.TestCase):
                              other.resolve())
             owners.add("synthetic-a")
             self.assertIsNone(live_source._account_from_file_owners(accounts, processes))
+
+
+    def test_ownership_answers_are_reused_within_the_window(self):
+        """One request asks the same ownership question four times; it must pay once.
+
+        A Restart Manager session per account costs 300-500 ms, so the scope check, the reader
+        resolution and the final scope check share one answer inside the window.
+        """
+        import live_source
+        calls = []
+        live_source.reset_ownership_cache()
+        self.addCleanup(live_source.reset_ownership_cache)
+
+        def file_owners(paths):
+            calls.append(tuple(paths))
+            return [(42, 10.0)]
+
+        with patch.object(live_source, "file_owners", side_effect=file_owners), \
+                patch.object(live_source, "OWNERSHIP_TTL_SECONDS", 30):
+            self.assertEqual(live_source._owned_processes(["a.db"]), [(42, 10.0)])
+            self.assertEqual(live_source._owned_processes(["a.db"]), [(42, 10.0)])
+            # A different resource list is its own question, never another account's answer.
+            live_source._owned_processes(["b.db"])
+        self.assertEqual(calls, [("a.db",), ("b.db",)])
+
+    def test_ownership_answers_expire_within_the_window(self):
+        """The reuse is bounded: once the window passes, ownership is read again."""
+        import time
+
+        import live_source
+        calls = []
+        live_source.reset_ownership_cache()
+        self.addCleanup(live_source.reset_ownership_cache)
+
+        def file_owners(_paths):
+            calls.append(1)
+            return []
+
+        with patch.object(live_source, "file_owners", side_effect=file_owners), \
+                patch.object(live_source, "OWNERSHIP_TTL_SECONDS", 0.01):
+            live_source._owned_processes(["a.db"])
+            time.sleep(0.02)
+            live_source._owned_processes(["a.db"])
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":
