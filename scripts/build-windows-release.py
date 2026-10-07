@@ -83,6 +83,8 @@ ASAR_SCRIPTS = (
     "scripts/real-client-model.cjs",
     "scripts/real-client-update-controller.cjs",
     "scripts/real-client-update-helper.cjs",
+    "scripts/advisor-companion.cjs",
+    "scripts/advisor-preload.cjs",
     "scripts/update-signing.pub",
 )
 ASAR_CHECK = r"""

@@ -96,7 +96,14 @@ class AccountAPI:
             self.deleting = True
         paused = False
         marked = False
+        advisor = getattr(self.backend, "_advisor", None)
         try:
+            if advisor is None:
+                open_advisor = getattr(self.backend, "advisor_service", None)
+                if callable(open_advisor):
+                    advisor = open_advisor()
+            if advisor is not None:
+                advisor.pause_for_account_clear(account)
             if current:
                 # Drain requests and writers before removing derived data. A failed removal
                 # can resume this bridge; a successful clear closes its model and exits.
@@ -112,7 +119,8 @@ class AccountAPI:
                 def guard(owned):
                     if owned != account:
                         raise AccountConflict("账号范围已变化")
-                result = self.store.delete(identifier, guard=guard, forget=wait_forget_account)
+                extra = {"related_cleanup": advisor.clear_account} if advisor is not None else {}
+                result = self.store.delete(identifier, guard=guard, forget=wait_forget_account, **extra)
                 paused = False
                 shutdown()
             else:
@@ -136,7 +144,8 @@ class AccountAPI:
                                 for key, job in engine.member_jobs.items()))
                             if busy_job or busy_recent or busy_member:
                                 raise AccountConflict("账号分析尚未结束，请稍后重试")
-                    result = self.store.delete(identifier, guard=guard, forget=try_forget_account)
+                    extra = {"related_cleanup": advisor.clear_account} if advisor is not None else {}
+                    result = self.store.delete(identifier, guard=guard, forget=try_forget_account, **extra)
                     forget_keys = getattr(source, "forget_account", None)
                     if callable(forget_keys):
                         forget_keys(account)
@@ -147,6 +156,8 @@ class AccountAPI:
                 self.registered.pop(account, None)
             return {**result, "current": current, "exitApp": current}
         except Exception:
+            if advisor is not None:
+                advisor.resume_after_failed_account_clear()
             if paused:
                 resume()
                 if marked:

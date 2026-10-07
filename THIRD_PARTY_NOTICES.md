@@ -4,7 +4,13 @@
 
 ## 内嵌 Laya 源码
 
-`electron/laya/` 中的 `types.ts`、`pyjson.ts`、`tokenizer.ts`、`questions.ts`、`prompt.ts`、`calibration.ts` 和 `agent.ts` 来自 [mizchi/laya-mlx](https://github.com/mizchi/laya-mlx) 的 `web/packages/laya-web/src`，提交 `dc3aa6b150cb861d0788fbd421cfd1303de4ed57`。上游采用 Apache-2.0；完整条款和上游声明保留在 [electron/laya/LICENSE](electron/laya/LICENSE) 与 [electron/laya/NOTICE](electron/laya/NOTICE)。这些文件的相对 import 扩展名和来源头注释经过适配；目录中其余 TypeScript 文件为本项目实现。
+`electron/laya/` 中的 `types.ts`、`pyjson.ts`、`tokenizer.ts`、`questions.ts`、`prompt.ts`、`calibration.ts` 和 `agent.ts` 来自 [mizchi/laya-mlx](https://github.com/mizchi/laya-mlx) 的 `web/packages/laya-web/src`，提交 `dc3aa6b150cb861d0788fbd421cfd1303de4ed57`。上游采用 Apache-2.0；完整条款和上游声明保留在 [electron/laya/LICENSE](electron/laya/LICENSE) 与 [electron/laya/NOTICE](electron/laya/NOTICE)。这些文件的相对 import 扩展名和来源头注释经过适配；`tokenizer.ts`、`prompt.ts`、`agent.ts` 另吸收了 nizitao 的 [PR #26](https://github.com/tswawa/WechatVibe/pull/26)，固定提交 `bca5c5ab4258e16340b5a4ecea94d070011853a9` 中的分词缓存与共享 state 编码优化，并补充不可变返回、原文长度限制和生命周期清理。具体改动与合成离线测试来源保留在文件头和 NOTICE 中；目录中其余 TypeScript 文件为本项目实现。
+
+## Agent 会话引擎与界面组件
+
+Agent 使用 OpenCode `v1.18.34` 的官方 SDK 和独立 Windows 引擎。来源为 [anomalyco/opencode](https://github.com/anomalyco/opencode)，固定提交 `e9f8a210b9e2b1e13d375b84906069886eb3b767`，MIT 完整许可证见 [licenses/OpenCode-MIT.txt](licenses/OpenCode-MIT.txt)。
+
+`ui/advisor/vendor/opencode/` 的 Markdown 流式投影、消息文本读取、TextShimmer 与 SessionRetry 来自该提交的 `packages/session-ui` 和 `packages/ui`；SessionRetry 的主题与翻译依赖经过局部适配。它们编译为独立面板组件，不引入上游全局主题或编程工作区。编译依赖 Solid、Marked、Remend 和 DOMPurify，实际许可证保留在对应 npm 包及构建输出中。
 
 ## 分析模型
 
@@ -64,3 +70,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Skill Package Metadata Parser
+
+PyYAML is used only for safe parsing of skill metadata. It is distributed under
+the MIT license. Python-tag constructors, YAML anchors and aliases are rejected.
+Imported skill package licenses are retained with each fixed package version.

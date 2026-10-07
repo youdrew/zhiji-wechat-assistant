@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; frame-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>军师</title>
+  <link rel="stylesheet" href="advisor-window.css">
+</head>
+<body>
+  <button id="btnCloseAdvisor" class="advisor-panel-close" type="button" title="收起军师" aria-label="收起军师">&times;</button>
+  <iframe id="advisorFrame" src="advisor-frame.html" sandbox="allow-scripts" title="军师会话"></iframe>
+  <script src="advisor-window.js"></script>
+</body>
+</html>

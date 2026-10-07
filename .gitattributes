@@ -1,0 +1,4 @@
+# Keep chat UI text normalized in Git without changing binary or release inputs.
+chatui/*.html text
+chatui/*.css text
+chatui/*.js text

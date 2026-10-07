@@ -18,7 +18,8 @@ from backend_contracts import (
 from portrait_contracts import (empty_portrait_evidence, portrait_synthesis_fingerprint,
                                 valid_mbti_basis, valid_portrait_evidence, valid_synthesis_fingerprint)
 from profile_signals import keyword_counts
-from profile_state import empty_state as empty_profile_state, add_result as add_profile_result
+from profile_state import (empty_state as empty_profile_state, add_result as add_profile_result,
+                           covers_tail_emotions)
 from api_portrait_statistics import empty_statistics, valid_statistics
 
 
@@ -113,6 +114,8 @@ class ResultStore:
             conn.execute("CREATE TABLE IF NOT EXISTS profile_state_v1 (account TEXT NOT NULL, session TEXT NOT NULL, "
                          "version TEXT NOT NULL, subject TEXT NOT NULL, cursor INTEGER NOT NULL, state TEXT NOT NULL, "
                          "PRIMARY KEY(account,session,version,subject))")
+            conn.execute("CREATE TABLE IF NOT EXISTS portrait_resets_v1 (account TEXT NOT NULL,"
+                         "session TEXT NOT NULL,subject TEXT NOT NULL,PRIMARY KEY(account,session,subject))")
             conn.execute("CREATE INDEX IF NOT EXISTS results_profile_delta_v1 ON results_v2 (account,session,version)")
             conn.execute("CREATE INDEX IF NOT EXISTS results_member_delta_v1 ON results_v2 (account,session,version,sender)")
 
@@ -189,6 +192,20 @@ class ResultStore:
                     "SELECT r.rowid,r.id,r.result,r.score,r.side,r.sort_seq,r.shard,r.local_id,t.words "
                     "FROM results_v2 r LEFT JOIN profile_tokens_v1 t ON t.account=r.account AND t.session=r.session "
                     "AND t.version=r.version AND t.id=r.id WHERE " + conditions + " ORDER BY " + ordered, args).fetchall()
+                if saved and rows:
+                    prior_sql = "SELECT COUNT(*) FROM results_v2 WHERE account=? AND session=? AND version=? AND rowid<=?"
+                    prior_args = (*scope, cursor)
+                    if subject:
+                        prior_sql += " AND sender=?"
+                        prior_args += (subject,)
+                    if conn.execute(prior_sql, prior_args).fetchone()[0] != state["count"]:
+                        cursor, state, saved = 0, empty_profile_state(), None
+                        fresh_args = (*scope, 0, subject) if subject else (*scope, 0)
+                        rows = conn.execute(
+                            "SELECT r.rowid,r.id,r.result,r.score,r.side,r.sort_seq,r.shard,r.local_id,t.words "
+                            "FROM results_v2 r LEFT JOIN profile_tokens_v1 t ON t.account=r.account AND t.session=r.session "
+                            "AND t.version=r.version AND t.id=r.id WHERE " + conditions +
+                            " ORDER BY r.sort_seq,r.shard,r.local_id,r.id", fresh_args).fetchall()
                 for rowid, stable_id, raw, score, side, seq, shard, local_id, words in rows:
                     result, position = json.loads(raw), (seq, shard, local_id, stable_id)
                     tails = []
@@ -200,6 +217,25 @@ class ResultStore:
                             tail_args += (subject,)
                         tails = [(json.loads(raw_tail), tail_score) for raw_tail, tail_score in
                                  conn.execute("SELECT result,score FROM results_v2 WHERE " + tail_where, tail_args)]
+                    if not covers_tail_emotions(state, [item.get("emotion") for item, _score in tails
+                                                       if item.get("emotion")]):
+                        state = empty_profile_state()
+                        rebuild_sql = ("SELECT r.rowid,r.id,r.result,r.score,r.side,r.sort_seq,r.shard,r.local_id,t.words "
+                                       "FROM results_v2 r LEFT JOIN profile_tokens_v1 t ON t.account=r.account "
+                                       "AND t.session=r.session AND t.version=r.version AND t.id=r.id "
+                                       "WHERE r.account=? AND r.session=? AND r.version=?")
+                        rebuild_args = scope
+                        if subject:
+                            rebuild_sql += " AND r.sender=?"
+                            rebuild_args += (subject,)
+                        rebuild_sql += " ORDER BY r.sort_seq,r.shard,r.local_id,r.id"
+                        rebuilt_rows = conn.execute(rebuild_sql, rebuild_args).fetchall()
+                        for saved_id, message_id, saved_raw, saved_score, saved_side, saved_seq, saved_shard, saved_local, saved_words in rebuilt_rows:
+                            add_profile_result(state, json.loads(saved_raw), saved_score, saved_side,
+                                               (saved_seq, saved_shard, saved_local, message_id),
+                                               json.loads(saved_words or "{}"))
+                        cursor = max((row[0] for row in rebuilt_rows), default=0)
+                        break
                     add_profile_result(state, result, score, side, position, json.loads(words or "{}"), tails)
                     cursor = max(cursor, rowid)
                 if rows or not saved:
@@ -438,7 +474,7 @@ class ResultStore:
             raise RuntimeError("invalid saved API portrait")
         resume = json.loads(row[10]) if row[10] else None
         if isinstance(resume, dict) and "portraitStatistics" in resume and not valid_statistics(
-                resume["portraitStatistics"]):
+                resume["portraitStatistics"], allow_historical_pending=resume.get("portraitLedgerVersion") == 1):
             resume.pop("portraitStatistics", None)
         if isinstance(resume, dict) and "portraitEvidence" in resume and not valid_portrait_evidence(
                 resume["portraitEvidence"]):
@@ -458,7 +494,7 @@ class ResultStore:
 
     def api_portrait_begin(self, account, user, source_id, subject, highwater, after,
                            fingerprint, available, plan, *, rebuild=False, subject_kind="person",
-                           local_rules=False, classifier_version="api-local-rules-v1"):
+                           local_rules=False, classifier_version="api-local-rules-v1", ledger_begin=None):
         saved = self.api_portrait_get(account, user, source_id, subject)
         if saved and not rebuild and not saved["complete"]:
             if (saved["highwater"] != highwater or saved["after"] != after or
@@ -478,7 +514,8 @@ class ResultStore:
                         raise RuntimeError("API portrait plan changed concurrently")
                 saved["plan"] = plan
             return saved
-        if saved and not rebuild and (highwater is None or saved["highwater"] == highwater):
+        if (saved and not rebuild and saved["highwater"] == highwater and
+                saved["fingerprint"] == fingerprint):
             return saved
         portrait = saved["portrait"] if saved else empty_api_portrait()
         previous_resume = saved.get("resume") if saved and not rebuild else None
@@ -506,9 +543,17 @@ class ResultStore:
             # Reuse the source-scoped cursor transaction, never the legacy API's
             # generated scores. Only compatible sufficient statistics carry forward.
             statistics = (previous_resume or {}).get("portraitStatistics")
-            evidence_resume = {"portraitStatistics": statistics if valid_statistics(statistics, classifier_version)
-                               else empty_statistics(classifier_version)}
-            if valid_statistics(statistics, classifier_version) and isinstance(previous_resume.get("portraitContext"), list):
+            ledger_backed = previous_resume is not None and previous_resume.get("portraitLedgerVersion") == 1
+            evidence_resume = {"portraitStatistics": statistics if valid_statistics(
+                statistics, classifier_version, allow_historical_pending=ledger_backed)
+                else empty_statistics(classifier_version)}
+            if ledger_backed:
+                evidence_resume["portraitLedgerVersion"] = 1
+            display_statistics = (saved.get("resume") or {}).get("portraitStatistics") if saved and rebuild else (
+                (previous_resume or {}).get("portraitDisplayStatistics"))
+            if valid_statistics(display_statistics, allow_historical_pending=True):
+                evidence_resume["portraitDisplayStatistics"] = display_statistics
+            if valid_statistics(statistics, classifier_version, allow_historical_pending=ledger_backed) and isinstance(previous_resume.get("portraitContext"), list):
                 evidence_resume["portraitContext"] = previous_resume["portraitContext"][-3:]
             unchanged = not plan
         with self.connect() as conn:
@@ -522,6 +567,8 @@ class ResultStore:
                           json.dumps(available, ensure_ascii=False), json.dumps(plan), 0,
                           int(unchanged), 0, 0, json.dumps(portrait, ensure_ascii=False),
                           json.dumps(evidence_resume, ensure_ascii=False) if evidence_resume else None))
+            if ledger_begin is not None:
+                ledger_begin(conn)
         return self.api_portrait_get(account, user, source_id, subject)
 
     def api_portrait_upgrade_resume(self, account, user, source_id, subject,
@@ -537,9 +584,17 @@ class ResultStore:
             if changed != 1:
                 raise RuntimeError("API portrait checkpoint changed during resume upgrade")
 
+    def api_portrait_update_metadata(self, account, user, source_id, subject, update):
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM api_portrait_v1 WHERE account=? AND session=? AND source_id=? AND subject=?",
+                            (account, user, source_id, subject)).fetchone() is None:
+                raise RuntimeError("API portrait scope disappeared")
+            update(conn)
+
     def api_portrait_checkpoint(self, account, user, source_id, subject, batch_index,
                                 portrait, processed, processed_chars, complete,
-                                processed_target=None, resume=None):
+                                processed_target=None, resume=None, ledger_update=None):
         if (not valid_api_portrait(portrait) or type(processed) is not int or processed < 0 or
                 type(processed_chars) is not int or processed_chars < 0 or
                 processed_target is not None and (type(processed_target) is not int or processed_target < 0) or
@@ -548,7 +603,8 @@ class ResultStore:
                                         "portraitEvidence" in resume and not valid_portrait_evidence(
                                             resume["portraitEvidence"]) or
                                         "portraitStatistics" in resume and not valid_statistics(
-                                            resume["portraitStatistics"]))):
+                                            resume["portraitStatistics"],
+                                            allow_historical_pending=resume.get("portraitLedgerVersion") == 1))):
             raise ValueError("invalid API portrait checkpoint")
         with self.connect() as conn:
             row = conn.execute("SELECT available_json,resume_json FROM api_portrait_v1 WHERE account=? AND session=? "
@@ -560,6 +616,8 @@ class ResultStore:
             if resume is not None:
                 resume = dict(resume)
                 previous_resume = json.loads(row[1]) if row[1] else None
+                if isinstance(previous_resume, dict) and not complete and "portraitDisplayStatistics" in previous_resume:
+                    resume["portraitDisplayStatistics"] = previous_resume["portraitDisplayStatistics"]
                 if not valid_synthesis_fingerprint(resume.get("synthesisFingerprint")):
                     resume.pop("synthesisFingerprint", None)
                     previous_fingerprint = (previous_resume.get("synthesisFingerprint")
@@ -587,6 +645,8 @@ class ResultStore:
                                    (*args, account, user, source_id, subject)).rowcount
             if changed != 1:
                 raise RuntimeError("API portrait scope disappeared")
+            if ledger_update is not None:
+                ledger_update(conn)
 
     def analysis_cache_sources(self, account):
         with self.connect() as conn:
@@ -644,7 +704,7 @@ class ResultStore:
                               "progress_v1", "summary_v1", "profile_tokens_v1",
                               "profile_tokens_ready_v1", "profile_state_v1", "batch_progress_v1",
                               "batch_runs_v1", "batch_coverage_v1", "batch_fragments_v1",
-                              "quoted_backfill_v1"):
+                              "quoted_backfill_v1", "batch_source_checks_v1", "portrait_resets_v1"):
                     if table in present:
                         conn.execute(f"DELETE FROM {table} WHERE account=?", (account,))
             else:
@@ -655,6 +715,69 @@ class ResultStore:
                 # state, so clearing it must remove that record too.
                 conn.execute("DELETE FROM api_source_meta_v1 WHERE account=? AND source_id=?",
                              (account, source_id))
+                from api_portrait_ledger import clear_ledger
+                clear_ledger(conn, account=account, source_id=source_id)
+
+    def portrait_reset(self, account, user, subject):
+        with self.connect() as conn:
+            return conn.execute("SELECT 1 FROM portrait_resets_v1 WHERE account=? AND session=? AND subject=?",
+                                (account, user, subject)).fetchone() is not None
+
+    def clear_scope(self, account, user, source_id, *, subject=None):
+        """Clear one stopped analysis scope; preserve source databases and Advisor state."""
+        if not all(isinstance(value, str) and value for value in (account, user, source_id)):
+            raise ValueError("invalid analysis scope")
+        if source_id != LOCAL_SOURCE_ID and not re.fullmatch(r"[0-9a-f]{32}(?::[^\s]+)?", source_id):
+            raise ValueError("invalid analysis source")
+        if subject is not None:
+            if not isinstance(subject, str) or not user.endswith("@chatroom") and subject != user:
+                raise ValueError("invalid portrait subject")
+            if user.endswith("@chatroom"):
+                if source_id == LOCAL_SOURCE_ID and subject == user:
+                    raise ValueError("local group portrait uses an empty subject")
+                if source_id != LOCAL_SOURCE_ID and not subject:
+                    raise ValueError("API group portrait requires a subject")
+        counts = {"messageRows": 0, "portraitRows": 0, "progressRows": 0}
+        with self.profile_lock, self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if source_id == LOCAL_SOURCE_ID:
+                message_tables = ("results_v2", "analysis_skips", "fine_results_v1", "fine_skips_v1",
+                                  "profile_tokens_v1", "profile_tokens_ready_v1") if subject is None else ()
+                for table in message_tables:
+                    counts["messageRows"] += conn.execute(
+                        f"DELETE FROM {table} WHERE account=? AND session=?", (account, user)).rowcount
+                for table in ("progress_v1", "summary_v1", "profile_state_v1", "batch_progress_v1",
+                              "batch_runs_v1", "batch_coverage_v1", "batch_fragments_v1",
+                              "quoted_backfill_v1", "batch_source_checks_v1"):
+                    if table not in present or (subject is not None and table in ("progress_v1", "summary_v1")):
+                        continue
+                    query = f"DELETE FROM {table} WHERE account=? AND session=?"
+                    args = (account, user)
+                    if subject is not None:
+                        query += " AND subject=?"
+                        args += (subject,)
+                    key = "portraitRows" if table in ("profile_state_v1", "batch_progress_v1") else "progressRows"
+                    counts[key] += conn.execute(query, args).rowcount
+                if subject is None:
+                    conn.execute("DELETE FROM portrait_resets_v1 WHERE account=? AND session=?", (account, user))
+                else:
+                    conn.execute("INSERT OR IGNORE INTO portrait_resets_v1 VALUES (?,?,?)", (account, user, subject))
+            else:
+                source_query = "source_id=?" if ":" in source_id else "source_id LIKE ?"
+                source_value = source_id if ":" in source_id else source_id + ":%"
+                args = (account, user, source_value)
+                if subject is None:
+                    counts["messageRows"] = conn.execute(
+                        "DELETE FROM api_insights_v1 WHERE account=? AND session=? AND " + source_query, args).rowcount
+                query = "DELETE FROM api_portrait_v1 WHERE account=? AND session=? AND " + source_query
+                if subject is not None:
+                    query += " AND subject=?"
+                    args += (subject,)
+                counts["portraitRows"] = conn.execute(query, args).rowcount
+                from api_portrait_ledger import clear_ledger
+                clear_ledger(conn, account=account, user=user, source_id=source_id, subject=subject)
+        return counts
 
     def skip_fine(self, account, user, version, message, reason):
         seq, shard, local_id = message["_sort"]
@@ -689,7 +812,10 @@ class ResultStore:
                 summary["mood"][raw]["weighted"] += probability
         summary["moodCount"] += 1
 
-    def _ensure_summary(self, conn, account, user, version):
+    def _ensure_summary(self, conn, account, user, version, *, rebuild=False):
+        if rebuild:
+            conn.execute("DELETE FROM summary_v1 WHERE account=? AND session=? AND version=?",
+                         (account, user, version))
         row = conn.execute("SELECT score_count,score_sum,score_weighted,mood_count,mood_json "
                            "FROM summary_v1 WHERE account=? AND session=? AND version=?",
                            (account, user, version)).fetchone()
@@ -733,6 +859,7 @@ class ResultStore:
             score = result.get("score") if message["side"] == "other" else None
             mood = (result.get("emotion") or []) if message["side"] == "other" else []
             rank = tail_score = 0
+            mood_rank = summary["moodCount"]
             tail_mood = {}
             if score is not None:
                 position = (seq, shard, local_id, message["id"])
@@ -757,9 +884,19 @@ class ResultStore:
                     )
                     for tail_json, tail_score_value in tails:
                         tail_score += tail_score_value
-                        for entry in json.loads(tail_json).get("emotion") or []:
-                            raw = entry.get("rawLabel") or entry["label"]
-                            tail_mood[raw] = tail_mood.get(raw, 0.0) + entry["probability"]
+            if mood:
+                tail_count = 0
+                for (tail_json,) in conn.execute(
+                        "SELECT result FROM results_v2 WHERE account=? AND session=? AND version=? AND side='other' "
+                        "AND (sort_seq,shard,local_id,id)>(?,?,?,?)", (account, user, version, seq, shard, local_id, message["id"])):
+                    emotion = json.loads(tail_json).get("emotion") or []
+                    tail_count += bool(emotion)
+                    for entry in emotion:
+                        raw = entry.get("rawLabel") or entry["label"]
+                        tail_mood[raw] = tail_mood.get(raw, 0.0) + entry["probability"]
+                if tail_count > summary["moodCount"] or not set(tail_mood) <= set(summary["mood"]):
+                    summary = self._ensure_summary(conn, account, user, version, rebuild=True)
+                mood_rank = summary["moodCount"] - tail_count
             inserted = conn.execute("INSERT OR IGNORE INTO results_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                     (account, user, message["id"], seq, shard, local_id, message["senderId"],
                                      message["side"], json.dumps(result, ensure_ascii=False), score, version))
@@ -773,7 +910,7 @@ class ResultStore:
                 summary["scoreSum"] += score
                 summary["scoreCount"] += 1
             if mood:
-                self._add_emotion(summary, mood, rank, tail_mood)
+                self._add_emotion(summary, mood, mood_rank, tail_mood)
             conn.execute("UPDATE summary_v1 SET score_count=?,score_sum=?,score_weighted=?,mood_count=?,mood_json=? "
                          "WHERE account=? AND session=? AND version=?",
                          (summary["scoreCount"], summary["scoreSum"], summary["scoreWeighted"],

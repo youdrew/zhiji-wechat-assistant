@@ -29,14 +29,14 @@ NODE_MODULES = ROOT / "node_modules"
 PYTHON_ROOT_PACKAGES = (
     "wechatauto-replica", "cryptography", "zstandard", "psutil", "jieba",
     "Pillow", "uiautomation", "pywin32", "pyperclip", "colorama",
-    "opencv-python", "numpy", "comtypes", "setuptools", "tzdata", "packaging",
+    "opencv-python", "numpy", "comtypes", "setuptools", "tzdata", "packaging", "PyYAML",
 )
 # These are declared upstream but absent in the already-working read-only host.
 # Their imports are confined to optional GUI/OCR/media paths, not this bridge.
 KNOWN_MISSING_OPTIONAL = {"winsdk", "imageio-ffmpeg", "pyautogui"}
 NODE_ROOT_PACKAGES = (
     "@anthropic-ai/sdk", "@google/genai", "@huggingface/tokenizers",
-    "ollama", "onnxruntime-node", "openai", "tsx", "undici",
+    "ollama", "onnxruntime-node", "openai", "tsx", "undici", "@opencode-ai/sdk",
 )
 SKIP_PARTS = {"__pycache__", "test", "tests", "testing", "demo", "demos", "examples",
               ".git", ".cache", "cache"}
@@ -269,7 +269,7 @@ def stage_node_packages() -> dict:
 def verify_staged_sdk_imports() -> None:
     """Reject a portable build whose filtered SDK tree cannot load at all."""
     node_exe = STAGE / "runtime" / "node" / "node.exe"
-    for package in ("openai", "@anthropic-ai/sdk", "@google/genai", "ollama"):
+    for package in ("openai", "@anthropic-ai/sdk", "@google/genai", "ollama", "@opencode-ai/sdk/v2/client"):
         probe = subprocess.run(
             [str(node_exe), "--input-type=module", "-e", f"await import({json.dumps(package)})"],
             cwd=STAGE, capture_output=True, text=True, check=False,
@@ -308,6 +308,24 @@ def staged_inventory(path: Path) -> dict:
     return {"files": len(files), "bytes": sum(item.stat().st_size for item in files)}
 
 
+def stage_advisor_engine():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("setup_advisor_engine", ROOT / "scripts/setup-advisor-engine.py")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    source = ROOT / "runtime/opencode"
+    if not source.is_dir():
+        source = ROOT / ".local/advisor-engine"
+    value = helper.checked_engine(source)
+    target = STAGE / "runtime/opencode"
+    target.mkdir(parents=True)
+    for name in ("opencode.exe", "manifest.json"):
+        shutil.copy2(source / name, target / name)
+    shutil.copy2(ROOT / "licenses/OpenCode-MIT.txt", target / "LICENSE.txt")
+    helper.checked_engine(target)
+    return {"version": value["version"], "executable": "runtime/opencode/opencode.exe"}
+
+
 def staged_hashes(path: Path) -> list[dict]:
     rows = []
     for item in sorted(path.rglob("*")):
@@ -343,7 +361,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Node package closure staged: {len(node['packages'])} packages")
     verify_staged_sdk_imports()
     print("Staged model SDK imports verified")
-    manifest = {"python": python, "node": node,
+    advisor = stage_advisor_engine()
+    print("Read-only Advisor engine staged and verified")
+    manifest = {"python": python, "node": node, "advisor": advisor,
                 "stagedInventory": {
                     "python": staged_inventory(STAGE / "runtime" / "python"),
                     "node": staged_inventory(STAGE / "runtime" / "node"),

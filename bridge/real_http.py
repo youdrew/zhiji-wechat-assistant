@@ -12,12 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from backend_contracts import ForecastRequestError, ROOT
+from backend_contracts import AccountUnavailableError, MessagesUnavailableError, ForecastRequestError, ROOT
 from backend_service import Backend
 from wechat_source import WeChatSource
 from account_store import AccountConflict, AccountNotFound
 from instance_identity import default_port, instance_id
 from model_source import ModelSourceUnavailable
+from advisor_contracts import AdvisorError
+import advisor_http
 
 CHATUI = ROOT / "chatui"
 CONTROL_TOKEN_ENV = "WECHATVIBE_CONTROL_TOKEN"
@@ -121,6 +123,10 @@ def make_handler(backend, accounts=None, control_token=None):
             parsed = urlsplit(self.path)
             try:
                 query = self.query(parsed)
+                if parsed.path.startswith("/api/advisor/"):
+                    if parsed.path not in advisor_http.GET_PATHS:
+                        return self.send(404, {"error": "not found"})
+                    return self.send(200, advisor_http.get(backend.advisor_service(), parsed.path, query))
                 if parsed.path == "/api/health":
                     return self.send(200, {**backend.health(), "instanceId": instance_id(ROOT),
                                            "appVersion": APP_VERSION})
@@ -151,6 +157,10 @@ def make_handler(backend, accounts=None, control_token=None):
                     return self.send(200, backend.analysis_cache_status())
                 if parsed.path == "/api/sessions":
                     data = backend.source.sessions()
+                    if data.get("messagesReady") is False:
+                        preparation = backend.preparation_status(data.get("account"))
+                        if preparation:
+                            data = {**data, "preparation": preparation}
                     if accounts is not None:
                         accounts.observe(data)
                     return self.send(200, data)
@@ -197,10 +207,14 @@ def make_handler(backend, accounts=None, control_token=None):
                     return self.send(404, {"error": "not found"})
                 mime = static_content_type(target.name)
                 return self.send(200, target.read_bytes(), mime)
+            except AdvisorError as exc:
+                return self.send(advisor_http.error_status(exc), {"error": exc.code, "message": exc.message})
             except ValueError as exc:
                 return self.send(400, {"error": str(exc)})
             except Exception as exc:
-                return self.send(503, {"error": type(exc).__name__, "message": str(exc)[:200]})
+                preparation = backend.preparation_status() if isinstance(exc, (AccountUnavailableError, MessagesUnavailableError)) else None
+                return self.send(503, {"error": type(exc).__name__, "message": str(exc)[:200],
+                                       **({"preparation": preparation} if preparation else {})})
 
         def do_POST(self):
             lease = getattr(backend, "request_lease", None)
@@ -233,9 +247,11 @@ def make_handler(backend, accounts=None, control_token=None):
             if endpoint not in ("/api/analyze", "/api/predict-reply", "/api/messages/batch",
                                  "/api/runtime", "/api/local-model", "/api/model-insights",
                                  "/api/model-portrait", "/api/analysis-cache/clear",
+                                 "/api/analysis-scope/clear",
                                  "/api/analysis-cache/resume", "/api/conversation-selection",
                                  "/api/data-root", "/api/data-root/clear",
                                  "/api/analysis-workers",
+                                 *advisor_http.POST_PATHS,
                                  *model_endpoints):
                 return self.send(404, {"error": "not found"})
             content_type = [part.strip().lower() for part in self.headers.get("Content-Type", "").split(";")]
@@ -249,6 +265,11 @@ def make_handler(backend, accounts=None, control_token=None):
                 request = json.loads(self.rfile.read(length).decode("utf-8"))
                 if not isinstance(request, dict) or "texts" in request:
                     raise ValueError("invalid request")
+                if endpoint in advisor_http.POST_PATHS:
+                    try:
+                        return self.send(200, advisor_http.post(backend.advisor_service(), endpoint, request))
+                    except AdvisorError as exc:
+                        return self.send(advisor_http.error_status(exc), {"error": exc.code, "message": exc.message})
                 if endpoint in model_endpoints:
                     try:
                         if endpoint == "/api/model-source/list":
@@ -276,6 +297,11 @@ def make_handler(backend, accounts=None, control_token=None):
                     if set(request) == {"expectedAccount", "all"} and request["all"] is True:
                         return self.send(200, backend.set_conversation_all_selected(
                             user_value(request["expectedAccount"])))
+                    if set(request) == {"expectedAccount", "sessions", "selected"}:
+                        if request["selected"] is not False:
+                            raise ValueError("invalid conversation selection")
+                        return self.send(200, backend.remove_conversations_selected(
+                            user_value(request["expectedAccount"]), request["sessions"]))
                     if set(request) != {"expectedAccount", "session", "selected"} or type(request["selected"]) is not bool:
                         raise ValueError("invalid conversation selection")
                     return self.send(200, backend.set_conversation_selected(
@@ -323,6 +349,20 @@ def make_handler(backend, accounts=None, control_token=None):
                         user_value(request.get("account")), user_value(request.get("user")),
                         user_value(member) if member is not None else None,
                         refresh_axes=refresh_axes))
+                if endpoint == "/api/analysis-scope/clear":
+                    if (set(request) not in ({"account", "user", "sourceId", "kind"},
+                                            {"account", "user", "sourceId", "kind", "member"}) or
+                            request.get("kind") not in ("conversation", "portrait")):
+                        raise ValueError("invalid analysis reset")
+                    try:
+                        return self.send(200, backend.analysis_scope_clear(
+                            user_value(request["account"]), user_value(request["user"]),
+                            request["sourceId"], request["kind"],
+                            user_value(request["member"]) if "member" in request else None))
+                    except RuntimeError as exc:
+                        if str(exc) in {"analysis-reset-in-progress", "analysis-reset-busy"}:
+                            return self.send(409, {"error": str(exc), "message": "当前分析尚未结束，请稍后重置"})
+                        raise
                 if endpoint in ("/api/analysis-cache/clear", "/api/analysis-cache/resume"):
                     if set(request) != {"account", "sourceId"}:
                         raise ValueError("invalid cache request")

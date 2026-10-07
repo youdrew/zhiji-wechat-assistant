@@ -33,6 +33,7 @@ SERVICE_ACCOUNT_IDS = frozenset({
     "fmessage", "floatbottle", "medianote", "qqmail", "voiceinput", "exmail_tool",
 })
 SERVICE_ACCOUNT_SUFFIXES = frozenset({"placeholder_foldgroup", "weclaw", "kefu.openim"})
+ADVISOR_IDENTITY_LEASE_SECONDS = 2.0
 
 
 def is_service_account(user):
@@ -119,6 +120,7 @@ class WeChatSource:
         # the unique live account before accessing a cached reader.
         self.live_account = factory is None and active_account_locator is None
         self.dynamic_account = factory is None or active_account_locator is not None
+        self._ownership_cache_enabled = self.live_account
         if self.live_account:
             from live_source import active_account_snapshot
             self.active_account_locator = active_account_snapshot
@@ -130,6 +132,10 @@ class WeChatSource:
         self._account_dir = None
         self._active_checked_at = 0.0
         self._request_context = threading.local()
+        self._advisor_identity_lock = threading.Lock()
+        self._advisor_verification_lock = threading.Lock()
+        self._advisor_binding = None
+        self._advisor_binding_generation = 0
         self._self_username = None
         self.issued_images = OrderedDict()
         self.window_images = {}
@@ -138,6 +144,7 @@ class WeChatSource:
         self.media_reason = threading.local()
 
     def _release_db(self):
+        self.invalidate_advisor_identity()
         self.db = None
         self._account_dir = None
         self._active_checked_at = 0.0
@@ -145,6 +152,17 @@ class WeChatSource:
         self.issued_images.clear()
         self.window_images.clear()
         self.profile_metadata_cache.clear()
+
+    def _active_selection(self, *, fresh=True):
+        from live_source import active_account_snapshot
+        if self.live_account and self.active_account_locator is active_account_snapshot:
+            return self.active_account_locator(fresh=fresh)
+        return self.active_account_locator()
+
+    def _ordinary_db(self):
+        if getattr(self, "_ownership_cache_enabled", False):
+            return self._db(fresh=True, reuse_ownership=True)
+        return self._db(fresh=True)
 
     @contextmanager
     def request_scope(self):
@@ -182,6 +200,11 @@ class WeChatSource:
 
     def forget_account(self, account):
         """Drop only this account's open reader and volatile key references."""
+        with self._advisor_identity_lock:
+            binding = self._advisor_binding
+            if binding is not None and binding[0] == str(account):
+                self._advisor_binding = None
+                self._advisor_binding_generation += 1
         with self.lock:
             for key in list(self.profile_overview_counts_cache):
                 if key[0] == account:
@@ -200,6 +223,10 @@ class WeChatSource:
 
     def close(self):
         """Stop this bridge instance from reopening any WeChat-derived snapshot."""
+        with self._advisor_identity_lock:
+            self.closed = True
+            self._advisor_binding = None
+            self._advisor_binding_generation += 1
         with self.lock:
             self.closed = True
             if self.db is not None:
@@ -207,7 +234,7 @@ class WeChatSource:
             self._release_db()
             self.profile_overview_counts_cache.clear()
 
-    def _db(self, fresh=False):
+    def _db(self, fresh=False, reuse_ownership=False):
         with self.lock:
             if self.closed:
                 raise AccountUnavailableError()
@@ -218,7 +245,7 @@ class WeChatSource:
                         time.monotonic() - self._active_checked_at < 0.5):
                     return self.db
                 try:
-                    selection = self.active_account_locator()
+                    selection = self._active_selection(fresh=not reuse_ownership)
                     location = (selection.account_dir if self.live_account and selection is not None
                                 else Path(selection).resolve() if selection is not None else None)
                 except Exception as exc:
@@ -260,7 +287,7 @@ class WeChatSource:
                         except Exception:
                             candidate = None
                         if candidate is not None and candidate.messages_ready:
-                            if self.active_account_locator() != selection:
+                            if self._active_selection() != selection:
                                 raise AccountUnavailableError()
                             self._release_db()
                             self.db = candidate
@@ -295,7 +322,7 @@ class WeChatSource:
                 if self.dynamic_account and (str(db.account) != location.name or
                                              Path(db.account_dir).resolve() != location):
                     raise AccountUnavailableError()
-                if self.live_account and self.active_account_locator() != selection:
+                if self.live_account and self._active_selection() != selection:
                     raise AccountUnavailableError()
                 if self.live_account:
                     from live_source import _pages, _readiness, _token
@@ -324,14 +351,71 @@ class WeChatSource:
 
     def verified_identity(self, *, messages=False):
         with self.lock:
-            db = self._db(fresh=True)
-            if messages and self.live_account and not db.messages_ready:
-                raise MessagesUnavailableError()
-            account = str(db.account)
-            if not account or not getattr(db, "workdir", None):
-                raise RuntimeError("WeChat account/workdir unavailable")
-            workdir = Path(db.workdir).resolve()
+            try:
+                db = self._db(fresh=True)
+                ready = not self.live_account or bool(db.messages_ready)
+                if messages and not ready:
+                    raise MessagesUnavailableError()
+                account = str(db.account)
+                if not account or not getattr(db, "workdir", None):
+                    raise RuntimeError("WeChat account/workdir unavailable")
+                workdir = Path(db.workdir).resolve()
+            except Exception:
+                self.invalidate_advisor_identity()
+                raise
+            self._remember_advisor_binding(db, account, workdir, ready)
             return account, workdir
+
+    def _remember_advisor_binding(self, db, account, workdir, ready):
+        with self._advisor_identity_lock:
+            if not self.closed and self.db is db:
+                previous = self._advisor_binding
+                if previous is None or previous[:4] != (account, workdir, db, ready):
+                    self._advisor_binding_generation += 1
+                self._advisor_binding = (account, workdir, db, ready, time.monotonic())
+
+    def invalidate_advisor_identity(self):
+        """Invalidate the Advisor lease before releasing or reconfiguring this reader."""
+        with self._advisor_identity_lock:
+            self._advisor_binding = None
+            self._advisor_binding_generation += 1
+        from live_source import reset_ownership_cache
+        reset_ownership_cache()
+
+    @property
+    def advisor_binding_generation(self):
+        with self._advisor_identity_lock:
+            return self._advisor_binding_generation
+
+    def _leased_advisor_identity(self, messages):
+        with self._advisor_identity_lock:
+            if self.closed:
+                raise AccountUnavailableError()
+            binding = self._advisor_binding
+            if binding is None:
+                return None
+            account, workdir, reader, ready, completed_at = binding
+            if self.db is not reader or (self.live_account and ready != bool(getattr(reader, "messages_ready", False))):
+                self._advisor_binding = None
+                self._advisor_binding_generation += 1
+                return None
+            if time.monotonic() - completed_at >= ADVISOR_IDENTITY_LEASE_SECONDS:
+                return None
+            if messages and not ready:
+                raise MessagesUnavailableError()
+            return account, workdir
+
+    def advisor_identity(self, *, messages=True):
+        """Reuse only a recently verified binding; the default identity API stays fresh."""
+        cached = self._leased_advisor_identity(messages)
+        if cached is not None:
+            return cached
+        # Single-flight expired bindings without holding the small lease lock during I/O.
+        with self._advisor_verification_lock:
+            cached = self._leased_advisor_identity(messages)
+            if cached is not None:
+                return cached
+            return self.verified_identity(messages=messages)
 
     def self_user(self, db=None):
         with self.lock:
@@ -371,7 +455,7 @@ class WeChatSource:
 
     def sessions(self):
         with self.lock:
-            db = self._db(fresh=True)
+            db = self._ordinary_db()
             contacts = self._contacts(db)
             self_user = self.self_user(db)
             self_contact = contact_display(contacts, self_user)
@@ -524,7 +608,7 @@ class WeChatSource:
 
     def messages(self, user, limit, offset=0):
         with self.lock:
-            db = self._db(fresh=True)
+            db = self._ordinary_db()
             if self.live_account and not db.messages_ready:
                 raise MessagesUnavailableError()
             contacts = self._contacts(db)
@@ -552,7 +636,7 @@ class WeChatSource:
         never invokes inference. Account verification brackets the complete batch.
         """
         with self.lock:
-            db = self._db(fresh=True)
+            db = self._ordinary_db()
             if self.live_account and not db.messages_ready:
                 raise MessagesUnavailableError()
             if expected_account is not None and str(db.account) != expected_account:
@@ -597,7 +681,10 @@ class WeChatSource:
             # its current window, so preloading later chats cannot evict earlier images.
             for user in users:
                 self.window_images[(str(db.account), user)] = images[user]
-            return MessageWindowBatch(windows, has_more_before)
+            batch = MessageWindowBatch(windows, has_more_before)
+            batch.verified_scope = (str(db.account), str(Path(db.workdir).resolve()))
+            self._remember_advisor_binding(db, batch.verified_scope[0], Path(batch.verified_scope[1]), True)
+            return batch
 
     def texts_for_refs(self, user, refs, with_ids=False):
         """Read only analyzed message rows by their stored shard and local primary key."""
@@ -747,7 +834,7 @@ class WeChatSource:
 
     def history_highwater(self, user):
         with self.lock:
-            db = self._db(fresh=True)
+            db = self._ordinary_db()
             if self.live_account and not db.messages_ready:
                 raise MessagesUnavailableError()
             newest = self._shard_rows(db, user, 1)
@@ -761,7 +848,7 @@ class WeChatSource:
             # Resolve and validate one reader per page. Re-discovering the same
             # live account for readiness, reader access and self_user made every
             # page pay several Windows ownership queries before reading any rows.
-            db = self._db(fresh=True)
+            db = self._ordinary_db()
             if self.live_account and not db.messages_ready:
                 raise MessagesUnavailableError()
             if highwater is None:
@@ -808,6 +895,71 @@ class WeChatSource:
             next_after = (int(last_record[7]), last_shard, int(last_record[0]))
             messages = [self._render_row(db, user, item, contacts, own_user) for item in page]
             return [message for message in messages if message], next_after
+
+    def history_revision(self, user):
+        """Opaque metadata revision for history change detection; never read message text."""
+        with self.lock:
+            db = self._ordinary_db()
+            if self.live_account and not db.messages_ready:
+                raise MessagesUnavailableError()
+            records = []
+            for rel, source_path, _size in getattr(db, "_db_files", ()):
+                if not re.fullmatch(r"message/message_\d+\.db", rel.replace("\\", "/")):
+                    continue
+                destination = Path(db.workdir) / rel.replace(os.sep, "__")
+                signatures = []
+                for candidate in (Path(source_path), Path(str(source_path) + "-wal"), destination,
+                                  Path(str(destination) + ".stamp")):
+                    try:
+                        details = candidate.stat()
+                        signatures.append((details.st_mtime_ns, details.st_size, getattr(details, "st_ino", 0)))
+                    except FileNotFoundError:
+                        signatures.append(None)
+                records.append((rel.replace("\\", "/"), signatures))
+            storage = Path(getattr(db, "account_dir", "")) / "db_storage" / "message"
+            try:
+                inventory = sorted(path.name for path in storage.iterdir() if re.fullmatch(r"message_\d+\.db", path.name))
+            except FileNotFoundError:
+                inventory = []
+            identity = [str(db.account), os.path.normcase(os.path.realpath(db.workdir)), user,
+                        id(db), sorted(records), inventory]
+            return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def history_prefix_signature(self, user, ceiling):
+        """Numeric-only aggregates over one already-consumed cross-shard prefix."""
+        if (not isinstance(ceiling, (list, tuple)) or len(ceiling) != 3 or
+                type(ceiling[0]) is not int or type(ceiling[2]) is not int or
+                not isinstance(ceiling[1], str) or not re.fullmatch(r"message__message_\d+\.db", ceiling[1])):
+            raise ValueError("invalid history ceiling")
+        with self.lock:
+            db = self._ordinary_db()
+            if self.live_account and not db.messages_ready:
+                raise MessagesUnavailableError()
+            found = db._msg_conns(user)
+            signatures = []
+            try:
+                for connection, table in found:
+                    if not re.fullmatch(r"Msg_[0-9a-fA-F]{32}", table):
+                        raise RuntimeError("invalid message table")
+                    shard = Path(connection.execute("PRAGMA database_list").fetchone()[2]).name
+                    if not re.fullmatch(r"message__message_\d+\.db", shard):
+                        raise RuntimeError("unidentified message shard")
+                    high_seq, high_shard, high_local = ceiling
+                    if shard == high_shard:
+                        predicate = "(sort_seq < ? OR (sort_seq = ? AND local_id <= ?))"
+                        params = (high_seq, high_seq, high_local)
+                    else:
+                        predicate = "sort_seq <= ?" if shard < high_shard else "sort_seq < ?"
+                        params = (high_seq,)
+                    aggregates = connection.execute(
+                        "SELECT COUNT(*),COALESCE(MAX(local_id),0),COALESCE(SUM(local_id),0),"
+                        "COALESCE(MAX(sort_seq),0) FROM " + table + " WHERE " + predicate, params).fetchone()
+                    signatures.append((shard, list(aggregates)))
+            finally:
+                for connection in {id(connection): connection for connection, _table in found}.values():
+                    connection.close()
+            identity = [str(db.account), user, list(ceiling), sorted(signatures)]
+            return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def quoted_history_page(self, user, ceiling, after=None, page_size=64, member=None):
         """Read only 49/57 candidates inside an already-consumed history prefix."""

@@ -4,6 +4,22 @@ const updateFinalReadyMode = !updateValidationMode &&
   typeof process.env.WECHATVIBE_UPDATE_FINAL_READY_FILE === "string" &&
   typeof process.env.WECHATVIBE_UPDATE_FINAL_READY_NONCE === "string";
 
+ipcRenderer.on("advisor:layout", (_event, state) => {
+  if (window.top !== window || !state || ![0, 440].includes(state.width)) return;
+  document.documentElement.style.setProperty("--advisor-dock-width", state.width + "px");
+  if (Number.isFinite(state.mainWidth) && state.mainWidth > 0 && state.mainWidth <= 32768)
+    document.documentElement.style.setProperty("--advisor-main-width", state.mainWidth + "px");
+  document.documentElement.classList.toggle("advisor-docked", state.width > 0);
+});
+document.addEventListener("DOMContentLoaded", () => {
+  let last = false;
+  const observer = new MutationObserver(() => {
+    const visible = !!document.querySelector(".settings-modal-overlay.show,.modal-overlay.show,.scan-modal-overlay.show,.update-modal-overlay.show,.advisor-modal-overlay,.analysis-scope-overlay:not([hidden]),.startup-overlay:not([hidden])");
+    if (visible !== last) { last = visible; ipcRenderer.send("advisor:modal", visible); }
+  });
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "hidden"] });
+}, { once: true });
+
 ipcRenderer.on("real-client:bridge-restored", () => {
   window.dispatchEvent(new Event("wechatvibe-service-restored"));
 });
@@ -42,6 +58,25 @@ document.addEventListener("click", (event) => {
 
 contextBridge.exposeInMainWorld("desktopHost", Object.freeze({
   platform: "win32",
+  toggleAdvisor(force) {
+    if (window.top !== window || (force !== undefined && typeof force !== "boolean")) return Promise.resolve({ visible: false });
+    return ipcRenderer.invoke("advisor:toggle", force);
+  },
+  sendAdvisorEnvelope(envelope) {
+    if (window.top !== window || !envelope || typeof envelope !== "object") return;
+    ipcRenderer.send("advisor:from-main", envelope);
+  },
+  onAdvisorEnvelope(listener) {
+    if (window.top !== window || typeof listener !== "function") return () => {};
+    const handler = (_event, envelope) => listener(envelope);
+    ipcRenderer.on("advisor:to-main", handler);
+    return () => ipcRenderer.removeListener("advisor:to-main", handler);
+  },
+  chooseAssistantPackage(kind) {
+    if (window.top !== window || !["file", "directory"].includes(kind) || !navigator.userActivation.isActive)
+      return Promise.resolve(null);
+    return ipcRenderer.invoke("real-client:choose-assistant-package", kind, true);
+  },
   updateValidationMode,
   updateFinalReadyMode,
   reportUiReady() {

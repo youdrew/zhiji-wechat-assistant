@@ -57,6 +57,25 @@ def directory_reparse_alias(target, alias):
 
 
 class AccountManagementTests(unittest.TestCase):
+    def test_cold_advisor_data_is_also_cleared_without_starting_a_model(self):
+        from advisor_store import AdvisorStoreRoot
+        account = self.source.current
+        stores = AdvisorStoreRoot(self.root)
+        stores.account(account).create_thread('synthetic-person', 'synthetic-agent', 'local')
+        stores.close()
+        calls = []
+        cold_stores = AdvisorStoreRoot(self.root)
+        advisor = SimpleNamespace(
+            pause_for_account_clear=lambda value: calls.append(('pause', value)),
+            clear_account=cold_stores.remove_account,
+            resume_after_failed_account_clear=lambda: None)
+        self.backend.advisor_service = lambda: advisor
+        identifier = self.api.store.register(account, self.cache / account)
+        result = self.api.delete(identifier)
+        self.assertTrue(result['current'])
+        self.assertFalse((self.root / '.local/advisor-data' / account_id(account)).exists())
+        self.assertEqual(calls, [('pause', account)])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -1,0 +1,26 @@
+.advisor-native-markdown { overflow-wrap: anywhere; line-height: 1.65; white-space: normal; }
+.advisor-native-markdown p { margin: 0 0 8px; }
+.advisor-native-markdown p:last-child { margin-bottom: 0; }
+.advisor-native-markdown ul, .advisor-native-markdown ol { margin: 6px 0; padding-left: 22px; }
+.advisor-native-markdown h1, .advisor-native-markdown h2, .advisor-native-markdown h3, .advisor-native-markdown h4 { font-size: 15px; line-height: 1.5; margin: 12px 0 6px; }
+.advisor-native-markdown pre { max-width: 100%; overflow-x: auto; padding: 10px; border-radius: 4px; background: var(--advisor-code-bg, #303132); white-space: pre; }
+.advisor-native-markdown pre code { white-space: pre; }
+.advisor-native-markdown li > p { margin-bottom: 4px; }
+.advisor-native-markdown code { font-size: 12px; }
+.advisor-native-markdown blockquote { margin: 8px 0; padding-left: 10px; border-left: 2px solid #789782; }
+.advisor-native-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.advisor-native-markdown th, .advisor-native-markdown td { border: 1px solid #56595b; padding: 5px 8px; }
+.advisor-native-retry { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.advisor-waiting-dots { display: inline-flex; align-items: center; gap: 5px; width: 30px; height: 20px; }
+.advisor-waiting-dots > span { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: advisor-waiting-pulse 1.2s ease-in-out infinite; }
+.advisor-waiting-dots > span:nth-child(2) { animation-delay: .15s; }
+.advisor-waiting-dots > span:nth-child(3) { animation-delay: .3s; }
+@keyframes advisor-waiting-pulse { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+[data-component="text-shimmer"] { position: relative; display: inline-block; }
+[data-slot="text-shimmer-char"] { display: inline-grid; }
+[data-slot="text-shimmer-char-base"], [data-slot="text-shimmer-char-shimmer"] { grid-area: 1 / 1; }
+[data-slot="text-shimmer-char-shimmer"] { opacity: 0; }
+[data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char-base"] { animation: advisor-native-pulse 1.5s ease-in-out infinite; }
+@keyframes advisor-native-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { [data-slot="text-shimmer-char-base"] { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .advisor-waiting-dots > span { animation: none; opacity: .6; } }

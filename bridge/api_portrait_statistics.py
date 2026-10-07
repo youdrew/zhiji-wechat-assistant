@@ -94,7 +94,7 @@ def validate_batch_signal(result, pieces):
     return signal
 
 
-def valid_statistics(value, classifier_version=None):
+def valid_statistics(value, classifier_version=None, *, allow_historical_pending=False):
     """Reject incompatible or corrupted saved state; never seed from old numbers."""
     if (not isinstance(value, dict) or set(value) != {"version", "classifierVersion", "state", "pending"} or
             type(value["version"]) is not int or value["version"] != API_PORTRAIT_STATISTICS_VERSION or
@@ -158,7 +158,7 @@ def valid_statistics(value, classifier_version=None):
             not _count(pending["signalChars"], len(pending["text"])) or
             (pending["weightedResult"] is None) != (pending["signalChars"] == 0)):
         return False
-    if state["latest"] is not None and tuple(pending["position"]) <= tuple(state["latest"][:3]):
+    if not allow_historical_pending and state["latest"] is not None and tuple(pending["position"]) <= tuple(state["latest"][:3]):
         return False
     try:
         _signal(pending["weightedResult"])

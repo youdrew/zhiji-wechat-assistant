@@ -127,6 +127,7 @@ class Backend:
         self._analyzers = ([analyzer] if analyzer is not None else
                            [NodeAnalysis() for _ in range(self.worker_count)])
         self.key_locks = {}
+        self.profile_locks = {}
         self.api_analyzer = NodeAnalysis(api_only=True) if analyzer is None else analyzer
         # Long portrait generations must not hold up interactive message labels.
         self.api_portrait_analyzer = NodeAnalysis(api_only=True) if analyzer is None else analyzer
@@ -173,6 +174,11 @@ class Backend:
         self.active_requests = 0
         self.closing = False
         self.cache_clear_in_progress = set()
+        self.analysis_scope_resets = set()
+        self.analysis_cache_scope = None
+        self.analysis_cache_scope_lock = threading.Lock()
+        self.api_portrait_ledgers = {}
+        self.api_history_prefix_cache = OrderedDict()
         self.account_clear_paused = False
         self.performance = {}
         self.priority_recent = {}
@@ -192,6 +198,36 @@ class Backend:
             from batch_engine import BatchEngine
             self.batch_engine = BatchEngine(self)
         self._start_workers()
+
+    def advisor_service(self):
+        with self.jobs_lock:
+            service = getattr(self, "_advisor", None)
+            if service is None:
+                if self.closing:
+                    raise RuntimeError("bridge is closing")
+                from advisor_service import AdvisorService
+                from advisor_runtime import runtime_factory
+                service = self._advisor = AdvisorService(
+                    self.source, self.model_source_store, ROOT, runtime_factory(ROOT))
+            return service
+
+    def _observe_advisor_window(self, account, workdir, user, messages, has_more_before):
+        advisor = getattr(self, "_advisor", None)
+        if advisor is None or self.closing or type(has_more_before) is not bool:
+            return
+        try:
+            advisor.observe_message_window(account, workdir, user, messages, has_more_before)
+        except Exception:
+            # Assistant preparation must not break the existing chat display.
+            return
+
+    def _invalidate_advisor_source(self):
+        invalidate = getattr(self.source, "invalidate_advisor_identity", None)
+        if callable(invalidate):
+            invalidate()
+        advisor = getattr(self, "_advisor", None)
+        if advisor is not None:
+            advisor.cancel_stale_runs()
 
     @property
     def analyzer(self):
@@ -252,6 +288,10 @@ class Backend:
                 self.key_locks[key] = lock
             return lock
 
+    def _profile_lock(self, account, path, user):
+        with self.jobs_lock:
+            return self.profile_locks.setdefault((account, path, user), threading.Lock())
+
     @contextmanager
     def request_lease(self):
         """Track HTTP requests. A source-scoped cache clear must not block unrelated reads."""
@@ -272,6 +312,9 @@ class Backend:
             if self.closing:
                 raise RuntimeError("bridge is closing")
             self.closing = True
+        advisor = getattr(self, "_advisor", None)
+        if advisor is not None:
+            advisor.pause_for_account_clear(account)
         # API insight jobs outlive their HTTP request. Drain them before
         # touching this account's SQLite file.
         with self.api_condition:
@@ -322,6 +365,9 @@ class Backend:
             from batch_engine import BatchEngine
             self.batch_engine = BatchEngine(self)
         self._start_workers()
+        advisor = getattr(self, "_advisor", None)
+        if advisor is not None:
+            advisor.resume_after_failed_account_clear()
         with self.request_condition:
             self.account_clear_paused = False
             self.closing = False
@@ -333,6 +379,9 @@ class Backend:
             paused = self.account_clear_paused
             self.closing = True
             self.account_clear_paused = False
+        advisor = getattr(self, "_advisor", None)
+        if advisor is not None:
+            advisor.shutdown(account)
         with self.api_condition:
             self._cancel_api_source_work_locked()
             if not self.api_tasks.wait_for_idle(200):
@@ -469,6 +518,29 @@ class Backend:
             raise AccountChangedError()
         return state
 
+    def remove_conversations_selected(self, expected_account, sessions):
+        if (not isinstance(sessions, list) or not 1 <= len(sessions) <= 1000 or
+                len(set(_session_id(session) for session in sessions)) != len(sessions)):
+            raise ValueError("invalid session selection")
+        account = self._selection_account()
+        if account != expected_account:
+            raise AccountChangedError()
+        state = self.selection_store.remove_selected(account, sessions)
+        if self._selection_account() != account:
+            raise AccountChangedError()
+        return state
+
+    def _clear_model_text_caches(self):
+        for local in self._analyzers:
+            clear = getattr(local, "clear_caches", None)
+            if callable(clear):
+                clear()
+
+    def _check_analysis_reset(self, account, user, source_id):
+        with self.request_condition:
+            if (account, user, source_id) in self.analysis_scope_resets:
+                raise RuntimeError("analysis-reset-in-progress")
+
     def _scoped_identity(self):
         if self.closing:
             raise AccountUnavailableError()
@@ -481,6 +553,10 @@ class Backend:
                 ready()
             account, workdir = self.source.identity()
         scope = (str(account), str(Path(workdir).resolve()))
+        with self.analysis_cache_scope_lock:
+            if self.analysis_cache_scope is not None and self.analysis_cache_scope != scope:
+                self._clear_model_text_caches()
+            self.analysis_cache_scope = scope
         if scope not in self.stores:
             store = self.store_factory(account, workdir)
             normalize = getattr(store, "clear_legacy_suspensions", None)
@@ -534,11 +610,24 @@ class Backend:
             data["account"] = account
         if error:
             data["error"] = error
+        preparation = self.preparation_status(account)
+        if preparation is not None and state != "ready":
+            data["preparation"] = preparation
         return {"ok": state not in ("error", "account-unavailable") and model["state"] not in ("error", "missing"), "data": data,
                 "model": {"state": model["state"],
                           **({"provider": model["provider"]} if model.get("provider") in ("cpu", "webgpu") else {}),
                           **({"error": model["message"]} if model.get("message") and model["state"] != "ready" else {})},
                 "version": "real-ui-1"}
+
+    def preparation_status(self, account=None):
+        status = getattr(getattr(self.source, "factory", None), "preparation_status", None)
+        if not callable(status):
+            return None
+        result = status(account)
+        if not isinstance(result, dict):
+            return None
+        safe = {key: result[key] for key in ("reason", "state", "message", "retryAfterSeconds") if key in result}
+        return safe or None
 
     def runtime(self):
         return self.analyzer.runtime_status()
@@ -563,10 +652,14 @@ class Backend:
         return self.data_root_store.status()
 
     def configure_data_root(self, value):
-        return self.data_root_store.select(value)
+        result = self.data_root_store.select(value)
+        self._invalidate_advisor_source()
+        return result
 
     def clear_data_root(self):
-        return self.data_root_store.clear()
+        result = self.data_root_store.clear()
+        self._invalidate_advisor_source()
+        return result
 
     def model_source(self):
         with self.api_lock:
@@ -709,6 +802,9 @@ class Backend:
             if previous_context != values["contextTokens"]:
                 self.api_tasks.drop_portrait_error(source_id)
             self.model_source_revision += 1
+            advisor = getattr(self, "_advisor", None)
+            if advisor is not None:
+                advisor.cancel_stale_runs()
             return self.model_source()
 
     def model_source_clear_key(self, request):
@@ -717,6 +813,9 @@ class Backend:
         with self.api_lock:
             was_api = self.active_model_source_mode == "api"
             self.model_source_store.clear_key()
+            advisor = getattr(self, "_advisor", None)
+            if advisor is not None:
+                advisor.cancel_stale_runs()
             self.active_model_source_mode = "local"
             self.active_model_source_id = LOCAL_SOURCE_ID
             self.active_api_config = None
@@ -775,6 +874,7 @@ class Backend:
             if (self.closing or self.active_model_source_mode != "api" or
                     self.active_model_source_id != source_id):
                 raise ModelSourceUnavailable("model source changed")
+            self._check_analysis_reset(account, user, source_id)
             if store.cache_suspended(account, source_id):
                 return {"account": account, "sourceId": source_id,
                         "job": {"id": None, "status": "suspended", "total": 0, "processed": 0}}
@@ -1001,7 +1101,7 @@ class Backend:
 
     def _api_portrait_history(self, user, subject, highwater, scope, after=None,
                               piece_limit_bytes=None, cancel_check=None, start_after=None,
-                              skip_first_pieces=0, partial_sort=None):
+                              skip_first_pieces=0, partial_sort=None, known_ids=None):
         """Read a frozen range and retain pieces plus compact per-row seek evidence."""
         full_digest, delta_digest = hashlib.sha256(), hashlib.sha256()
         pieces = []
@@ -1028,7 +1128,7 @@ class Backend:
                 raise RuntimeError("history cursor did not advance")
             for item in page:
                 item_sort = tuple(item["_sort"])
-                current = after is None or item_sort > after
+                current = item.get("id") not in known_ids if known_ids is not None else after is None or item_sort > after
                 full["messageCount"] += 1
                 if current:
                     delta["messageCount"] += 1
@@ -1244,6 +1344,15 @@ class Backend:
                                               saved["processed"] /
                                               max(1, saved["available"].get("textCount", 0)))
             up_to_date = saved["highwater"] == highwater
+            if up_to_date and callable(getattr(self.source, "history_revision", None)) and callable(
+                    getattr(self.source, "history_prefix_signature", None)):
+                from api_portrait_ledger import scope as ledger_scope
+                ledger = self._api_portrait_ledger(store)
+                selected = ledger_scope(account, user, api_portrait_scope(source_id), subject,
+                                        self.api_portrait_analyzer.portrait_version())
+                metadata = ledger.metadata(selected)
+                if metadata["initialized"] and self.source.history_revision(user) != metadata["revision"]:
+                    up_to_date = self._api_history_prefix(user, metadata["highwater"]) == metadata["prefixSignature"]
             progress = {"processed": base + saved["processed"],
                         "total": available["textCount"] if up_to_date and available else max(
                             available["textCount"] if available else 0,
@@ -1260,14 +1369,19 @@ class Backend:
                         "batchIndex": 0, "batchTotal": 0, "complete": False}
         basis = (saved.get("resume") or {}).get("mbtiBasis") if saved else None
         statistics = (saved.get("resume") or {}).get("portraitStatistics") if saved else None
+        ledger_backed = saved is not None and (saved.get("resume") or {}).get("portraitLedgerVersion") == 1
         classifier_version = self.api_portrait_analyzer.portrait_version() if mode == "api" else None
-        compatible = valid_statistics(statistics, classifier_version)
+        compatible = valid_statistics(statistics, classifier_version, allow_historical_pending=ledger_backed)
         rebuilding = bool(compatible and not saved["complete"] and not statistics["state"]["count"] and
                           saved["portrait"].get("summary"))
+        display_statistics = (saved.get("resume") or {}).get("portraitDisplayStatistics") if saved and not saved["complete"] else None
+        if valid_statistics(display_statistics, allow_historical_pending=True):
+            rebuilding = True
+            statistics = {**display_statistics, "pending": None}
         native_profile = None
-        if valid_statistics(statistics) and (statistics["state"]["count"] or saved["complete"] or
+        if valid_statistics(statistics, allow_historical_pending=ledger_backed) and (statistics["state"]["count"] or saved["complete"] or
                                             not saved["portrait"].get("summary")):
-            derived = profile_from_statistics(statistics, statistics["classifierVersion"],
+            derived = profile_from_statistics({**statistics, "pending": None}, statistics["classifierVersion"],
                                               is_group=group, subject=member or ("" if group else user))
             native_profile = {**identity, **derived, "account": account,
                               "stats": {"messageCount": message_count if message_count is not None else
@@ -1465,6 +1579,8 @@ class Backend:
                     snapshot = self.api_tasks.drop_inventory_pieces_for(account)
                     self.api_tasks.invalidate_source(account, source_id)
             self._assert_scope((account, workdir))
+            if source_id == LOCAL_SOURCE_ID:
+                self._clear_model_text_caches()
             store.clear_analysis_cache(account, source_id)
             if source_id == LOCAL_SOURCE_ID and hasattr(self.source, "profile_metadata_cache"):
                 self.source.profile_metadata_cache.clear()
@@ -1497,6 +1613,107 @@ class Backend:
         self._assert_scope((account, workdir))
         return {"resumed": True, "account": account, "sourceId": source_id}
 
+    def analysis_scope_clear(self, requested_account, user, source_id, kind, member=None):
+        _session_id(user)
+        if kind not in ("conversation", "portrait") or not isinstance(source_id, str):
+            raise ValueError("invalid analysis reset")
+        if member is not None:
+            _session_id(member)
+            if kind != "portrait" or not user.endswith("@chatroom") or member == user:
+                raise ValueError("invalid portrait member")
+        account, workdir, store = self._scoped_identity()
+        if account != requested_account:
+            raise AccountChangedError()
+        known = {item["sourceId"] for item in self.analysis_cache_status()["sources"]}
+        if source_id != LOCAL_SOURCE_ID and source_id not in known:
+            raise ValueError("unknown analysis source")
+        subject = None if kind == "conversation" else member or ("" if user.endswith("@chatroom") else user)
+        reset_scope = (account, user, source_id)
+        with self.request_condition:
+            if reset_scope in self.analysis_scope_resets:
+                raise RuntimeError("analysis-reset-in-progress")
+            self.analysis_scope_resets.add(reset_scope)
+        locks = []
+        try:
+            if source_id == LOCAL_SOURCE_ID:
+                current = (account, str(store.path), user, self.analyzer.analysis_version())
+                deadline = time.monotonic() + 30
+                profile_lock = self._profile_lock(account, str(store.path), user)
+                if not profile_lock.acquire(timeout=30):
+                    raise RuntimeError("analysis-reset-busy")
+                locks.append(profile_lock)
+                self._key_lock(current)
+                with self.jobs_lock:
+                    keys = [key for key in self.key_locks if key[0] == account and key[2] == user]
+                for key in sorted(keys):
+                    lock = self._key_lock(key)
+                    if not lock.acquire(timeout=max(0, deadline - time.monotonic())):
+                        raise RuntimeError("analysis-reset-busy")
+                    locks.append(lock)
+                self._assert_scope((account, workdir))
+                with self.jobs_lock:
+                    # Queued tasks retain their job object, so explicitly invalidate it.
+                    if subject in (None, "") or not user.endswith("@chatroom"):
+                        for key, job in list(self.jobs.items()):
+                            if key[0] == account and key[2] == user:
+                                job["_cancelledByReset"] = True
+                                del self.jobs[key]
+                        for mapping in (self.priority_recent, self.recent_windows):
+                            for key in list(mapping):
+                                if key[0] == account and key[2] == user:
+                                    del mapping[key]
+                        self.incremental_recheck = {key for key in self.incremental_recheck
+                                                    if not (key[0] == account and key[2] == user)}
+                for key, iterator in list(self.quoted_backfill_iterators.items()):
+                    if key[0] == account and key[2] == user and (subject is None or key[-1] == subject):
+                        iterator.close()
+                        del self.quoted_backfill_iterators[key]
+                if subject in (None, "") or not user.endswith("@chatroom"):
+                    for key, iterator in list(self.history_iterators.items()):
+                        if key[0] == account and key[2] == user:
+                            iterator.close()
+                            del self.history_iterators[key]
+                            self.history_iterator_modes.pop(key, None)
+                    for key in list(self.performance):
+                        if key[0] == account and key[1] == user:
+                            del self.performance[key]
+                if self.batch_engine:
+                    for key, job in list(self.batch_engine.member_jobs.items()):
+                        if key[0] == account and key[2] == user and (subject is None or key[-1] == subject):
+                            job["_cancelledByReset"] = True
+                            del self.batch_engine.member_jobs[key]
+                    for key, iterator in list(self.batch_engine.member_iterators.items()):
+                        if key[0] == account and key[2] == user and (subject is None or key[-1] == subject):
+                            iterator.close()
+                            del self.batch_engine.member_iterators[key]
+                self._clear_model_text_caches()
+                removed = store.clear_scope(account, user, source_id, subject=subject)
+            else:
+                api_subject = member or user
+                with self.api_lock:
+                    self._assert_scope((account, workdir))
+                    for key, job in list(self.api_portrait_jobs.items()):
+                        if key[:3] == (account, user, source_id) and (subject is None or key[3] == api_subject):
+                            job.update(status="cancelled", error="analysis-reset")
+                            del self.api_portrait_jobs[key]
+                    if subject is None:
+                        for key, job in list(self.api_jobs.items()):
+                            if key[:3] == (account, user, source_id):
+                                job.update(status="cancelled", error="analysis-reset")
+                                del self.api_jobs[key]
+                    self.api_condition.notify_all()
+                    removed = store.clear_scope(account, user, source_id,
+                                                subject=None if subject is None else api_subject)
+            self._assert_scope((account, workdir))
+            return {"cleared": True, "account": account, "user": user, "sourceId": source_id,
+                    "kind": kind, **({"member": member} if member is not None else {}), "removed": removed}
+        finally:
+            for lock in reversed(locks):
+                lock.release()
+            with self.request_condition:
+                self.analysis_scope_resets.discard(reset_scope)
+                self.request_condition.notify_all()
+
     def start_model_portrait(self, requested_account, user, member=None, refresh_axes=False):
         if member is not None and (not user.endswith("@chatroom") or
                                    not isinstance(member, str) or not member or len(member) > 256):
@@ -1508,6 +1725,7 @@ class Backend:
             raise AccountChangedError()
         subject = member or user
         with self.api_lock:
+            self._check_analysis_reset(account, user, self.active_model_source_id)
             if self.active_model_source_mode != "api" or not self.active_api_config:
                 raise ModelSourceUnavailable("API model is not active")
             source_id = self.active_model_source_id
@@ -1554,6 +1772,41 @@ class Backend:
                     store.cache_suspended(job_key[0], job_key[2])):
                 raise RuntimeError("model-source-changed")
 
+    def _api_history_prefix(self, user, ceiling):
+        if ceiling is None:
+            return "empty-history"
+        revision = self.source.history_revision(user)
+        key = (user, tuple(ceiling), revision)
+        with self.api_lock:
+            if key in self.api_history_prefix_cache:
+                return self.api_history_prefix_cache[key]
+        signature = self.source.history_prefix_signature(user, ceiling)
+        if self.source.history_revision(user) == revision:
+            with self.api_lock:
+                self.api_history_prefix_cache[key] = signature
+                self.api_history_prefix_cache.move_to_end(key)
+                while len(self.api_history_prefix_cache) > 256:
+                    self.api_history_prefix_cache.popitem(last=False)
+        return signature
+
+    def _api_portrait_ledger(self, store):
+        from api_portrait_ledger import ApiPortraitLedger
+        with self.api_lock:
+            key = str(store.path)
+            if key not in self.api_portrait_ledgers:
+                self.api_portrait_ledgers[key] = ApiPortraitLedger(store)
+            return self.api_portrait_ledgers[key]
+
+    def _api_ledger_finish(self, job, user, connection):
+        ledger = job.get("_ledger")
+        if ledger is None:
+            return
+        unchanged = self.source.history_revision(user) == job["_historyRevision"]
+        ledger.persist(connection, job["_ledgerScope"], ready=True,
+                       revision=job["_historyRevision"] if unchanged else None,
+                       prefix_signature=self._api_history_prefix(user, job["_historyHighwater"]) if unchanged else None,
+                       highwater=job["_historyHighwater"])
+
     def _prepare_model_portrait(self, job_key, job, scope, store, config):
         """Freeze and plan history in the background; only then begin the cursor."""
         account, user, source_id, subject = job_key
@@ -1562,19 +1815,39 @@ class Backend:
         existing = store.api_portrait_get(account, user, api_portrait_scope(source_id), subject)
         classifier_version = self.api_portrait_analyzer.portrait_version()
         job["_classifierVersion"] = classifier_version
+        ledger = None
+        ledger_metadata = None
+        if callable(getattr(self.source, "history_revision", None)) and callable(
+                getattr(self.source, "history_prefix_signature", None)):
+            from api_portrait_ledger import scope as ledger_scope
+            ledger = self._api_portrait_ledger(store)
+            selected = ledger_scope(account, user, api_portrait_scope(source_id), subject, classifier_version)
+            ledger_metadata = ledger.metadata(selected)
+            job["_ledger"], job["_ledgerScope"] = ledger, selected
         rebuild = bool(existing and not valid_statistics(
-            (existing.get("resume") or {}).get("portraitStatistics"), classifier_version))
+            (existing.get("resume") or {}).get("portraitStatistics"), classifier_version,
+            allow_historical_pending=(existing.get("resume") or {}).get("portraitLedgerVersion") == 1))
+        if ledger is not None and not ledger_metadata["initialized"]:
+            rebuild = bool(existing)
         if rebuild:
             # Preserve the stored display portrait. Only the explicit analysis task
             # replaces its obsolete cursor/ledger after a new plan has been prepared.
             existing = None
         current_highwater = self.source.history_highwater(user)
+        if ledger is not None:
+            job["_historyRevision"] = self.source.history_revision(user)
+            job["_historyHighwater"] = current_highwater
+        prefix_changed = bool(ledger is not None and existing and existing["complete"] and
+                              job["_historyRevision"] != ledger_metadata["revision"] and
+                              self._api_history_prefix(user, ledger_metadata["highwater"]) != ledger_metadata["prefixSignature"])
+        reconciling_prefix = prefix_changed or bool(ledger is not None and existing and not existing["complete"] and
+                                                    existing["available"].get("reconcilePrefix"))
         self._assert_scope(scope)
         self._assert_api_portrait_job(job_key, job, store, config)
         if existing and existing["complete"] and existing["highwater"] is not None and (
                 current_highwater is None or current_highwater < existing["highwater"]):
             raise ValueError("unfinished portrait source changed")
-        if existing and existing["complete"] and existing["highwater"] == current_highwater:
+        if existing and existing["complete"] and existing["highwater"] == current_highwater and not prefix_changed:
             with self.api_lock:
                 self._assert_scope(scope)
                 self._assert_api_portrait_job(job_key, job, store, config)
@@ -1584,6 +1857,9 @@ class Backend:
                                  existing["available"]["textCount"],
                            batchIndex=existing["batchIndex"], batchTotal=len(existing["plan"]))
                 job.pop("phase", None)
+                if ledger is not None:
+                    store.api_portrait_update_metadata(account, user, api_portrait_scope(source_id), subject,
+                                                       lambda connection: self._api_ledger_finish(job, user, connection))
             return None
         if existing and not existing["complete"] and existing["batchIndex"] == len(existing["plan"]):
             # Compatibility with a crash after the final batch checkpoint. Finalize
@@ -1637,11 +1913,14 @@ class Backend:
         fast_resume = bool(existing and not existing["complete"] and has_full and
                            (completed == 0 or valid_resume))
         fast_incremental = bool(existing and existing["complete"] and has_full)
+        known_ids = ledger.known_ids(selected) if reconciling_prefix else None
         if fast_resume and completed:
             start_after = tuple(resume["after"]) if resume["after"] is not None else None
         elif fast_resume or fast_incremental:
             start_after = after
         else:
+            start_after = None
+        if prefix_changed:
             start_after = None
         skip_pieces = resume["skipPieces"] if fast_resume and completed else 0
         partial_sort = (tuple(resume["partialSort"]) if skip_pieces and
@@ -1674,7 +1953,7 @@ class Backend:
                     user, subject, highwater, scope, after,
                     cancel_check=lambda: self._assert_api_portrait_job(job_key, job, store, config),
                     start_after=start_after, skip_first_pieces=skip_pieces,
-                    partial_sort=partial_sort))
+                    partial_sort=partial_sort, known_ids=known_ids))
             if fast_resume:
                 tails = api_portrait_tail_hashes(row_hashes)
                 if completed and tails[:32].hex() != resume["tailHash"]:
@@ -1688,8 +1967,8 @@ class Backend:
                 full_available, full_fingerprint = saved_full, saved_full_fingerprint
             elif fast_incremental:
                 available, fingerprint = scan_available, scan_fingerprint
-                full_available = api_portrait_add_counts(saved_full, scan_full)
-                full_fingerprint = "chain-v2:" + hashlib.sha256(
+                full_available = scan_full if prefix_changed else api_portrait_add_counts(saved_full, scan_full)
+                full_fingerprint = scan_full_fingerprint if prefix_changed else "chain-v2:" + hashlib.sha256(
                     (saved_full_fingerprint + ":" + scan_fingerprint).encode("ascii")).hexdigest()
             else:
                 available, fingerprint = scan_available, scan_fingerprint
@@ -1716,6 +1995,8 @@ class Backend:
         available["baseTargetTextCount"] = base_target_count
         available["fullAvailable"] = full_available
         available["fullFingerprint"] = full_fingerprint
+        if reconciling_prefix:
+            available["reconcilePrefix"] = True
         wire_chars = api_portrait_wire_chars(config.get("contextTokens"), reserved_tokens=10240)
         if existing and not existing["complete"]:
             prefix = existing["plan"][:completed]
@@ -1735,6 +2016,8 @@ class Backend:
                                                  highwater, after, fingerprint, available, plan,
                                                  rebuild=rebuild,
                                                  local_rules=True, classifier_version=classifier_version,
+                                                 **({"ledger_begin": lambda connection: ledger.begin(connection, selected, reset=rebuild)}
+                                                    if ledger is not None else {}),
                                                  subject_kind="group" if user.endswith("@chatroom") and subject == user else "person")
                 if existing and not existing["complete"] and (
                         available != saved["available"] or legacy_resume is not None):
@@ -1755,6 +2038,9 @@ class Backend:
                 job.pop("phase", None)
                 if saved["complete"]:
                     job["status"] = "done"
+                    if ledger is not None:
+                        store.api_portrait_update_metadata(account, user, api_portrait_scope(source_id), subject,
+                                                           lambda connection: self._api_ledger_finish(job, user, connection))
                     return None
                 job["status"] = "running"
         return saved, pieces, piece_offset, tails
@@ -1812,7 +2098,8 @@ class Backend:
             portrait = saved["portrait"]  # Display-only legacy snapshot until statistics exist.
             saved_resume = saved.get("resume") or {}
             statistics = saved_resume.get("portraitStatistics")
-            if not valid_statistics(statistics):
+            ledger = job.get("_ledger")
+            if not valid_statistics(statistics, allow_historical_pending=ledger is not None):
                 raise RuntimeError("invalid-portrait")
             background = saved_resume.get("portraitContext") or []
             if not isinstance(background, list):
@@ -1876,8 +2163,18 @@ class Backend:
                 # Local coverage/state faults cannot be fixed by regenerating the
                 # same paid model response. Only model-output validation retries.
                 try:
-                    next_statistics = append_batch(statistics, generated["result"], batch,
-                                                   is_group=group, subject=local_subject)
+                    ledger_prepared = None
+                    if ledger is not None:
+                        ledger_prepared = ledger.prepare(statistics, generated["result"], batch,
+                                                         group=group, local_subject=local_subject,
+                                                         selected=job["_ledgerScope"])
+                        next_statistics = append_batch(statistics, generated["result"], batch,
+                                                       is_group=group, subject=local_subject) if ledger_prepared.get("appendOnly") else (
+                            ledger.statistics(job["_ledgerScope"], ledger_prepared))
+                        ledger_prepared["statistics"] = next_statistics
+                    else:
+                        next_statistics = append_batch(statistics, generated["result"], batch,
+                                                       is_group=group, subject=local_subject)
                 except (TypeError, ValueError, KeyError, RuntimeError) as exc:
                     raise RuntimeError("portrait-state-invalid") from exc
                 completed_texts = sum(bool(item["_last"]) for item in batch)
@@ -1888,6 +2185,8 @@ class Backend:
                 checkpoint_resume = api_portrait_resume_anchor(
                     batch[-1], plan[batch_index], batch_index + 1, tails)
                 checkpoint_resume["portraitStatistics"] = next_statistics
+                if ledger is not None:
+                    checkpoint_resume["portraitLedgerVersion"] = 1
                 background = [{**{key: value for key, value in item.items() if not key.startswith("_")},
                                "id": "background:" + item["id"], "target": False, "complete": False}
                               for item in batch[-3:]]
@@ -1902,7 +2201,9 @@ class Backend:
                             account, user, api_portrait_scope(source_id), subject,
                             batch_index + 1, portrait, next_processed, next_chars,
                             batch_index + 1 == len(plan), processed_target=next_target,
-                            resume=checkpoint_resume)
+                            resume=checkpoint_resume,
+                            **({"ledger_update": lambda connection: ledger.persist(
+                                connection, job["_ledgerScope"], ledger_prepared)} if ledger is not None else {}))
                     statistics = next_statistics
                     processed, processed_target, processed_chars = next_processed, next_target, next_chars
                     job.update(processed=saved["available"].get("baseTextCount", 0) + processed,
@@ -1918,7 +2219,9 @@ class Backend:
                     self._assert_scope(scope)
                     store.api_portrait_checkpoint(account, user, api_portrait_scope(source_id), subject,
                                                  len(plan), portrait, processed, processed_chars, True,
-                                                 processed_target=processed_target)
+                                                 processed_target=processed_target,
+                                                 **({"ledger_update": lambda connection: self._api_ledger_finish(job, user, connection)}
+                                                    if ledger is not None else {}))
                 job.update(status="done")
                 job.pop("retry", None)
                 job.pop("phase", None)
@@ -1935,6 +2238,7 @@ class Backend:
         account, workdir, _ = self._scoped_identity()
         messages = self.source.messages(user, limit)
         self._assert_scope((account, workdir))
+        self._observe_advisor_window(account, workdir, user, messages, getattr(messages, "has_more_before", None))
         return {"messages": [{key: value for key, value in item.items() if not key.startswith("_")} for item in messages],
                 "account": account, "total": None,
                 **({"hasMoreBefore": messages.has_more_before}
@@ -1946,6 +2250,17 @@ class Backend:
             if callable(ready):
                 ready()
         windows = self.source.message_windows(users, 80, expected_account=requested_account)
+        if getattr(self, "_advisor", None) is not None:
+            verified = getattr(windows, "verified_scope", None)
+            if isinstance(verified, tuple) and len(verified) == 2:
+                account, workdir = verified
+            else:
+                account, workdir, _ = self._scoped_identity()
+            if account != requested_account:
+                raise AccountChangedError()
+            for user in users:
+                self._observe_advisor_window(account, workdir, user, windows[user],
+                                             getattr(windows, "has_more_before", {}).get(user))
         return {"account": requested_account, "windows": [
             {"user": user, "messages": [
                 {key: value for key, value in item.items() if not key.startswith("_")}
@@ -2109,6 +2424,7 @@ class Backend:
             self._assert_scope((account, workdir))
         key = (account, str(store.path), user, version)
         with self.jobs_lock:
+            self._check_analysis_reset(account, user, LOCAL_SOURCE_ID)
             current = self.jobs.get(key)
             if current and (current["status"] in ("queued", "running") or key in self.recent_windows):
                 if mode == "recent":
@@ -2879,6 +3195,9 @@ class Backend:
     def _run_one(self, task):
         key, mode, limit, store, job, source_scope = task
         try:
+            if job.get("_cancelledByReset"):
+                job["status"] = "cancelled"
+                return
             if store.cache_suspended(key[0], LOCAL_SOURCE_ID):
                 job["status"] = "suspended"
                 return
@@ -3044,6 +3363,19 @@ class Backend:
 
     def profile(self, user, member=None, retry=False):
         account, workdir, store = self._scoped_identity()
+        self._check_analysis_reset(account, user, LOCAL_SOURCE_ID)
+        lock = self._profile_lock(account, str(store.path), user)
+        if not lock.acquire(timeout=30):
+            raise RuntimeError("analysis-reset-busy")
+        try:
+            self._check_analysis_reset(account, user, LOCAL_SOURCE_ID)
+            self._assert_scope((account, workdir))
+            return self._profile_locked(user, member, retry)
+        finally:
+            lock.release()
+
+    def _profile_locked(self, user, member=None, retry=False):
+        account, workdir, store = self._scoped_identity()
         version = self.analyzer.analysis_version()
         group = user.endswith("@chatroom")
         selected = member or user
@@ -3096,7 +3428,9 @@ class Backend:
                 key = (account, str(store.path), user, version)
                 self._focus(key)
                 highwater = self.source.history_highwater(user)
-                needs_work = (backfill_pending or not saved["complete"] or bool(saved["charOffset"]) or
+                needs_work = (backfill_pending or
+                              self.batch_engine.reconcile_pending(account, user, version, store) or
+                              not saved["complete"] or bool(saved["charOffset"]) or
                               highwater is not None and
                               (saved["cursor"] is None or highwater > tuple(saved["cursor"])))
                 with self.jobs_lock:

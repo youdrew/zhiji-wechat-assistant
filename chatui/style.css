@@ -817,7 +817,9 @@ body.theme-light .chat-status-pill .status-pill-text {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
 }
+.input-toolbar:has(#btnResetConversationAnalysis) { height: auto; min-height: 40px; padding-top: 7px; padding-bottom: 7px; }
 .tool-btn {
   color: #8c8c8e;
   cursor: pointer;
@@ -3079,13 +3081,24 @@ body.theme-light .inline-intent-row .intent-item.primary { color: #4a4a4c; }
 .model-source-status-row .model-source-status { flex: 1; }
 .conversation-manager { padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-search); }
 .conversation-manager[hidden] { display: none; }
-.conversation-manager-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--text-main); font-size: 13px; }
-.conversation-manager-head input { min-width: 0; width: 180px; padding: 7px 9px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-chat); color: var(--text-main); }
+.conversation-manager-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; color: var(--text-main); font-size: 13px; }
+.conversation-manager-head input { min-width: 0; width: 180px; flex: 1 1 140px; padding: 7px 9px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-chat); color: var(--text-main); }
+.conversation-manager-head button { flex: none; white-space: nowrap; }
 .conversation-manager-list { display: grid; gap: 5px; max-height: 300px; overflow-y: auto; }
 .conversation-manager-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px; border-radius: 5px; background: var(--bg-chat); }
 .conversation-manager-row .avatar-frame { width: 34px; height: 34px; flex: none; }
 .conversation-manager-row strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); font-size: 12px; font-weight: 600; }
 .conversation-manager-row button { flex: none; }
+.conversation-manager-check { width: 16px; height: 16px; margin: 0; flex: none; accent-color: var(--color-green); cursor: pointer; }
+.analysis-scope-overlay { position: fixed; inset: 0; z-index: 11000; display: grid; place-items: center; padding: 18px; background: rgba(0, 0, 0, .55); }
+.analysis-scope-overlay[hidden] { display: none; }
+.analysis-scope-dialog { width: min(420px, 100%); max-height: calc(100dvh - 36px); overflow-y: auto; box-sizing: border-box; padding: 22px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-chat); color: var(--text-main); }
+.analysis-scope-dialog h2 { margin: 0 0 14px; font-size: 18px; font-weight: 600; }
+.analysis-scope-dialog p { margin: 0 0 14px; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+#analysisScopeStatus { min-height: 20px; font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.analysis-scope-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.analysis-scope-actions button { min-width: 80px; min-height: 32px; }
+#btnResetConversationAnalysis:disabled, #btnResetPortrait:disabled { opacity: .55; cursor: default; }
 .persona-dashboard { align-items: stretch; }
 .persona-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); }
 body:not(.theme-light) .persona-card, body:not(.theme-light) .persona-hero-card,

@@ -6,9 +6,8 @@ Vendored from laya-mlx (Apache-2.0):
   Source revision: dc3aa6b150cb861d0788fbd421cfd1303de4ed57
   Source directory: web/packages/laya-web/src
 
-The following seven files are copied from that revision with only import
-specifier changes ("./x.ts" -> "./x", see README.md) and a provenance header
-added:
+The following seven files are copied from that revision with import specifier
+changes ("./x.ts" -> "./x", see README.md) and a provenance header added:
 
   types.ts
   pyjson.ts
@@ -17,6 +16,23 @@ added:
   prompt.ts
   calibration.ts
   agent.ts
+
+Local performance changes to tokenizer.ts, prompt.ts and agent.ts are adapted
+from nizitao's WechatVibe PR #26:
+  https://github.com/tswawa/WechatVibe/pull/26
+  Source revision: bca5c5ab4258e16340b5a4ecea94d070011853a9
+
+  tokenizer.ts  Bounded FIFO encode memoization, equivalent Unicode whitespace
+                membership and indexed token accumulation. This integration
+                also freezes returned ids, caps raw-text key length and exposes
+                explicit cache clearing for account/model/cache lifecycle events.
+  prompt.ts     Optional immutable precomputed state ids in buildSequence.
+  agent.ts      Encode each shared state once per prepare, lazily for nonempty
+                question sets.
+
+The offline tests in tests/laya-tokenizer.test.ts are adapted from the same
+contribution and extended for immutable results, cache limits and clearing.
+They use synthetic tokenizers and do not measure production model performance.
 
 The tokenizer/sequence/answer parity test fixture
 (tests/fixtures/laya-parity-multilingual.json) is also copied from that

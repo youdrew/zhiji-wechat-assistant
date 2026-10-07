@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advisor Frame</title>
+  <link rel="stylesheet" href="advisor.css">
+  <link rel="stylesheet" href="advisor-timeline.css">
+</head>
+<body class="advisor-frame-body advisor-empty">
+  <header class="advisor-frame-top">
+    <div class="advisor-agent-control">
+      <button type="button" class="advisor-agent-name" id="btnAgentMenu" aria-expanded="false" aria-controls="agentMenu">
+        <span id="agentName">狗头军师</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="advisor-agent-menu" id="agentMenu" role="menu" hidden></div>
+    </div>
+  </header>
+
+  <main class="advisor-conversation">
+    <section class="advisor-welcome" id="advisorWelcome">
+      <h1 id="welcomeText">嗨，我是你的狗头军师</h1>
+    </section>
+    <div class="advisor-timeline" id="advisorTimeline" role="log" aria-live="polite" hidden></div>
+  </main>
+
+  <div class="advisor-timeline-controls" id="timelineControls" hidden>
+    <button type="button" class="advisor-ctrl-btn retry" id="btnRetryRun" hidden>重试</button>
+  </div>
+
+  <footer class="advisor-input-area">
+    <textarea class="advisor-textarea" id="advisorInput" rows="3" maxlength="16000" aria-label="军师消息" placeholder="发送消息"></textarea>
+    <div class="advisor-input-bar">
+      <button type="button" class="advisor-send-btn" id="btnAdvisorSend" title="发送" aria-label="发送">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-7 7 7-7 7 7"/></svg>
+      </button>
+      <button type="button" class="advisor-send-btn advisor-stop-btn" id="btnStopRun" title="停止生成" aria-label="停止生成" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+      </button>
+    </div>
+  </footer>
+
+  <script src="advisor-ui-bundle.js"></script>
+  <script src="advisor-frame.js"></script>
+</body>
+</html>

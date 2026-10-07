@@ -284,7 +284,7 @@ class AccountStore:
                 raise AccountNotFound("账号不存在")
             return dict(item)
 
-    def delete(self, identifier, *, guard, forget):
+    def delete(self, identifier, *, guard, forget, related_cleanup=None):
         if not ACCOUNT_ID.fullmatch(identifier):
             raise ValueError("invalid accountId")
         with self.lock:
@@ -308,6 +308,10 @@ class AccountStore:
             stable = self._stable_key_file(account)
             if stable is not None and _regular(stable):
                 files.append(stable)
+            if related_cleanup is not None:
+                guard(account)
+                related_cleanup(account)
+                guard(account)
             for path in files:
                 _check_root(path.parent)
                 if _regular(path):

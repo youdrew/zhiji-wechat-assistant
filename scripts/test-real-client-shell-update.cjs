@@ -77,6 +77,9 @@ async function main() {
   assert.equal(handles.get("real-client:app-version")(trusted), "1.0.1");
   assert.equal(handles.get("real-client:app-version")(subframe), null);
   assert.equal(handles.get("real-client:app-version")(otherWindow), null);
+  assert.equal(await handles.get("real-client:choose-assistant-package")(subframe, "file", true), null);
+  assert.equal(await handles.get("real-client:choose-assistant-package")(otherWindow, "directory", true), null);
+  assert.equal(await handles.get("real-client:choose-assistant-package")(trusted, "file", false), null);
   assert.equal((await handles.get("real-client:check-updates")(subframe)).status, "blocked");
   assert.equal(calls.update, 0);
   const [first, second] = await Promise.all([

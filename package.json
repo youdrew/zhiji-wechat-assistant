@@ -1,6 +1,6 @@
 {
   "name": "wechatvibe",
-  "version": "1.2.4",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "WechatVibe 本机只读微信会话分析桌面客户端",
@@ -13,6 +13,8 @@
     "start": "electron .",
     "start:service": "python scripts/run-project-python.py scripts/start-real-client.py",
     "setup:models": "tsx scripts/setup-models.ts",
+    "setup:advisor-engine": "python scripts/setup-advisor-engine.py",
+    "build:advisor-ui": "node scripts/build-advisor-ui.mjs",
     "catalog:generate": "node scripts/build-analysis-catalog.mjs",
     "catalog:export": "python scripts/export-label-library.py --output WechatVibe-label-library.txt",
     "test": "npm run typecheck && npm run test:node && npm run test:scripts && npm run test:python",
@@ -20,7 +22,7 @@
     "test:python": "python scripts/run-python-tests.py",
     "test:model": "tsx scripts/test-model.ts",
     "test:recovery": "node scripts/test-desktop-main.cjs && node scripts/test-real-client-recovery.cjs && python scripts/run-project-python.py scripts/test-start-real-client.py && python scripts/run-project-python.py bridge/test_account_store.py",
-    "build:portable": "python scripts/run-project-python.py scripts/build-portable-clean.py",
+    "build:portable": "npm run build:advisor-ui && python scripts/run-project-python.py scripts/build-portable-clean.py",
     "typecheck": "tsc --noEmit -p tsconfig.electron.json",
     "test:scripts": "node scripts/run-node-script-tests.cjs",
     "setup:electron": "node node_modules/electron/install.js",
@@ -30,6 +32,7 @@
     "@anthropic-ai/sdk": "0.128.0",
     "@google/genai": "2.24.0",
     "@huggingface/tokenizers": "0.2.0",
+    "@opencode-ai/sdk": "1.18.34",
     "ollama": "0.6.3",
     "onnxruntime-node": "1.30.0",
     "openai": "7.23.0",
@@ -37,9 +40,16 @@
     "undici": "7.29.1"
   },
   "devDependencies": {
+    "@solidjs/meta": "0.29.4",
     "@types/node": "26.6.2",
+    "dompurify": "3.4.16",
     "electron": "44.4.3",
     "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "esbuild-plugin-solid": "0.6.0",
+    "marked": "18.0.14",
+    "remend": "1.4.0",
+    "solid-js": "1.9.15",
     "typescript": "7.0.2"
   }
 }

@@ -109,11 +109,36 @@ class ConfigCipherProbeTests(unittest.TestCase):
             probe._find_bytes(1, memory.read, live_source.upstream_db.CONFIG_CIPHER_NAME)
         self.assertEqual(probe.metrics()["scan_bytes"], 256)
         self.assertEqual(probe.metrics()["limit_hit"], "byte_limit")
+        self.assertEqual(probe.metrics()["byte_limit_scope"], "pass")
         expired = _BoundedConfigCipherProbe({})
         expired._deadline = 0
         with self.assertRaisesRegex(_ConfigScanLimit, "time_limit"):
             expired._find_bytes(1, memory.read, live_source.upstream_db.CONFIG_CIPHER_NAME)
         self.assertEqual(expired.metrics()["limit_hit"], "time_limit")
+
+    def test_larger_pass_can_find_anchors_beyond_former_budget_without_unbounded_scan(self):
+        name = live_source.upstream_db.CONFIG_CIPHER_NAME
+        payload = bytearray(768)
+        payload[384:384 + len(name)] = name
+        memory = SyntheticMemory(payload)
+        with patch("live_source.upstream_db._k32", memory), \
+                patch("live_source.CONFIG_SCAN_CHUNK", 64), \
+                patch("live_source.CONFIG_SCAN_PASS_BYTES", 256), \
+                patch("live_source.CONFIG_SCAN_TOTAL_BYTES", 512):
+            limited = _BoundedConfigCipherProbe({})
+            self.assertEqual(limited._find_bytes(1, memory.read, name), [])
+            self.assertEqual(limited.metrics()["limit_hit"], "byte_limit")
+        with patch("live_source.upstream_db._k32", memory), \
+                patch("live_source.CONFIG_SCAN_CHUNK", 64), \
+                patch("live_source.CONFIG_SCAN_PASS_BYTES", 512), \
+                patch("live_source.CONFIG_SCAN_TOTAL_BYTES", 1024):
+            expanded = _BoundedConfigCipherProbe({})
+            self.assertEqual(expanded._find_bytes(1, memory.read, name), [memory.base + 384])
+            self.assertEqual(expanded.metrics()["scan_bytes"], 512)
+            self.assertEqual(expanded.metrics()["limit_hit"], "byte_limit")
+        self.assertEqual(live_source.CONFIG_SCAN_PASS_BYTES, 4 * 1024 ** 3)
+        self.assertEqual(live_source.CONFIG_SCAN_TOTAL_BYTES, 8 * 1024 ** 3)
+        self.assertEqual(live_source.CONFIG_SCAN_SECONDS, 90)
 
     def test_region_and_candidate_limits_are_explicit(self):
         memory, _anchors, _expected = self.make_memory(anchor_count=8, pair_count=16)
@@ -130,6 +155,18 @@ class ConfigCipherProbeTests(unittest.TestCase):
                 candidate_probe._probable_key(bytes(range(32)))
         self.assertEqual(candidate_probe.metrics()["candidates"], 1)
         self.assertEqual(candidate_probe.metrics()["limit_hit"], "candidate_limit")
+
+    def test_total_byte_budget_reports_its_own_boundary(self):
+        memory, _anchors, _expected = self.make_memory(anchor_count=8, pair_count=16)
+        probe = _BoundedConfigCipherProbe({})
+        with patch("live_source.upstream_db._k32", memory), \
+                patch("live_source.CONFIG_SCAN_CHUNK", 64), \
+                patch("live_source.CONFIG_SCAN_PASS_BYTES", 512), \
+                patch("live_source.CONFIG_SCAN_TOTAL_BYTES", 128):
+            probe._find_bytes(1, memory.read, live_source.upstream_db.CONFIG_CIPHER_NAME)
+        self.assertEqual(probe.metrics()["scan_bytes"], 128)
+        self.assertEqual(probe.metrics()["byte_limit_scope"], "total")
+        self.assertEqual(probe.metrics()["limit_hit"], "byte_limit")
 
     def test_failed_and_short_large_reads_recover_anchors_and_pairs(self):
         memory, anchors, expected = self.make_memory()
@@ -338,6 +375,28 @@ class LiveKeyPreparationTests(unittest.TestCase):
                 self.assertIn(f"read_gaps={int(limit == 'read_gap')}", self.log.getvalue())
                 self.assertIn(f"limit_hit={limit}", self.log.getvalue())
                 self.assert_private_log()
+
+    def test_preparation_status_exposes_only_safe_failure_diagnostics(self):
+        def byte_limited(_pid, _pages, metrics):
+            metrics.update({"anchors": 0, "scan_bytes": live_source.CONFIG_SCAN_PASS_BYTES,
+                            "limit_hit": "byte_limit"})
+            return {}
+        factory = LiveWeChatFactory(retry_seconds=30)
+        with patch("live_source._scan_config_cipher_keys", side_effect=byte_limited), redirect_stderr(self.log):
+            with self.assertRaisesRegex(RuntimeError, "preparation pending"):
+                factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        status = factory.preparation_status(self.account)
+        self.assertEqual(status["reason"], "scan_limit")
+        self.assertEqual(status["limits"], ["byte_limit"])
+        self.assertEqual(status["timeBudgetSeconds"], 90)
+        self.assertIn("重新启动微信", status["message"])
+        self.assertGreater(status["retryAfterSeconds"], 0)
+        public = json.dumps(status, ensure_ascii=False)
+        self.assertNotIn(self.account, public)
+        self.assertNotIn(str(self.root), public)
+        for key in self.keys.values():
+            self.assertNotIn(key.hex(), public)
+        self.assertIsNone(factory.preparation_status("other-synthetic-account"))
 
 
 if __name__ == "__main__":

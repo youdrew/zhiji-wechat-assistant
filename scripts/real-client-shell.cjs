@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, WebContentsView, clipboard, dialog, ipcMain, session, shell, screen } = require("electron");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -53,6 +53,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   fs.mkdirSync(userData, { recursive: true });
   app.setPath("userData", userData);
   let window = null;
+  let advisorCompanion = null;
   let stopBridgeMonitor = null;
   let loadRetries = 0;
   let validationTimer = null;
@@ -116,10 +117,31 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
     ipcMain.on("real-client:set-theme", (event, theme) => {
       if (!trustedFrame(event) || !Object.hasOwn(THEMES, theme)) return;
       window.setTitleBarOverlay(THEMES[theme]);
+      advisorCompanion?.setTheme(theme);
       if (selfTest) {
         testState.themes.push({ theme, ...THEMES[theme] });
         if (testState.themes.length === 2 && testState.themeWaiter) testState.themeWaiter();
       }
+    });
+
+    ipcMain.handle("real-client:choose-assistant-package", async (event, kind, activated) => {
+      if (!trustedFrame(event) || activated !== true || !["file", "directory"].includes(kind) || selfTest) return null;
+      const selection = await dialog.showOpenDialog(window, {
+        title: "导入助手", properties: [kind === "directory" ? "openDirectory" : "openFile"],
+        ...(kind === "file" ? { filters: [{ name: "技能包", extensions: ["zip", "md"] }] } : {}),
+      });
+      if (selection.canceled || selection.filePaths.length !== 1 || !trustedFrame(event)) return null;
+      const bundled = path.join(ROOT, "runtime", "python", "python.exe");
+      const python = process.env.WECHATVIBE_PYTHON || (fs.existsSync(bundled) ? bundled : "python");
+      return new Promise(resolve => execFile(python, [path.join(ROOT, "scripts/advisor-package-grant.py"), selection.filePaths[0]], {
+        cwd: ROOT, windowsHide: true, timeout: 30000, maxBuffer: 65536,
+      }, (error, stdout) => {
+        try {
+          const value = JSON.parse(stdout);
+          if (!error && /^imp_[a-f0-9]{32}$/.test(value.token) && typeof value.label === "string") resolve(value);
+          else resolve({ error: typeof value.error === "string" ? value.error : "技能包读取失败" });
+        } catch { resolve({ error: "技能包读取失败" }); }
+      }));
     });
 
     ipcMain.on("real-client:open-doc", (event, target, trusted, active) => {
@@ -249,6 +271,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
     ipcMain.handle("real-client:exit-app", (event) => {
       if (!trustedFrame(event)) return false;
       exiting = true;
+      advisorCompanion?.close();
       stopBridgeMonitor?.();
       setImmediate(() => app.quit());
       return true;
@@ -259,6 +282,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
     // created by this launch; a reused bridge remains untouched.
     app.on("before-quit", event => {
       exiting = true;
+      advisorCompanion?.close();
       modelDownload?.cancel();
       if (validationTimer) clearTimeout(validationTimer);
       const recoveryDrain = stopBridgeMonitor?.() || Promise.resolve();
@@ -345,6 +369,10 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
           devTools: false,
         },
       });
+      if (!selfTest && screen) advisorCompanion = require("./advisor-companion.cjs").attachAdvisorCompanion({
+        WebContentsView, ipcMain, screen, clipboard, mainWindow: window, clientUrl: url,
+        trustedMainFrame: trustedFrame,
+      });
       if (updateValidation || updateFinalReady) {
         validationTimer = setTimeout(() => app.quit(), updateValidation ? 60000 : 90000);
       }
@@ -399,7 +427,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
           event.preventDefault();
         }
       });
-      window.on("closed", () => { window = null; stopBridgeMonitor?.(); });
+      window.on("closed", () => { advisorCompanion?.close(); window = null; stopBridgeMonitor?.(); });
       if (!selfTest && !updateValidation) {
         const startBridgeMonitor = () => {
           if (stopBridgeMonitor || !window || window.isDestroyed()) return;

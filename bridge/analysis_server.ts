@@ -26,6 +26,7 @@ import {
   analyzeObservedText,
   configureAnalysisRuntime,
   configureModelDir,
+  clearAnalysisCache,
   disposeAnalysisModel,
   forecastNextReply,
   getModelStatus,
@@ -586,6 +587,11 @@ async function main(): Promise<void> {
       continue;
     }
     try {
+      if (cmd === "clear-analysis-cache") {
+        clearAnalysisCache();
+        emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, cleared: true });
+        continue;
+      }
       if (cmd === "model:list") {
         const result = await listModels(connectorConfig(req, false));
         emit({ id, cmd, analysisVersion: ANALYSIS_VERSION, ...result });

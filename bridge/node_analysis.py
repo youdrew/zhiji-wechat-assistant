@@ -289,6 +289,14 @@ class NodeAnalysis:
                                      "baseUrl": base_url, "apiKey": api_key}, require_model=False)
         return {"models": response.get("models"), "supported": response.get("supported")}
 
+    def clear_caches(self):
+        with self.condition:
+            if self.process is None or self.process.poll() is not None:
+                return
+            response, _version = self._request({"cmd": "clear-analysis-cache"}, require_model=False)
+            if response.get("cleared") is not True:
+                raise RuntimeError("model cache clear failed")
+
     def model_test(self, protocol, base_url, api_key, model):
         response, _ = self._request({"cmd": "model:test", "protocol": protocol,
                                      "baseUrl": base_url, "apiKey": api_key,

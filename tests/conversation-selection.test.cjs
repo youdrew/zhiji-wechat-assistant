@@ -14,10 +14,12 @@ function section(start, end) {
   return source.slice(first, last);
 }
 const code = section("function renderSessions()", "async function preloadSessionWindows(") +
+  section("function validConversationSelection(", "function clearUnselectedConversation(") +
   section("function showChatEmptyState()", "async function loadSessions(") +
   section('byId("btnAddConversation").addEventListener', 'byId("conversationSearch").addEventListener') +
   "globalThis.ui = { renderSessions, showChatEmptyState, closeConversationManager, " +
-  "updateAddConversationButton, toggleConversationSelected };";
+  "updateAddConversationButton, toggleConversationSelected, renderConversationManager, " +
+  "conversationRemovalSelection, removeSelectedConversations };";
 
 function node(tag = "div", className = "", textContent = "") {
   const item = { tag, className, textContent, value: "", dataset: {}, children: [],
@@ -46,6 +48,7 @@ function node(tag = "div", className = "", textContent = "") {
     addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); },
     click() { if (!this.disabled) for (const listener of this.listeners.click || []) listener({ target: this }); },
     focus() { this.focused = true; },
+    setAttribute(name, value) { this[name] = value; },
   };
   item.classList = {
     contains: name => item.className.split(/\s+/).includes(name),
@@ -57,7 +60,7 @@ function node(tag = "div", className = "", textContent = "") {
   return item;
 }
 
-function harness({ selected = [], messagesReady = true, sourceMode = "api" } = {}) {
+function harness({ selected = [], messagesReady = true, sourceMode = "api", postImpl } = {}) {
   const nodes = new Map();
   const byId = id => {
     if (!nodes.has(id)) nodes.set(id, node());
@@ -87,8 +90,10 @@ function harness({ selected = [], messagesReady = true, sourceMode = "api" } = {
       assert.equal(url, "/api/conversation-selection");
       const payload = JSON.parse(options.body);
       posts.push(payload);
+      if (postImpl) return postImpl(payload, context);
       const next = new Set(context.chatState.selectedConversations);
-      if (payload.selected) next.add(payload.session); else next.delete(payload.session);
+      if (Array.isArray(payload.sessions)) for (const id of payload.sessions) next.delete(id);
+      else if (payload.selected) next.add(payload.session); else next.delete(payload.session);
       return { account: payload.expectedAccount, selectedSessions: [...next] };
     },
   });
@@ -196,4 +201,71 @@ it("adds and removes a second conversation through the existing account-scoped s
   assert.deepEqual([...h.context.chatState.selectedConversations], ["first"]);
   assert.equal(h.context.chatState.currentUser, "first");
   assert.equal(h.byId("btnAddConversation").disabled, false);
+});
+
+it("sorts selected conversations first and exposes checkboxes only for removable entries", () => {
+  const h = harness({ selected: ["second", "saved-only"] });
+  h.ui.renderConversationManager();
+  const rows = h.byId("conversationManagerList").children;
+  assert.deepEqual(rows.map(row => row.dataset.user), ["second", "saved-only", "first"]);
+  assert.equal(rows[0].children[0].type, "checkbox");
+  assert.equal(rows[1].children[0].type, "checkbox");
+  assert.notEqual(rows[2].children[0].type, "checkbox");
+});
+
+it("removes a selected batch with one metadata-only request while preserving the active chat", async () => {
+  const h = harness({ selected: ["first", "second", "saved-only"] });
+  h.ui.conversationRemovalSelection().add("second").add("saved-only");
+  const sentinel = { untouched: true };
+  h.context.chatState.sessionCache.set("sentinel", sentinel);
+  await h.ui.removeSelectedConversations();
+  assert.deepEqual(h.posts, [{ expectedAccount: "synthetic-account", sessions: ["second", "saved-only"], selected: false }]);
+  assert.deepEqual([...h.context.chatState.selectedConversations], ["first"]);
+  assert.equal(h.context.chatState.currentUser, "first");
+  assert.equal(h.context.chatState.sessionCache.get("sentinel"), sentinel);
+  assert.equal(h.switches.length, 0);
+  assert.equal(h.ui.conversationRemovalSelection().size, 0);
+  assert.match(h.byId("conversationManagerStatus").textContent, /聊天和画像已保留/);
+});
+
+it("refuses oversized removal batches and keeps selections intact on failed responses", async () => {
+  const h = harness({ selected: ["first"] });
+  for (let i = 0; i < 1001; i++) {
+    const id = `saved-${i}`;
+    h.context.chatState.selectedConversations.add(id);
+    h.ui.conversationRemovalSelection().add(id);
+  }
+  await h.ui.removeSelectedConversations();
+  assert.equal(h.posts.length, 0);
+  assert.match(h.byId("conversationManagerStatus").textContent, /1000/);
+  const failed = harness({ selected: ["first", "second"], postImpl: async () => { throw new Error("synthetic failure"); } });
+  failed.ui.conversationRemovalSelection().add("second");
+  await failed.ui.removeSelectedConversations();
+  assert.deepEqual([...failed.context.chatState.selectedConversations], ["first", "second"]);
+  assert.equal(failed.ui.conversationRemovalSelection().has("second"), true);
+});
+
+it("accepts a same-account removal acknowledgement during a session refresh", async () => {
+  let resolve;
+  const h = harness({ selected: ["first", "second"], postImpl: () => new Promise(done => { resolve = done; }) });
+  h.ui.conversationRemovalSelection().add("second");
+  const pending = h.ui.removeSelectedConversations();
+  h.context.chatState.sessionRequest++;
+  resolve({ account: "synthetic-account", selectedSessions: ["first"] });
+  await pending;
+  assert.deepEqual([...h.context.chatState.selectedConversations], ["first"]);
+});
+
+it("ignores a delayed batch response after switching account or refreshing selection ownership", async () => {
+  let resolve;
+  const h = harness({ selected: ["first", "second"], postImpl: () => new Promise(done => { resolve = done; }) });
+  h.ui.conversationRemovalSelection().add("second");
+  const pending = h.ui.removeSelectedConversations();
+  h.context.chatState.currentAccount = "new-account";
+  h.context.chatState.selectionLoadedAccount = "new-account";
+  h.context.chatState.selectedConversations = new Set(["new-chat"]);
+  resolve({ account: "synthetic-account", selectedSessions: ["first"] });
+  await pending;
+  assert.deepEqual([...h.context.chatState.selectedConversations], ["new-chat"]);
+  assert.equal(h.posts.length, 1);
 });

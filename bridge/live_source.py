@@ -6,6 +6,7 @@ still writes its ordinary decrypted SQLite snapshots under its account-specific 
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import struct
 import sys
@@ -28,8 +29,8 @@ PAGE_SIZE = 4096
 MAX_DB_FILES = 128
 RETRY_SECONDS = 30
 CONFIG_SCAN_CHUNK = 8 * 1024 * 1024
-CONFIG_SCAN_PASS_BYTES = 2 * 1024 * 1024 * 1024
-CONFIG_SCAN_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+CONFIG_SCAN_PASS_BYTES = 4 * 1024 * 1024 * 1024
+CONFIG_SCAN_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 CONFIG_SCAN_REGIONS = 65_536
 CONFIG_SCAN_CANDIDATES = 256
 CONFIG_SCAN_SECONDS = 90
@@ -37,6 +38,65 @@ CONFIG_SCAN_ANCHORS = 16_384
 CONFIG_SCAN_PAIR_HITS = 16_384
 CONFIG_SCAN_METRICS = ("anchors", "pairs", "scan_bytes", "scan_regions",
                        "read_gaps", "candidates")
+
+OWNERSHIP_TTL_SECONDS = 1.5
+_OWNERSHIP_CACHE_LIMIT = 64
+_ownership_condition = threading.Condition(threading.RLock())
+_ownership_cache = {}
+_ownership_flights = {}
+_ownership_generation = 0
+
+
+def reset_ownership_cache():
+    """Invalidate cached and in-flight ownership answers without cancelling Windows calls."""
+    global _ownership_generation
+    with _ownership_condition:
+        _ownership_generation += 1
+        _ownership_cache.clear()
+        _ownership_condition.notify_all()
+
+
+def _owned_processes(paths, *, fresh=True):
+    """Default to a new query; only ordinary reads may opt into bounded reuse."""
+    key = tuple(sorted({os.path.normcase(os.path.realpath(str(path))) for path in paths}))
+    if not key:
+        return ()
+    with _ownership_condition:
+        while True:
+            generation = _ownership_generation
+            flight_key = (generation, key)
+            if not fresh and OWNERSHIP_TTL_SECONDS > 0:
+                cached = _ownership_cache.get(key)
+                if cached is not None and time.monotonic() - cached[0] < OWNERSHIP_TTL_SECONDS:
+                    return cached[1]
+            if flight_key not in _ownership_flights:
+                token = object()
+                _ownership_flights[flight_key] = token
+                started = time.monotonic()
+                break
+            # A fresh caller must query after the earlier call, not inherit its result.
+            _ownership_condition.wait()
+    try:
+        owners = tuple(file_owners(key))
+    except Exception:
+        with _ownership_condition:
+            if generation == _ownership_generation:
+                _ownership_cache.pop(key, None)
+        raise
+    else:
+        with _ownership_condition:
+            if generation != _ownership_generation:
+                raise OSError("ownership query was invalidated")
+            if len(_ownership_cache) >= _OWNERSHIP_CACHE_LIMIT and key not in _ownership_cache:
+                _ownership_cache.clear()
+            # Never grant a new TTL to an old or slow query on completion.
+            _ownership_cache[key] = (started, owners)
+        return owners
+    finally:
+        with _ownership_condition:
+            if _ownership_flights.get(flight_key) is token:
+                _ownership_flights.pop(flight_key, None)
+            _ownership_condition.notify_all()
 
 
 @dataclass(frozen=True)
@@ -68,14 +128,15 @@ def _account_database_files(account):
     return anchors or files
 
 
-def _account_from_file_owners(accounts, processes):
+def _account_from_file_owners(accounts, processes, *, fresh=True):
     """Ask Windows which discovered process owns each account's SQLite files."""
     known = {process.pid for process in processes}
     matches = {}
     for account in accounts:
         owned = set()
-        for pid, created in file_owners(_account_database_files(account)):
-            if pid not in known or discovery.psutil is None:
+        for pid, created in _owned_processes(_account_database_files(account), fresh=fresh):
+            if (pid not in known or discovery.psutil is None or type(created) not in (float, int) or
+                    not math.isfinite(created) or created <= 0):
                 continue
             try:
                 process = discovery.psutil.Process(pid)
@@ -83,7 +144,10 @@ def _account_from_file_owners(accounts, processes):
                 if (process.name().lower() in ("weixin.exe", "wechat.exe") and
                         abs(process.create_time() - created) < .001):
                     owned.add((pid, created))
+                else:
+                    reset_ownership_cache()
             except (discovery.psutil.NoSuchProcess, discovery.psutil.AccessDenied):
+                reset_ownership_cache()
                 continue
         if owned:
             location = Path(account.path).parent.resolve()
@@ -94,16 +158,17 @@ def _account_from_file_owners(accounts, processes):
     return ActiveSelection(location, tuple(sorted(owners)))
 
 
-def active_account_snapshot() -> ActiveSelection | None:
+def active_account_snapshot(*, fresh=True) -> ActiveSelection | None:
     """Use live file ownership only; ambiguous or logged-out accounts are not selected."""
     accounts = discovery.discover_account_dirs()
     processes = discovery.find_weixin_processes()
     if not accounts or not processes:
+        reset_ownership_cache()
         return None
     if os.name == "nt":
         # Restart Manager only queries ownership. Unlike open_files(), this does not need
         # PROCESS_DUP_HANDLE, which current WeChat can deny even to the same Windows user.
-        return _account_from_file_owners(accounts, processes)
+        return _account_from_file_owners(accounts, processes, fresh=fresh)
     roots = [(account, os.path.normcase(os.path.realpath(account.path))) for account in accounts]
     matches: dict[str, set[tuple[int, float | None]]] = {}
     for process in processes:
@@ -238,6 +303,7 @@ class _BoundedConfigCipherProbe:
         self._read_gaps = 0
         self._candidates = 0
         self._limit_hits: set[str] = set()
+        self._byte_limits: set[str] = set()
         self._deadline = time.monotonic() + CONFIG_SCAN_SECONDS
 
     def metrics(self):
@@ -245,7 +311,18 @@ class _BoundedConfigCipherProbe:
                 "scan_bytes": self._bytes_read, "scan_regions": self._regions,
                 "read_gaps": self._read_gaps,
                 "candidates": self._candidates,
+                "byte_limit_scope": ",".join(sorted(self._byte_limits)) or "none",
                 "limit_hit": ",".join(sorted(self._limit_hits)) or "none"}
+
+    def _byte_budget(self, pass_bytes):
+        budget = min(CONFIG_SCAN_PASS_BYTES - pass_bytes, CONFIG_SCAN_TOTAL_BYTES - self._bytes_read)
+        if budget <= 0:
+            self._limit_hits.add("byte_limit")
+            if pass_bytes >= CONFIG_SCAN_PASS_BYTES:
+                self._byte_limits.add("pass")
+            if self._bytes_read >= CONFIG_SCAN_TOTAL_BYTES:
+                self._byte_limits.add("total")
+        return budget
 
     def _check_deadline(self):
         if time.monotonic() >= self._deadline:
@@ -287,19 +364,15 @@ class _BoundedConfigCipherProbe:
                 overlap = b""
                 while offset < size:
                     self._check_deadline()
-                    budget = min(CONFIG_SCAN_PASS_BYTES - pass_bytes,
-                                 CONFIG_SCAN_TOTAL_BYTES - self._bytes_read)
+                    budget = self._byte_budget(pass_bytes)
                     if budget <= 0:
-                        self._limit_hits.add("byte_limit")
                         return
                     window_end = offset + min(CONFIG_SCAN_CHUNK, size - offset, budget)
                     read_size = window_end - offset
                     while offset < window_end:
                         self._check_deadline()
-                        budget = min(CONFIG_SCAN_PASS_BYTES - pass_bytes,
-                                     CONFIG_SCAN_TOTAL_BYTES - self._bytes_read)
+                        budget = self._byte_budget(pass_bytes)
                         if budget <= 0:
-                            self._limit_hits.add("byte_limit")
                             return
                         take = min(read_size, window_end - offset, budget)
                         if take <= PAGE_SIZE:
@@ -503,6 +576,7 @@ class _ScanSlot:
     keys: dict[str, bytes] | None = None
     retry_at: float = 0.0
     scanning: bool = False
+    diagnostic: dict | None = None
 
 
 class LiveWeChatFactory:
@@ -525,6 +599,20 @@ class LiveWeChatFactory:
             for token in list(self.slots):
                 if os.path.basename(token[0]) == account:
                     del self.slots[token]
+        reset_ownership_cache()
+
+    def preparation_status(self, account=None):
+        """Allowlisted preparation diagnostics; never expose identifiers, paths or keys."""
+        with self.lock:
+            slots = [slot for token, slot in self.slots.items()
+                     if account is None or os.path.basename(token[0]) == account]
+            if len(slots) != 1:
+                return None
+            slot = slots[0]
+            status = dict(slot.diagnostic or {"reason": "preparing"})
+            status.update(state="preparing" if slot.scanning else slot.state,
+                          retryAfterSeconds=max(0, int(slot.retry_at - time.monotonic() + .999)))
+            return status
 
     def __call__(self, *, db_dir: str, account: str, selection: ActiveSelection | None):
         location = (Path(db_dir) / account).resolve()
@@ -588,6 +676,7 @@ class LiveWeChatFactory:
         scan_new_count = 0
         scan_counts = {name: 0 for name in CONFIG_SCAN_METRICS}
         limit_hits: set[str] = set()
+        byte_limit_scopes: set[str] = set()
         try:
             for rel, raw in (cached_keys or {}).items():
                 if rel in pages and _valid_page_key(raw, pages[rel][2]):
@@ -616,6 +705,8 @@ class LiveWeChatFactory:
                             scan_counts[name] += scan_metrics.get(name, 0)
                         if scan_metrics.get("limit_hit", "none") != "none":
                             limit_hits.update(scan_metrics["limit_hit"].split(","))
+                        if scan_metrics.get("byte_limit_scope", "none") != "none":
+                            byte_limit_scopes.update(scan_metrics["byte_limit_scope"].split(","))
                     stage = "candidate_validation"
                     for rel, raw in found.items():
                         if (rel in pages and rel not in keys and
@@ -668,10 +759,21 @@ class LiveWeChatFactory:
         matched = len(keys)
         matched_rels = set(keys)
         sessions_ready, messages_ready = _readiness(pages, keys)
+        diagnostic = {"reason": reason, "required": len(pages), "matched": matched,
+                      "limits": sorted(limit_hits), "metrics": dict(scan_counts),
+                      "byteLimitScopes": sorted(byte_limit_scopes),
+                      "passBudgetBytes": CONFIG_SCAN_PASS_BYTES, "totalBudgetBytes": CONFIG_SCAN_TOTAL_BYTES,
+                      "timeBudgetSeconds": CONFIG_SCAN_SECONDS}
+        diagnostic["message"] = (
+            "微信进程内存扫描达到字节上限，请重新启动微信后重试" if "byte_limit" in limit_hits and not messages_ready else
+            "微信进程内存扫描超时，请重新启动微信后重试" if "time_limit" in limit_hits and not messages_ready else
+            "微信进程内存读取权限不足，请确认微信与本工具的运行权限" if reason == "process_read_denied" else
+            "微信数据库读取凭据尚未完整，请稍后重试" if not messages_ready else "微信记录已就绪")
         with self.lock:
             if self.slots.get(token) is not slot or not slot.scanning:
                 reason = "scan_discarded"
             else:
+                slot.diagnostic = diagnostic
                 slot.scanning = False
                 if messages_ready:
                     slot.state, slot.keys = "ready", keys
