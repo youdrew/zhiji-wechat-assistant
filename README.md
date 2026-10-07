@@ -305,7 +305,10 @@ WechatVibe 为独立项目，与腾讯、微信没有官方隶属、合作或背
 - 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #10](https://github.com/tswawa/WechatVibe/pull/10)、[PR #18](https://github.com/tswawa/WechatVibe/pull/18)、[PR #19](https://github.com/tswawa/WechatVibe/pull/19)、[PR #20](https://github.com/tswawa/WechatVibe/pull/20) 和 [PR #21](https://github.com/tswawa/WechatVibe/pull/21) 加入本地多路并行分析、过滤服务号与系统会话、一键添加全部会话、只读的整账号分析进度与耗时，以及后台分析开关。
 - 感谢 [Ch1cken-1145（Ch1cken_#）](https://github.com/Ch1cken-1145) 通过 [PR #16](https://github.com/tswawa/WechatVibe/pull/16) 加入手动设置微信聊天记录路径的功能。
 - 感谢 [LianYu-Ya](https://github.com/LianYu-Ya) 在 [Issue #14](https://github.com/tswawa/WechatVibe/issues/14) 中反馈自部署模型批量标签格式错误、只返回一条的问题。
-- 感谢 [nizitao](https://github.com/nizitao) 通过 [PR #26](https://github.com/tswawa/WechatVibe/pull/26) 贡献重复分词优化。
+- 感谢 [nizitao](https://github.com/nizitao) 通过 [PR #26](https://github.com/tswawa/WechatVibe/pull/26) 贡献重复分词优化，并在 [PR #33](https://github.com/tswawa/WechatVibe/pull/33) 中继续整理改进建议。本版采用此前 #26 中的编码缓存、共享状态编码及等价文本处理，减少重复分词计算。
+- 感谢 [wzzzzzzzh](https://github.com/wzzzzzzzh) 通过 [PR #27](https://github.com/tswawa/WechatVibe/pull/27)、[PR #28](https://github.com/tswawa/WechatVibe/pull/28)、[Issue #30](https://github.com/tswawa/WechatVibe/issues/30) 和 [PR #32](https://github.com/tswawa/WechatVibe/pull/32) 贡献换行整理、账号查询提速及读取诊断。本版以等价实现采用扫描预算调整方案，改善部分较大微信进程因旧预算不足而持续未就绪的问题。
+- 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #31](https://github.com/tswawa/WechatVibe/pull/31) 提供累计分析状态异常的定位、最小复现和回归测试，帮助修复情绪证据缺失导致的分析中断，并提供读取问题的独立核对与测试反馈。
+- 感谢 [Berge520](https://github.com/Berge520) 通过 [Issue #24](https://github.com/tswawa/WechatVibe/issues/24) 反馈会话管理与分析恢复问题。
 
 </details>
 
