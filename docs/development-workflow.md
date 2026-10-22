@@ -1,8 +1,8 @@
-# 知己簿 · Know Your Friends 开发与公开发布流程
+# 知己微信助手 · Zhiji WeChat Assistant 开发与公开发布流程
 
-本流程适用于知己簿 · Know Your Friends 的维护者与外部贡献者。公开仓库为 [youdrew/know-your-friends](https://github.com/youdrew/know-your-friends)，`main` 保存已审核的公开版本。
+本流程适用于知己微信助手 · Zhiji WeChat Assistant 的维护者与外部贡献者。公开仓库为 [youdrew/zhiji-wechat-assistant](https://github.com/youdrew/zhiji-wechat-assistant)，`main` 保存已审核的公开版本。
 
-更新日期：2026-10-09（Asia/Taipei）。
+更新日期：2026-10-22（Asia/Tokyo）。
 
 ## 分支与 Pull Request
 
@@ -57,9 +57,9 @@ npm.cmd test
 
 ## 产品发布与上游同步
 
-当前提供源码开发版。继承的上游标签用于溯源，不代表 Know Your Friends 已发布同名产品版本。
+当前提供源码开发版。继承的上游标签用于溯源，不代表 Zhiji WeChat Assistant 已发布同名产品版本。
 
-建立独立安装包发布前，需要明确应用标识、产物命名、更新地址、签名与校验方式，并测试安装、升级、回退及数据保留。完成这些工作前，不把上游更新入口写成 Know Your Friends 的更新能力。
+建立独立安装包发布前，需要明确应用标识、产物命名、更新地址、签名与校验方式，并测试安装、升级、回退及数据保留。完成这些工作前，不把上游更新入口写成 Zhiji WeChat Assistant 的更新能力。
 
 关注 [WechatVibe](https://github.com/tswawa/WechatVibe) 的改进与兼容性修复。引入上游变更时保留来源，评估与当前公开版本的差异，并通过单独 PR 审核。项目来源和上游贡献者署名不因独立维护而移除。
 

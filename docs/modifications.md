@@ -1,6 +1,6 @@
-# 知己簿 · Know Your Friends 修改记录与来源说明
+# 知己微信助手 · Zhiji WeChat Assistant 修改记录与来源说明
 
-本文件记录 Know Your Friends 相对其公开基线的修改，保留来源与验证范围。
+本文件记录 Zhiji WeChat Assistant 相对其公开基线的修改，保留来源与验证范围。
 
 ## 2026-10-09：独立项目文档
 
@@ -42,3 +42,10 @@
 - [本机微信读取层来源](../native-reader/THIRD_PARTY_NOTICES.md)
 
 继承文件中的 WechatVibe 名称、上游版权与贡献说明用于记录来源，不应改写成 Know Your Friends 原创声明。Know Your Friends 独立维护，不代表上游项目，也不承诺获得其认可或背书。
+
+
+## 2026-10-22 产品命名
+
+平台品牌确定为“知己”，客户端名称为“知己微信助手”，英文为 Zhiji WeChat Assistant。公开仓库地址更新为 https://github.com/youdrew/zhiji-wechat-assistant 。
+
+本次公开改动只更新产品文档名称和仓库链接，不引入未公开的新功能，不改变当前源码开发版和上游溯源说明。上述早期记录保留当时名称与来源；原 Apache-2.0 许可、原作者及贡献者署名继续保留。
