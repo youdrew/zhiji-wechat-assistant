@@ -1,16 +1,18 @@
-# 知己簿 · Know Your Friends
+# 知己微信助手 · Zhiji WeChat Assistant
 
 **本地优先的好友理解与关系记忆助手**
 
+平台品牌为“知己”，客户端名称为“知己微信助手”。本仓库提供客户端源码；Agent 社交平台仍在规划中，命名不代表平台已经上线。名称与兼容标识的范围见[命名说明](docs/branding.md)。
+
 **A local-first assistant for understanding friends and maintaining relationship memory.**
 
-知己簿帮助你从聊天记录中整理交流线索：回看消息情绪与意图、查看人物和群聊画像，并结合当前会话生成交流建议与回复草稿。分析结果是模型对聊天文本的推测，应结合实际语境判断。
+知己微信助手帮助你从聊天记录中整理交流线索：回看消息情绪与意图、查看人物和群聊画像，并结合当前会话生成交流建议与回复草稿。分析结果是模型对聊天文本的推测，应结合实际语境判断。
 
-Know Your Friends helps you review emotions and interaction patterns in WeChat conversations, explore contact and group profiles, and draft replies with context. Its assessments are model-generated interpretations, not verified facts about a person's thoughts or personality.
+Zhiji WeChat Assistant helps you review emotions and interaction patterns in WeChat conversations, explore contact and group profiles, and draft replies with context. Its assessments are model-generated interpretations, not verified facts about a person's thoughts or personality.
 
 本项目基于 [WechatVibe](https://github.com/tswawa/WechatVibe) 衍生开发，作为独立仓库维护。当前提供微信文本分析、会话记忆与聊天助手功能，帮助你回顾共同经历、整理交流线索并准备回复。
 
-**当前状态：源码开发版。** 本仓库尚未发布 Know Your Friends 自有正式安装包。界面名称、打包标识和应用内更新地址仍保留上游设置，请使用下方源码步骤运行。独立发布机制完成前，不要使用应用内更新来更新 Know Your Friends。继承的上游 Git 标签用于代码溯源，不代表本项目的正式产品发布。
+**当前状态：源码开发版。** 本仓库尚未发布 Zhiji WeChat Assistant 自有正式安装包。界面名称、打包标识和应用内更新地址仍保留上游设置，请使用下方源码步骤运行。独立发布机制完成前，不要使用应用内更新来更新 Zhiji WeChat Assistant。继承的上游 Git 标签用于代码溯源，不代表本项目的正式产品发布。
 
 [当前功能](#当前功能) · [源码运行](#源码运行) · [使用边界](#使用边界) · [开发与贡献](#开发与贡献) · [来源与许可](#来源与许可)
 
@@ -56,8 +58,8 @@ API 画像的完整判断至少需要 12,288 tokens 上下文。模型回答质�
 开发环境需要 **Node.js 24.11.1、Python 3.14 和 npm**。在 PowerShell 中执行：
 
 ```powershell
-git clone https://github.com/youdrew/know-your-friends.git
-cd know-your-friends
+git clone https://github.com/youdrew/zhiji-wechat-assistant.git
+cd zhiji-wechat-assistant
 
 py -3.14 -m venv .venv
 $env:WECHATVIBE_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
@@ -132,11 +134,11 @@ npm.cmd test
 - [开发与公开发布流程](docs/development-workflow.md)
 - [修改记录与来源说明](docs/modifications.md)
 - [后端结构说明](docs/backend-architecture.md)
-- [问题反馈](https://github.com/youdrew/know-your-friends/issues)
+- [问题反馈](https://github.com/youdrew/zhiji-wechat-assistant/issues)
 
 ## 来源与许可
 
-本项目基于 [tswawa/WechatVibe](https://github.com/tswawa/WechatVibe)，保留其源码历史与第三方来源说明。Know Your Friends 独立维护，不代表 WechatVibe、腾讯、微信或其他上游项目，也没有这些项目的官方背书。
+本项目基于 [tswawa/WechatVibe](https://github.com/tswawa/WechatVibe)，保留其源码历史与第三方来源说明。Zhiji WeChat Assistant 独立维护，不代表 WechatVibe、腾讯、微信或其他上游项目，也没有这些项目的官方背书。
 
 代码采用 [Apache-2.0](LICENSE)；本项目新增代码同样采用该许可。第三方组件、模型与素材遵循各自的许可证：
 
@@ -154,7 +156,7 @@ npm.cmd test
 <details>
 <summary>继承的上游贡献者署名</summary>
 
-以下保留上游 README 的具体贡献说明。链接中的 Issue 和 PR 均属于 WechatVibe；其中“本版”指所引用的上游版本，不表示这些贡献者参与了 Know Your Friends 的独立维护。
+以下保留上游 README 的具体贡献说明。链接中的 Issue 和 PR 均属于 WechatVibe；其中“本版”指所引用的上游版本，不表示这些贡献者参与了 Zhiji WeChat Assistant 的独立维护。
 
 - 感谢 [china-luo](https://github.com/china-luo) 在 [Issue #1](https://github.com/tswawa/WechatVibe/issues/1) 中反馈 Windows 微信 4.1.15.13 的聊天记录读取异常，并提出对非字符串消息类型进行兼容转换的建议。
 - 感谢 [Li Xiang](https://github.com/Misaka1008611) 反馈微信数据库密钥不完整、反复读取的问题，并提供排查信息，帮助定位读取兼容性问题。
