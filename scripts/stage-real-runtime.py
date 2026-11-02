@@ -24,6 +24,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from reader_dependency import READER_DEPENDENCIES, stage_reader_distribution
 from ffmpeg_dependency import stage_imageio_distribution
 from opencv_dependency import stage_opencv_sources
+import msvc_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +55,7 @@ SKIP_PARTS = {"__pycache__", "test", "tests", "testing", "demo", "demos", "examp
               ".git", ".cache", "cache"}
 SKIP_NAMES = {"direct_url.json", "auth.json", "credentials.json", ".gitkeep"}
 STATS = {"python_stdlib": [0, 0], "python_packages": [0, 0],
-         "node_runtime": [0, 0], "node_packages": [0, 0]}
+         "node_runtime": [0, 0], "node_packages": [0, 0], "msvc_runtime": [0, 0]}
 
 
 def inside(path: Path, root: Path) -> bool:
@@ -101,8 +102,9 @@ def stage_python_stdlib() -> dict:
             not PYTHON_SITE.is_dir()):
         raise RuntimeError("run with the intended base Python 3.14 or its venv")
     target = STAGE / "runtime" / "python"
-    required = ("python.exe", "pythonw.exe", "python314.dll", "python3.dll",
-                "vcruntime140.dll", "vcruntime140_1.dll", "LICENSE.txt")
+    # CRT files come only from the separately reviewed Microsoft distribution;
+    # do not copy an arbitrary base Python's different CRT and then overwrite it.
+    required = ("python.exe", "pythonw.exe", "python314.dll", "python3.dll", "LICENSE.txt")
     for name in required:
         source = PYTHON_ROOT / name
         if not source.is_file():
@@ -427,6 +429,13 @@ def staged_inventory(path: Path) -> dict:
     return {"files": len(files), "bytes": sum(item.stat().st_size for item in files)}
 
 
+def stage_msvc_dependencies():
+    summary = msvc_runtime.stage_runtime(ROOT, STAGE, copy_file)
+    summary["verification"] = msvc_runtime.verify_deployment(
+        STAGE, msvc_runtime.specification(ROOT), include_judge=False)
+    return summary
+
+
 READER_PYTHON_PROBE = r"""
 import importlib.util
 from pathlib import Path
@@ -553,6 +562,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Node executable staged: {node['version']}; license={node['license']}")
     node.update(stage_node_packages())
     print(f"Node package closure staged: {len(node['packages'])} packages")
+    msvc = stage_msvc_dependencies()
+    print("Pinned app-local Microsoft runtime closure and loaded module paths verified")
     verify_staged_sdk_imports()
     print("Staged model SDK imports verified")
     verify_staged_retrieval_imports()
@@ -565,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Staged Python ignores user site packages")
     advisor = stage_advisor_engine()
     print("Read-only Advisor engine staged and verified")
-    manifest = {"python": python, "node": node, "advisor": advisor,
+    manifest = {"python": python, "node": node, "advisor": advisor, "msvc": msvc,
                 "stagedInventory": {
                     "python": staged_inventory(STAGE / "runtime" / "python"),
                     "node": staged_inventory(STAGE / "runtime" / "node"),

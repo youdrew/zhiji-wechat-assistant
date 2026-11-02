@@ -4,6 +4,8 @@ chatui/*.css text
 chatui/*.js text
 # Frozen benchmark hashes must survive Windows checkout with core.autocrlf.
 benchmarks/self-analysis-chat/** text eol=lf
+licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf -text -whitespace
+licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md text eol=lf
 # Keep original signed inputs, license spacing and pinned resource hashes intact.
 scripts/ffmpeg-runtime-resources/* -text -whitespace
 scripts/opencv-ffmpeg-runtime-resources/* -text -whitespace

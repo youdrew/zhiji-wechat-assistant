@@ -76,6 +76,7 @@ class JudgeStageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing or altered"):
             self.minimal_stage()
         self.assertFalse(self.output.exists())
+
         extra.unlink()
         file = self.base / "llama-server.exe"
         saved = file.read_bytes()
@@ -87,6 +88,17 @@ class JudgeStageTests(unittest.TestCase):
         (self.base / "manifest.json").unlink()
         with self.assertRaisesRegex(ValueError, "missing or altered"):
             self.minimal_stage()
+
+    def test_separate_reviewed_crt_does_not_weaken_the_upstream_runtime_inventory(self):
+        extra = self.base / "msvcp140.dll"
+        extra.write_bytes(b"synthetic separately pinned Microsoft release DLL")
+        row = {"name": extra.name, "bytes": extra.stat().st_size, "sha256": setup.digest(extra)}
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            setup.checked_runtime(self.base, self.spec)
+        setup.checked_runtime(self.base, self.spec, additional_files=[row])
+        extra.write_bytes(b"changed separately pinned DLL")
+        with self.assertRaisesRegex(ValueError, "hash differs"):
+            setup.checked_runtime(self.base, self.spec, additional_files=[row])
 
     def test_unreviewed_release_unsafe_names_and_forged_local_manifest_are_rejected(self):
         self.spec["version"] = "unreviewed"

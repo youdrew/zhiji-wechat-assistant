@@ -16,6 +16,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from community_package import COMMUNITY_PLUGINS, check_community_path, check_source_snapshot, source_revision
+import msvc_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ SCRIPTS = (
     "update-signing.pub", "model-files.json",
     "model-probe.ts", "model-gateway.ts", "embedding-model.json", "embedding-runner.cjs",
     "judge-model.json", "judge-runtime.json", "judge-selftest.json",
+    "msvc-runtime.json", "msvc_runtime.py", "pe_imports.py", "verify-msvc-runtime.py",
     "plugin-windows.cjs", "plugin-panel-preload.cjs",
     # Modified by Know Your Friends, 2026-10-27: the MCP stdio adapter for local AI clients.
     "mcp-stdio-adapter.py",
@@ -85,6 +87,8 @@ PUBLIC_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "docs/branding.md", "chatui/index.html",
     "docs/getting-started.md", "docs/acknowledgements.md", "docs/development-workflow.md",
     "docs/ffmpeg-source-distribution.md", "docs/scale-sources-and-permissions.md",
+    "docs/windows-runtime-distribution.md", "licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf",
+    "licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md",
     "licenses/Laya-Apache-2.0.txt", "licenses/Laya-NOTICE.txt",
     "chatui/app.js", "chatui/message-links.js", "chatui/conversation-menu.js", "chatui/message-menu.js", "chatui/session-resize.js", "chatui/composer-resize.js", "chatui/view-state.js", "chatui/style.css", "chatui/kaomoji.js",
     "chatui/composer-drafts.js",
@@ -226,7 +230,7 @@ def public_mappings(source: Path) -> list[tuple[Path, Path, Path]]:
     return [(source / relative, relative, source) for relative in project_files]
 
 
-def judge_runtime_mappings(source: Path) -> list[tuple[Path, Path, Path]]:
+def judge_runtime_mappings(source: Path, *, include_app_local=False) -> list[tuple[Path, Path, Path]]:
     """Ship the reviewed exe/DLL/license closure; never copy a tools directory wholesale."""
     if not (source / "scripts/judge-runtime.json").is_file():
         return []  # Older source snapshots and synthetic fixtures without this feature.
@@ -242,7 +246,10 @@ def judge_runtime_mappings(source: Path) -> list[tuple[Path, Path, Path]]:
         if directory == source:
             break
     try:
-        runtime_setup.checked_runtime(base, spec)
+        additional = []
+        if include_app_local and (source / "scripts/msvc-runtime.json").is_file():
+            additional = [row for row in msvc_runtime.specification(source)["files"] if row["name"] in msvc_runtime.CRT_FILES]
+        runtime_setup.checked_runtime(base, spec, additional_files=additional)
     except (OSError, ValueError, KeyError) as error:
         raise ValueError("judge runtime missing or altered; run scripts/setup-judge-runtime.py before staging") from error
     return [(base / name, Path("runtime/judge") / name, base.resolve())
@@ -293,7 +300,9 @@ def stage_public(source: Path, output: Path, *, require_clean=False) -> dict:
     verify_directories(output, expected)
     # Check the copied manifest against the copied bytes again: a publish racing
     # staging must not mix one build's manifest with another build's binaries.
-    judge_runtime_mappings(output)
+    judge_runtime_mappings(output, include_app_local=True)
+    if (output / "scripts/msvc-runtime.json").is_file():
+        msvc_runtime.verify_deployment(output, msvc_runtime.specification(output))
     check_source_snapshot(revision, source_revision(source, require_clean=require_clean), require_clean=require_clean)
     result = {"sourceVersion": version, **revision, "sourcePackageSha256": digest(source / "package.json"),
               "files": rows}
