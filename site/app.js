@@ -2,6 +2,20 @@
 'use strict';
 
 const imageButtons = [...document.querySelectorAll('[data-image]')];
+const slideButtons = [...document.querySelectorAll('[data-slide]')];
+const featureButtons = [...document.querySelectorAll('[data-feature]')];
+
+function selectScreen(index) {
+  imageButtons.forEach((button, position) => { button.closest('figure').hidden = position !== index; });
+  slideButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.slide) === index)));
+  const feature = [0, 3, 4].includes(index) ? 0 : [1, 2].includes(index) ? 1 : [5, 6].includes(index) ? 5 : -1;
+  featureButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.feature) === feature)));
+  document.querySelector('.screen-number').textContent = `${String(index + 1).padStart(2, '0')} / 08`;
+}
+
+slideButtons.forEach(button => button.addEventListener('click', () => selectScreen(Number(button.dataset.slide))));
+featureButtons.forEach(button => button.addEventListener('click', () => selectScreen(Number(button.dataset.feature))));
+
 const viewer = document.querySelector('.image-viewer');
 const viewerImage = viewer.querySelector('img');
 const viewerTitle = document.getElementById('viewer-title');
@@ -44,11 +58,11 @@ viewer.addEventListener('click', event => {
 });
 
 const releaseButtons = [...document.querySelectorAll('[data-download]')];
-function showPendingRelease() {
+function showReleaseFallback() {
   for (const button of releaseButtons) {
     button.dataset.pending = 'true';
-    button.href = '#download';
-    button.textContent = 'Windows 安装包准备中 ↓';
+    button.href = 'https://github.com/youdrew/zhiji-wechat-assistant/releases';
+    button.textContent = '前往下载页 ↗';
   }
 }
 
@@ -66,7 +80,7 @@ function trustedRelease(release) {
 }
 
 async function loadRelease() {
-  showPendingRelease();
+  showReleaseFallback();
   try {
     const response = await fetch('release.json', { cache: 'no-cache' });
     if (!response.ok) return;
