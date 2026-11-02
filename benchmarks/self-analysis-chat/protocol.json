@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "zh-chat-retrieval-20261018-v1",
+  "purpose": "Choose a local desktop embedding default using synthetic Chinese private-chat retrieval, not reply generation quality.",
+  "seed": 20261018,
+  "models": ["bge-small-zh-v1.5", "bge-base-zh-v1.5", "qwen3-embedding-0.6b"],
+  "precision": "FP32 ONNX CPU",
+  "threads": 2,
+  "maxTokens": 512,
+  "corpusBatchSize": 8,
+  "queryBatchSize": 1,
+  "freshProcessRunsPerModel": 3,
+  "modelRunOrder": [
+    ["bge-small-zh-v1.5", "bge-base-zh-v1.5", "qwen3-embedding-0.6b"],
+    ["qwen3-embedding-0.6b", "bge-small-zh-v1.5", "bge-base-zh-v1.5"],
+    ["bge-base-zh-v1.5", "qwen3-embedding-0.6b", "bge-small-zh-v1.5"]
+  ],
+  "queryOrder": "A seeded shuffle per run, identical across models for that run.",
+  "methods": ["lexical", "semantic", "hybrid"],
+  "encodingInput": "Candidate text is its input situation only. Replies, qrels, categories, family IDs and annotations are never passed to encoders.",
+  "truncation": "Keep the most recent tokens within 512, preserving model-specific instruction and required special tokens.",
+  "qwenQueryInstruction": "Given a Chinese chat situation, retrieve past chat situations with a similar communication intent and interpersonal context.",
+  "fusion": {"algorithm": "production RRF", "constant": 60, "branchCandidates": 64, "verificationWindow": 16, "maxPerContact": 2},
+  "primaryMetric": "test nDCG@4 on current-production raw query representation",
+  "queryRepresentations": {
+    "primary": "raw: strip only leading 本人/我/对方 speaker labels from canonical query lines, retain text and line order, matching current worker recent-text concatenation",
+    "ablation": "role-explicit: preserve canonical speaker labels, same candidates and qrels; extra queries encoded once, not used for default model selection or main latency",
+    "candidate": "canonical 本人/对方 speaker-labelled input situation, as produced by self_samples; candidate reply remains hidden from encoders"
+  },
+  "secondaryMetrics": ["Recall@1", "Recall@4", "Recall@10", "Hit@1", "Hit@4", "Hit@10", "MRR@10", "nDCG@10", "StrongHit@1", "StrongHit@4", "StrongRecall@4"],
+  "diagnosticCutoff": "@10 extends the display limit solely for diagnosis; production reply suggestions use at most 4 examples.",
+  "uncertainty": {"method": "paired bootstrap by scenario family", "confidence": 0.95, "replicates": 10000},
+  "splitPolicy": "Scenario families are separated between dev and test. All candidates remain searchable. Freeze data and labels after independent review, before any model results are examined.",
+  "tuning": "No test-set tuning; production fusion and all model instructions are fixed before running.",
+  "semanticFloorDiagnostic": "Keep production cosine >= 0.2 for the main seven rows. Report the fraction of relevant and eligible candidates removed by this fixed floor for each model; cosine distributions need not be calibrated alike. This is a pipeline comparison, not a claim that the models have identical score scales.",
+  "memoryDiagnostic": "For each of the seven retrieval methods, sample the sum of coexisting owned ranking-worker and optional encoder RSS/private memory every 10ms over the same seeded 16 warm queries. Includes benchmark Python/NumPy/data/vector overhead, excludes coordinator and full app. Report this sampled working-set peak separately from OS encoder process peak; do not sum independent process lifetime peaks.",
+  "decisionPolicy": {
+    "modelSelectionMethod": "Compare the three models using hybrid test nDCG@4. Treat models within 0.02 absolute nDCG@4 as practically tied and prefer lower measured latency, memory and download size. A heavier replacement should improve nDCG@4 by at least 0.03, have paired 95% CI above zero, and not reduce Hit@4 by more than 0.02. Also report the pure-semantic versus hybrid result; do not conceal a hybrid regression.",
+    "desktopGuardrails": {"warmQueryP95Ms": 500, "peakEncoderProcessRssGiB": 4, "downloadGiB": 3},
+    "interpretation": "Warm-query guardrail uses the all-query combined component-sum P95 over all three runs (480 observations/model/method); it is not an application end-to-end SLA. Memory guardrail uses maximum isolated encoder OS RSS peak over those three runs. Guardrails are for this measured CPU desktop configuration, not a promise for all devices. Publish failures, uncertainty and Pareto tradeoffs; retain the existing default if evidence for changing it is insufficient. Quantized variants and GPU deployments are outside this round."
+  },
+  "performanceScope": "Warm query latency includes local encoder IPC and tokenization/inference; ranking is measured separately and combined per query. It excludes Core HTTP authorization, original-message proof verification, model queue contention and final generation. Model load is process-cold with uncontrolled OS file cache. Peak memory is one isolated encoder process, not system-wide RAM.",
+  "privacy": "Only purpose-written synthetic conversations. No real chats, profiles, contacts, model credentials or private configuration are included in artifacts."
+}

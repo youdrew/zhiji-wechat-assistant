@@ -1,7 +1,10 @@
 """Cache-first, read-only preparation for the uniquely active WeChat account.
 
-Only validated raw database keys live in this process memory. The inherited WeChatDB reader
-still writes its ordinary decrypted SQLite snapshots under its account-specific workdir.
+WeChat's memory is scanned only when the account's stable key cache cannot open every
+required database (first use, a new message shard, or keys that stopped validating). Keys a
+scan validates are merged into that cache, so later starts open the databases without
+touching the WeChat process. The inherited WeChatDB reader still writes its ordinary
+decrypted SQLite snapshots under its account-specific workdir.
 """
 from __future__ import annotations
 
@@ -12,11 +15,12 @@ import struct
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from backend_contracts import AccountPreparationPending
 from cache_source import (MESSAGE_DATABASE, CacheOnlyWeChatDB, IncompleteKeyCache,
-                          database_groups, resolve_anchor_rels)
+                          database_groups, persist_database_keys, resolve_anchor_rels)
 from wechatauto import db as upstream_db
 from windows_file_owners import file_owners
 
@@ -28,6 +32,13 @@ from wr import crypto, discovery
 PAGE_SIZE = 4096
 MAX_DB_FILES = 128
 RETRY_SECONDS = 30
+# Account switches and database changes can invalidate a scan temporarily. Keep the
+# full backoff for scan limits and access failures, but retry transient churn soon.
+TRANSIENT_RETRY_SECONDS = 2
+TRANSIENT_PREPARATION_REASONS = frozenset({
+    "process_identity_error", "process_identity_unavailable", "process_scan_error",
+    "final_identity_error", "account_changed", "database_changed",
+})
 CONFIG_SCAN_CHUNK = 8 * 1024 * 1024
 CONFIG_SCAN_PASS_BYTES = 4 * 1024 * 1024 * 1024
 CONFIG_SCAN_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
@@ -56,25 +67,38 @@ def reset_ownership_cache():
         _ownership_condition.notify_all()
 
 
-def _owned_processes(paths, *, fresh=True):
+def _owned_processes(paths, *, fresh=True, since=None):
     """Default to a new query; only ordinary reads may opt into bounded reuse."""
+    return _owned_answer(paths, fresh=fresh, since=since)[0]
+
+
+def _owned_answer(paths, *, fresh=True, since=None):
+    """Owners and when their query finished.
+
+    A fresh caller accepts only an answer whose query started at or after
+    ``since`` (default: this call). Callers queued behind one slow query share
+    the next one instead of each starting their own.
+    """
     key = tuple(sorted({os.path.normcase(os.path.realpath(str(path))) for path in paths}))
     if not key:
-        return ()
+        return (), None
+    requested = time.monotonic()
+    since = requested if since is None else min(since, requested)
     with _ownership_condition:
         while True:
             generation = _ownership_generation
             flight_key = (generation, key)
-            if not fresh and OWNERSHIP_TTL_SECONDS > 0:
-                cached = _ownership_cache.get(key)
-                if cached is not None and time.monotonic() - cached[0] < OWNERSHIP_TTL_SECONDS:
-                    return cached[1]
+            cached = _ownership_cache.get(key)
+            if cached is not None and (cached[0] >= since if fresh else OWNERSHIP_TTL_SECONDS > 0 and
+                                       time.monotonic() - cached[0] < OWNERSHIP_TTL_SECONDS):
+                return cached[1], cached[2]
             if flight_key not in _ownership_flights:
                 token = object()
                 _ownership_flights[flight_key] = token
                 started = time.monotonic()
                 break
-            # A fresh caller must query after the earlier call, not inherit its result.
+            # A fresh caller never inherits a query that started before its request;
+            # it waits and then shares the next one.
             _ownership_condition.wait()
     try:
         owners = tuple(file_owners(key))
@@ -90,8 +114,9 @@ def _owned_processes(paths, *, fresh=True):
             if len(_ownership_cache) >= _OWNERSHIP_CACHE_LIMIT and key not in _ownership_cache:
                 _ownership_cache.clear()
             # Never grant a new TTL to an old or slow query on completion.
-            _ownership_cache[key] = (started, owners)
-        return owners
+            completed = time.monotonic()
+            _ownership_cache[key] = (started, owners, completed)
+        return owners, completed
     finally:
         with _ownership_condition:
             if _ownership_flights.get(flight_key) is token:
@@ -104,6 +129,8 @@ class ActiveSelection:
     account_dir: Path
     # A PID alone may be reused. Unknown creation times never authorize a memory scan.
     processes: tuple[tuple[int, float | None], ...]
+    # When the oldest ownership answer behind this selection finished; not part of its identity.
+    proved_at: float | None = field(default=None, compare=False)
 
 
 def _account_database_files(account):
@@ -128,13 +155,17 @@ def _account_database_files(account):
     return anchors or files
 
 
-def _account_from_file_owners(accounts, processes, *, fresh=True):
+def _account_from_file_owners(accounts, processes, *, fresh=True, since=None):
     """Ask Windows which discovered process owns each account's SQLite files."""
     known = {process.pid for process in processes}
     matches = {}
+    proved = []
     for account in accounts:
         owned = set()
-        for pid, created in _owned_processes(_account_database_files(account), fresh=fresh):
+        answer, completed = _owned_answer(_account_database_files(account), fresh=fresh, since=since)
+        if completed is not None:
+            proved.append(completed)
+        for pid, created in answer:
             if (pid not in known or discovery.psutil is None or type(created) not in (float, int) or
                     not math.isfinite(created) or created <= 0):
                 continue
@@ -155,11 +186,14 @@ def _account_from_file_owners(accounts, processes, *, fresh=True):
     if len(matches) != 1:
         return None
     location, owners = next(iter(matches.items()))
-    return ActiveSelection(location, tuple(sorted(owners)))
+    return ActiveSelection(location, tuple(sorted(owners)), min(proved) if proved else None)
 
 
-def active_account_snapshot(*, fresh=True) -> ActiveSelection | None:
-    """Use live file ownership only; ambiguous or logged-out accounts are not selected."""
+def active_account_snapshot(*, fresh=True, since=None) -> ActiveSelection | None:
+    """Use live file ownership only; ambiguous or logged-out accounts are not selected.
+
+    ``since`` lets a fresh caller share an ownership query that started after it asked.
+    """
     accounts = discovery.discover_account_dirs()
     processes = discovery.find_weixin_processes()
     if not accounts or not processes:
@@ -168,7 +202,7 @@ def active_account_snapshot(*, fresh=True) -> ActiveSelection | None:
     if os.name == "nt":
         # Restart Manager only queries ownership. Unlike open_files(), this does not need
         # PROCESS_DUP_HANDLE, which current WeChat can deny even to the same Windows user.
-        return _account_from_file_owners(accounts, processes, fresh=fresh)
+        return _account_from_file_owners(accounts, processes, fresh=fresh, since=since)
     roots = [(account, os.path.normcase(os.path.realpath(account.path))) for account in accounts]
     matches: dict[str, set[tuple[int, float | None]]] = {}
     for process in processes:
@@ -521,7 +555,7 @@ class VolatileKeyWeChatDB(CacheOnlyWeChatDB):
         self.messages_ready = True
 
     def _save_keys(self, *args, **kwargs):
-        # The upstream new-shard path must never persist volatile key material.
+        # Only LiveWeChatFactory's validated scans write the stable cache.
         return None
 
 
@@ -584,12 +618,14 @@ class LiveWeChatFactory:
 
     def __init__(self, cache_factory=CacheOnlyWeChatDB, volatile_factory=VolatileKeyWeChatDB,
                  scanner=None, retry_seconds=RETRY_SECONDS,
-                 session_factory=SessionOnlyWeChatDB):
+                 session_factory=SessionOnlyWeChatDB,
+                 transient_retry_seconds=TRANSIENT_RETRY_SECONDS):
         self.cache_factory = cache_factory
         self.volatile_factory = volatile_factory
         self.session_factory = session_factory
         self.scanner = scanner
         self.retry_seconds = retry_seconds
+        self.transient_retry_seconds = transient_retry_seconds
         self.lock = threading.Lock()
         self.slots: dict[tuple, _ScanSlot] = {}
 
@@ -609,8 +645,12 @@ class LiveWeChatFactory:
             if len(slots) != 1:
                 return None
             slot = slots[0]
+            if slot.scanning:
+                # A retry must describe the active scan, not its previous failure.
+                return {"reason": "preparing", "state": "preparing",
+                        "message": "正在准备微信聊天记录，请稍候…", "retryAfterSeconds": 0}
             status = dict(slot.diagnostic or {"reason": "preparing"})
-            status.update(state="preparing" if slot.scanning else slot.state,
+            status.update(state=slot.state,
                           retryAfterSeconds=max(0, int(slot.retry_at - time.monotonic() + .999)))
             return status
 
@@ -643,7 +683,7 @@ class LiveWeChatFactory:
                     slot.scanning = True
                     start_scan = True
             elif slot and (slot.state == "running" or time.monotonic() < slot.retry_at):
-                raise RuntimeError("active account preparation pending")
+                raise AccountPreparationPending()
             else:
                 keys = None
                 reader_state = None
@@ -655,7 +695,7 @@ class LiveWeChatFactory:
                              args=(selection, pages, token, {**cached_keys, **(keys or {})}, slot),
                              daemon=True).start()
         if keys is None:
-            raise RuntimeError("active account preparation pending")
+            raise AccountPreparationPending()
         factory = self.volatile_factory if reader_state == "ready" else self.session_factory
         try:
             return factory(db_dir=db_dir, account=account, volatile_keys=keys)
@@ -768,6 +808,7 @@ class LiveWeChatFactory:
             "微信进程内存扫描达到字节上限，请重新启动微信后重试" if "byte_limit" in limit_hits and not messages_ready else
             "微信进程内存扫描超时，请重新启动微信后重试" if "time_limit" in limit_hits and not messages_ready else
             "微信进程内存读取权限不足，请确认微信与本工具的运行权限" if reason == "process_read_denied" else
+            "暂时无法核对当前微信账号，请稍后重试" if reason == "final_identity_error" else
             "微信数据库读取凭据尚未完整，请稍后重试" if not messages_ready else "微信记录已就绪")
         with self.lock:
             if self.slots.get(token) is not slot or not slot.scanning:
@@ -775,14 +816,19 @@ class LiveWeChatFactory:
             else:
                 slot.diagnostic = diagnostic
                 slot.scanning = False
+                delay = (self.transient_retry_seconds if reason in TRANSIENT_PREPARATION_REASONS
+                         else self.retry_seconds)
                 if messages_ready:
                     slot.state, slot.keys = "ready", keys
                 elif sessions_ready:
                     slot.state, slot.keys = "sessions", keys
-                    slot.retry_at = time.monotonic() + self.retry_seconds
+                    slot.retry_at = time.monotonic() + delay
                 else:
                     slot.state, slot.keys = "failed", None
-                    slot.retry_at = time.monotonic() + self.retry_seconds
+                    slot.retry_at = time.monotonic() + delay
+        if keys and reason != "scan_discarded":
+            # Every key here validated against the current pages of the still-selected account.
+            persist_database_keys(selection.account_dir.name, keys)
         print(f"live_wechat_preparation result={reason} required={len(pages)} "
               f"matched={matched} cache={cache_count} scan_new={scan_new_count} union={matched} "
               f"{_database_counts(pages, matched_rels)} "

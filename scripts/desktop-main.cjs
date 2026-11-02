@@ -4,14 +4,15 @@ const { app, dialog } = require("electron");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { pythonFlags } = require("./real-client-recovery.cjs");
 
 const root = app.isPackaged ? path.join(process.resourcesPath, "client") : path.resolve(__dirname, "..");
 const bundledPython = path.join(root, "runtime", "python", "python.exe");
 const bundledNode = path.join(root, "runtime", "node", "node.exe");
 const projectPython = path.join(root, ".venv", "Scripts", "python.exe");
-const python = process.env.WECHATVIBE_PYTHON || (fs.existsSync(bundledPython) ? bundledPython :
+const python = process.env.KYF_PYTHON || (fs.existsSync(bundledPython) ? bundledPython :
   fs.existsSync(projectPython) ? projectPython : "python");
-const node = process.env.WECHATVIBE_NODE || (fs.existsSync(bundledNode) ? bundledNode : "node");
+const node = process.env.KYF_NODE || (fs.existsSync(bundledNode) ? bundledNode : "node");
 const launcher = path.join(root, "scripts", "start-real-client.py");
 let profileReady = false;
 // True only when this launch created the bridge (not when it reused a ready one).
@@ -37,10 +38,10 @@ function stopOwnedBridge(callback) {
     return;
   }
   const environment = {
-    ...process.env, WECHATVIBE_CLIENT_ROOT: root, WECHATVIBE_PYTHON: python,
+    ...process.env, KYF_CLIENT_ROOT: root, KYF_PYTHON: python,
   };
   try {
-    execFile(python, [launcher, "--stop-owned-bridge", "--json"], {
+    execFile(python, [...pythonFlags(root, python), launcher, "--stop-owned-bridge", "--json"], {
       cwd: root, env: environment, windowsHide: true, timeout: 30000, maxBuffer: 65536,
     }, () => callback());
   } catch (_) {
@@ -49,7 +50,7 @@ function stopOwnedBridge(callback) {
 }
 
 function fail() {
-  dialog.showErrorBox("WechatVibe 启动失败", "本地服务未就绪，请检查运行文件是否完整。");
+  dialog.showErrorBox("知己微信助手启动失败", "本地服务未就绪，请检查运行文件是否完整。");
   app.quit();
 }
 
@@ -65,16 +66,17 @@ app.whenReady().then(() => {
   }
   const environment = {
     ...process.env,
-    WECHATVIBE_CLIENT_ROOT: root,
-    WECHATVIBE_PYTHON: python,
-    WECHATVIBE_NODE: node,
+    KYF_CLIENT_ROOT: root,
+    KYF_PYTHON: python,
+    KYF_NODE: node,
     PATH: (path.isAbsolute(node) ? path.dirname(node) + path.delimiter : "") + (process.env.PATH || ""),
   };
   // Desktop launches derive their port from this installation, even when a
   // terminal or parent process exported an older client's CHATUI_PORT.
   delete environment.CHATUI_PORT;
-  execFile(python, [launcher, "--no-open", "--json"], {
-    cwd: root, env: environment, windowsHide: true, timeout: 45000, maxBuffer: 65536,
+  execFile(python, [...pythonFlags(root, python), launcher, "--no-open", "--json"], {
+    // Replacing an owned old bridge may take its bounded shutdown plus startup.
+    cwd: root, env: environment, windowsHide: true, timeout: 90000, maxBuffer: 65536,
   }, (error, stdout) => {
     if (error) {
       // The launcher stops a bridge it started before failing, so do not stop one here.
@@ -89,8 +91,8 @@ app.whenReady().then(() => {
       if (result.version !== "real-ui-1" || !match || !/^[a-f0-9]{64}$/.test(result.instanceId) ||
           Number(match[1]) < 1 || Number(match[1]) > 65535) throw new Error("Invalid launcher result");
       Object.assign(process.env, environment, {
-        CHATUI_PORT: match[1], WECHATVIBE_INSTANCE_ID: result.instanceId,
-        WECHATVIBE_BRIDGE_CREATED: bridgeCreated ? "1" : "0",
+        CHATUI_PORT: match[1], KYF_INSTANCE_ID: result.instanceId,
+        KYF_BRIDGE_CREATED: bridgeCreated ? "1" : "0",
       });
     } catch (_) {
       if (!bridgeCreated) bridgeCreated = /"created"\s*:\s*true/.test(String(stdout || ""));

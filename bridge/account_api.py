@@ -1,14 +1,19 @@
-"""Attach account management to the local UI without touching WeChat source files."""
+"""Attach account management to the local UI without touching WeChat source files.
+
+Modified by Know Your Friends, 2026-10-13: account data is Core's AccountDataService.
+"""
 from __future__ import annotations
 
 import threading
 import time
 import json
+import shutil
 import os
 import uuid
 from pathlib import Path
 
-from account_store import AccountConflict, AccountStore, account_id, _check_root, _regular
+from account_store import AccountConflict, AccountStore, _check_root, _regular
+from backend_contracts import ROOT as ROOT_DIR
 from snapshot_cache import try_forget_account, wait_forget_account
 
 
@@ -55,7 +60,7 @@ class AccountAPI:
                 return
             with self.backend.source.lock:
                 if sessions.get("messagesReady", True):
-                    actual, workdir, _ = self.backend._scoped_identity()
+                    actual, workdir = self.backend._scoped_identity()[:2]
                 else:
                     verified = getattr(self.backend.source, "verified_identity", None)
                     if callable(verified):
@@ -96,14 +101,34 @@ class AccountAPI:
             self.deleting = True
         paused = False
         marked = False
-        advisor = getattr(self.backend, "_advisor", None)
+        account_data = getattr(self.backend, "_accounts", None)
+        # Modified by Know Your Friends, 2026-10-10: clear stable media copies with
+        # the account, draining in-flight conversions before deleting their storage.
+        def related_cleanup(owned):
+            traces = getattr(self.backend, "model_traces", None)
+            if traces is not None:
+                traces.delete_scope(owned)
+            if account_data is not None:
+                account_data.clear_account(owned)
+            core = getattr(self.backend, "_core", None)
+            if core is not None:
+                core.clear_account(owned)
+            else:
+                from core_account_db import _long_path
+                from core_services import CoreServices
+                base = ROOT_DIR / ".local" / "plugin-data"
+                for directory in base.glob(f"*/accounts/{CoreServices.account_key(owned)}"):
+                    shutil.rmtree(_long_path(directory))
+            clear_media = getattr(source, "clear_media_account", None)
+            if callable(clear_media):
+                clear_media(owned)
         try:
-            if advisor is None:
-                open_advisor = getattr(self.backend, "advisor_service", None)
-                if callable(open_advisor):
-                    advisor = open_advisor()
-            if advisor is not None:
-                advisor.pause_for_account_clear(account)
+            if account_data is None:
+                open_accounts = getattr(self.backend, "account_data", None)
+                if callable(open_accounts):
+                    account_data = open_accounts()
+            if account_data is not None:
+                account_data.pause_for_account_clear(account)
             if current:
                 # Drain requests and writers before removing derived data. A failed removal
                 # can resume this bridge; a successful clear closes its model and exits.
@@ -119,8 +144,8 @@ class AccountAPI:
                 def guard(owned):
                     if owned != account:
                         raise AccountConflict("账号范围已变化")
-                extra = {"related_cleanup": advisor.clear_account} if advisor is not None else {}
-                result = self.store.delete(identifier, guard=guard, forget=wait_forget_account, **extra)
+                result = self.store.delete(identifier, guard=guard, forget=wait_forget_account,
+                                           related_cleanup=related_cleanup)
                 paused = False
                 shutdown()
             else:
@@ -134,30 +159,20 @@ class AccountAPI:
                             checks += 1
                         if observed == owned:
                             raise AccountConflict("账号已成为当前账号，请刷新后重试")
-                        with self.backend.jobs_lock:
-                            busy_job = any(key[0] == owned and job.get("status") in ("running", "queued")
-                                           for key, job in self.backend.jobs.items())
-                            busy_recent = any(key[0] == owned for key in self.backend.recent_windows)
-                            engine = getattr(self.backend, "batch_engine", None)
-                            busy_member = bool(engine and any(key[0] == owned and
-                                job.get("status") in ("running", "queued")
-                                for key, job in engine.member_jobs.items()))
-                            if busy_job or busy_recent or busy_member:
-                                raise AccountConflict("账号分析尚未结束，请稍后重试")
-                    extra = {"related_cleanup": advisor.clear_account} if advisor is not None else {}
-                    result = self.store.delete(identifier, guard=guard, forget=try_forget_account, **extra)
+                    result = self.store.delete(identifier, guard=guard, forget=try_forget_account,
+                                               related_cleanup=related_cleanup)
                     forget_keys = getattr(source, "forget_account", None)
                     if callable(forget_keys):
                         forget_keys(account)
             with self.lock:
-                for scope in list(self.backend.stores):
-                    if account_id(scope[0]) == identifier:
-                        del self.backend.stores[scope]
                 self.registered.pop(account, None)
             return {**result, "current": current, "exitApp": current}
         except Exception:
-            if advisor is not None:
-                advisor.resume_after_failed_account_clear()
+            resume_media = getattr(source, "resume_media_after_failed_clear", None)
+            if callable(resume_media):
+                resume_media(account)
+            if account_data is not None:
+                account_data.resume_after_failed_account_clear()
             if paused:
                 resume()
                 if marked:

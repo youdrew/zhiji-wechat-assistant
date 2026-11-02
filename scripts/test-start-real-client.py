@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import psutil
 import shutil
 import socket
 import subprocess
@@ -103,12 +104,109 @@ class LauncherTests(unittest.TestCase):
             launcher.ensure_service(self.config, starter=lambda *_: self.fail("started"))
         self.assertFalse(self.config.runtime_dir.exists())
 
-    def test_rejects_same_installation_bridge_from_another_app_version(self):
+    def test_recognizes_same_installation_bridge_from_another_app_version(self):
         (self.root / "package.json").write_text('{"version":"1.0.2"}', encoding="utf-8")
         self.server("real-ui-1", app_version="1.0.1")
-        self.assertIn("wrong service", launcher.health(self.config))
-        with self.assertRaisesRegex(launcher.LauncherError, "occupied"):
-            launcher.ensure_service(self.config, starter=lambda *_: self.fail("started"))
+        self.assertEqual(launcher.health(self.config), "outdated")
+
+    def test_missing_or_invalid_app_version_is_not_an_outdated_owned_service(self):
+        (self.root / "package.json").write_text('{"version":"1.0.2"}', encoding="utf-8")
+        server = self.server("real-ui-1", app_version="1.0.1")
+        for app_version in (None, "", "   ", 123, {"version": "1.0.1"}):
+            with self.subTest(app_version=app_version):
+                server.RequestHandlerClass.app_version = app_version
+                self.assertIn("wrong service", launcher.health(self.config))
+                with patch.object(launcher, "stop_owned_bridge") as stop:
+                    with self.assertRaisesRegex(launcher.LauncherError, "occupied"):
+                        launcher.ensure_service(self.config, starter=lambda *_: self.fail("started"))
+                    stop.assert_not_called()
+
+    def test_app_version_mismatch_never_allows_foreign_service_cleanup(self):
+        (self.root / "package.json").write_text('{"version":"1.0.2"}', encoding="utf-8")
+        server = self.server("real-ui-1", app_version="1.0.1")
+        for protocol, identity in (("other-protocol", self.config.instance_id),
+                                   ("real-ui-1", "0" * 64),
+                                   ("real-ui-1", None)):
+            with self.subTest(protocol=protocol, identity=identity):
+                server.RequestHandlerClass.version = protocol
+                server.RequestHandlerClass.instance_id = identity
+                self.assertIn("wrong service", launcher.health(self.config))
+                with patch.object(launcher, "stop_owned_bridge") as stop:
+                    with self.assertRaisesRegex(launcher.LauncherError, "occupied"):
+                        launcher.ensure_service(self.config, starter=lambda *_: self.fail("started"))
+                    stop.assert_not_called()
+                with patch.object(launcher, "request_owned_shutdown") as request:
+                    with self.assertRaisesRegex(launcher.LauncherError, "wrong service"):
+                        launcher.stop_owned_bridge(self.config)
+                    request.assert_not_called()
+        self.assertEqual(server.control_tokens, [])
+        self.assertFalse(self.config.runtime_dir.exists())
+
+    def test_outdated_bridge_is_stopped_before_a_new_bridge_starts(self):
+        from unittest.mock import Mock
+        events = []
+        states = iter(("outdated", "unavailable", "ready"))
+
+        def health(_config):
+            state = next(states)
+            events.append(f"health:{state}")
+            return state
+
+        def stop(_config):
+            events.append("stop")
+            return {"stopped": True, "pid": 47230}
+
+        def start(_config, _log_path, _control_token):
+            events.append("start")
+            return FakeProcess()
+
+        starter = Mock(side_effect=start)
+        with patch.object(launcher, "health", side_effect=health), \
+             patch.object(launcher, "stop_owned_bridge", side_effect=stop) as shutdown, \
+             patch.object(launcher, "port_occupied", return_value=False), \
+             patch.object(launcher, "process_identity", return_value=(True, 42)):
+            created, log_path = launcher.ensure_service(self.config, starter=starter)
+        self.assertTrue(created)
+        self.assertEqual(log_path.parent, self.config.runtime_dir)
+        shutdown.assert_called_once_with(self.config)
+        starter.assert_called_once()
+        self.assertLess(events.index("stop"), events.index("health:unavailable"))
+        self.assertLess(events.index("health:unavailable"), events.index("start"))
+        self.assertLess(events.index("start"), events.index("health:ready"))
+
+    def test_outdated_cleanup_error_prevents_duplicate_launch(self):
+        from unittest.mock import Mock
+        starter = Mock()
+        with patch.object(launcher, "health", return_value="outdated"), \
+             patch.object(launcher, "stop_owned_bridge", side_effect=launcher.LauncherError(
+                 "Owned bridge cleanup failed: old process still running")) as stop:
+            with self.assertRaisesRegex(launcher.LauncherError, "old process still running"):
+                launcher.ensure_service(self.config, starter=starter)
+        stop.assert_called_once_with(self.config)
+        starter.assert_not_called()
+        self.assertFalse(self.config.runtime_dir.exists())
+
+    def test_occupied_port_after_outdated_cleanup_prevents_duplicate_launch(self):
+        from unittest.mock import Mock
+        starter = Mock()
+        with patch.object(launcher, "health", side_effect=("outdated", "unavailable")), \
+             patch.object(launcher, "stop_owned_bridge", return_value={"stopped": True}) as stop, \
+             patch.object(launcher, "port_occupied", return_value=True):
+            with self.assertRaisesRegex(launcher.LauncherError, "occupied"):
+                launcher.ensure_service(self.config, starter=starter)
+        stop.assert_called_once_with(self.config)
+        starter.assert_not_called()
+        self.assertFalse(self.config.runtime_dir.exists())
+
+    def test_recovery_reuses_outdated_bridge_without_stopping_active_ui(self):
+        (self.root / "package.json").write_text('{"version":"1.0.2"}', encoding="utf-8")
+        server = self.server("real-ui-1", app_version="1.0.1")
+        with patch.object(launcher, "stop_owned_bridge") as stop:
+            self.assertEqual(launcher.ensure_service(self.config, recovery=True,
+                             starter=lambda *_: self.fail("started")), (False, None))
+        stop.assert_not_called()
+        self.assertEqual(server.control_tokens, [])
+        self.assertFalse(self.config.runtime_dir.exists())
 
     def test_port_and_identity_are_stable_for_resolved_root(self):
         self.assertEqual(launcher.default_port(self.root), launcher.default_port(self.root / "."))
@@ -305,6 +403,31 @@ class LauncherTests(unittest.TestCase):
         with patch("psutil.process_iter", return_value=[young, old, foreign, python_worker]):
             self.assertEqual(launcher.orphan_analysis_children(self.config, record), [young])
 
+    def test_orphan_scan_excludes_standalone_probes_and_gateways_from_same_installation(self):
+        from datetime import datetime, timezone
+        from unittest.mock import Mock
+        node = self.root / "node.exe"
+        node.write_bytes(b"fixture")
+        loader = (self.root / "node_modules" / "tsx" / "dist" / "loader.mjs").as_uri()
+        workers = []
+        for pid, name, import_loader in ((905, "model-probe.ts", "tsx"),
+                                         (906, "model-gateway.ts", loader)):
+            worker = Mock()
+            worker.info = {"pid": pid, "name": "node.exe", "create_time": time.time() + 1}
+            worker.exe.return_value = str(node)
+            worker.cmdline.return_value = [str(node), "--import", import_loader,
+                                            str(self.root / "scripts" / name)]
+            workers.append(worker)
+        record = {"pid": 47231, "created_filetime": 42,
+                  "started_at": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}
+        with patch("psutil.process_iter", return_value=workers):
+            self.assertEqual(launcher.orphan_analysis_children(self.config, record), [])
+        # These scripts remain eligible when their live, verified bridge enumerates them.
+        parent = Mock()
+        parent.children.return_value = workers
+        self.assertEqual(launcher.owned_model_children(self.config, parent), workers)
+        parent.children.assert_called_once_with(recursive=True)
+
     def test_unreadable_recent_node_worker_blocks_false_cleanup_success(self):
         import psutil
         from datetime import datetime, timezone
@@ -352,8 +475,10 @@ class LauncherTests(unittest.TestCase):
         path.write_text(json.dumps(record), encoding="utf-8")
         return path
 
-    def isolated_shutdown_fixture(self, *, exit_delay):
+    def isolated_shutdown_fixture(self, *, exit_delay, flags=()):
         """Launch a data-free HTTP fixture under this test's temporary root."""
+        import psutil
+
         script = self.root / "bridge" / "chat_server.py"
         script.write_text('''
 import json
@@ -371,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path != "/api/control/shutdown" or self.headers.get("X-WechatVibe-Control-Token") != "a" * 64:
+        if self.path != "/api/control/shutdown" or self.headers.get("X-KYF-Control-Token") != "a" * 64:
             self.send_error(403)
             return
         body = b'{"stopping":true}'
@@ -389,15 +514,44 @@ server.serve_forever()
 server.server_close()
 time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
 ''', encoding="utf-8")
-        process = subprocess.Popen([str(self.config.python_exe), str(script)], cwd=self.root,
+        process = subprocess.Popen([str(self.config.python_exe), *flags, str(script)], cwd=self.root,
                                    env={**launcher.os.environ, "CHATUI_PORT": str(self.config.port),
                                         "FIXTURE_INSTANCE_ID": self.config.instance_id,
                                         "FIXTURE_EXIT_DELAY": str(exit_delay)},
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL,
                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        fixture_children = []
+
+        def remember_fixture_children():
+            # The Windows venv launcher may delegate to a real Python child.
+            # Snapshot only descendants running this exact temporary script,
+            # while the parent exists; a forced stop can orphan them later.
+            try:
+                for child in psutil.Process(process.pid).children(recursive=True):
+                    if any(Path(argument).resolve() == script.resolve() for argument in child.cmdline()[1:]):
+                        if child not in fixture_children:
+                            fixture_children.append(child)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
         def cleanup():
+            if process.poll() is None:
+                remember_fixture_children()
+            for child in reversed(fixture_children):
+                try:
+                    if child.is_running():
+                        child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            _, remaining = psutil.wait_procs(fixture_children, timeout=5)
+            for child in remaining:
+                try:
+                    if child.is_running():
+                        child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            psutil.wait_procs(remaining, timeout=5)
             if process.poll() is None:
                 process.terminate()
             process.wait(timeout=5)
@@ -408,6 +562,7 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
             self.assertIsNone(process.poll(), "isolated fixture exited before health")
             time.sleep(0.05)
         self.assertEqual(launcher.health(self.config), "ready")
+        remember_fixture_children()
         alive, created = launcher.process_identity(process.pid)
         self.assertTrue(alive)
         self.assertIsInstance(created, int)
@@ -423,9 +578,42 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         with patch.object(launcher.subprocess, "Popen") as start:
             launcher.start_service(self.config, log, "a" * 64)
         args, kwargs = start.call_args
-        self.assertEqual(args[0][1], str(self.root / "bridge" / "chat_server.py"))
+        self.assertEqual(args[0], [str(self.config.python_exe), str(self.root / "bridge" / "chat_server.py")])
         self.assertEqual(kwargs["env"][launcher.CONTROL_TOKEN_ENV], "a" * 64)
         self.assertNotIn(launcher.CONTROL_TOKEN_ENV, launcher.os.environ)
+
+    def test_bundled_runtime_starts_the_bridge_without_the_user_site(self):
+        portable = self.root / "runtime" / "python" / "python.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_bytes(b"fixture")
+        (portable.parent / "python314._pth").write_text("Lib\\site-packages\nimport site\n", encoding="utf-8")
+        config = launcher.Config(self.root, portable, self.config.port, 0.35)
+        with patch.object(launcher.subprocess, "Popen") as start:
+            launcher.start_service(config, self.root / "bridge.log", "a" * 64)
+        self.assertEqual(start.call_args.args[0],
+                         [str(portable), "-s", str(self.root / "bridge" / "chat_server.py")])
+
+    def test_bridge_ownership_accepts_only_the_user_site_flag(self):
+        script = str(self.root / "bridge" / "chat_server.py")
+        python = str(self.config.python_exe)
+        record = {"pid": 47231, "created_filetime": 42}
+
+        def verify(command):
+            with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+                 patch("psutil.Process") as process:
+                process.return_value.exe.return_value = python
+                process.return_value.cmdline.return_value = command
+                self.assertIs(launcher.verify_owned_process(self.config, record), process.return_value)
+
+        # Bridges started before -s existed keep being recognized after an update.
+        for command in ([python, script], [python, "-s", script]):
+            with self.subTest(command=command):
+                verify(command)
+        for command in ([python, "-s", script, "--unowned"], [python, "-I", script], [python, "-s", "-s", script],
+                        [python, "-s"], [python]):
+            with self.subTest(command=command):
+                with self.assertRaisesRegex(launcher.LauncherError, "image or script command line"):
+                    verify(command)
 
     def test_record_failure_stops_only_new_child_and_leaves_no_token_record(self):
         class NewChild(FakeProcess):
@@ -476,6 +664,64 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         with patch.object(launcher, "process_identity", return_value=(True, 42)):
             with self.assertRaisesRegex(launcher.LauncherError, "no valid control token"):
                 launcher.stop_owned_bridge(self.config, timeout=0.5)
+        self.assertEqual(server.control_tokens, [])
+
+    def test_stop_outdated_owned_bridge_sends_verified_control_token(self):
+        (self.root / "package.json").write_text('{"version":"1.0.2"}', encoding="utf-8")
+        server = self.server("real-ui-1", app_version="1.0.1")
+        self.owned_record()
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch("psutil.Process") as process, \
+             patch.object(launcher, "wait_for_bridge_exit", return_value=True), \
+             patch.object(launcher, "finish_owned_shutdown") as finish:
+            process.return_value.exe.return_value = str(self.config.python_exe)
+            process.return_value.cmdline.return_value = [str(self.config.python_exe),
+                                                        str(self.root / "bridge" / "chat_server.py")]
+            self.assertEqual(launcher.stop_owned_bridge(self.config, timeout=0.5),
+                             {"stopped": True, "pid": 47231})
+            finish.assert_called_once()
+        self.assertEqual(server.control_tokens, ["a" * 64])
+
+    def test_outdated_bridge_shutdown_still_requires_exact_record_and_process_ownership(self):
+        (self.root / "package.json").write_text('{"version":"1.0.2"}', encoding="utf-8")
+        server = self.server("real-ui-1", app_version="1.0.1")
+        other_image = self.root / "other-python.exe"
+        other_image.write_bytes(b"fixture")
+        other_script = self.root / "other.py"
+        other_script.write_text("fixture only", encoding="utf-8")
+        expected_command = [str(self.config.python_exe), str(self.root / "bridge" / "chat_server.py")]
+        cases = (
+            ("reused PID", "a" * 64, 99, str(self.config.python_exe), expected_command,
+             self.config.instance_id, "Expected one owned bridge record"),
+            ("invalid token", "", 42, str(self.config.python_exe), expected_command,
+             self.config.instance_id, "no valid control token"),
+            ("foreign record", "a" * 64, 42, str(self.config.python_exe), expected_command,
+             "0" * 64, "another installation identity"),
+            ("wrong image", "a" * 64, 42, str(other_image), expected_command,
+             self.config.instance_id, "image or script command line"),
+            ("wrong script", "a" * 64, 42, str(self.config.python_exe),
+             [str(self.config.python_exe), str(other_script)], self.config.instance_id,
+             "image or script command line"),
+            ("extra argument", "a" * 64, 42, str(self.config.python_exe),
+             expected_command + ["--unowned"], self.config.instance_id, "image or script command line"),
+        )
+        for label, token, created, image, command, identity, message in cases:
+            with self.subTest(case=label):
+                record_path = self.owned_record(token=token)
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                record["instance_id"] = identity
+                record_path.write_text(json.dumps(record), encoding="utf-8")
+                with patch.object(launcher, "process_identity", return_value=(True, created)), \
+                     patch("psutil.Process") as process, \
+                     patch.object(launcher, "request_owned_shutdown") as request, \
+                     patch.object(launcher, "finish_owned_shutdown") as finish:
+                    process.return_value.exe.return_value = image
+                    process.return_value.cmdline.return_value = command
+                    with self.assertRaisesRegex(launcher.LauncherError, message):
+                        launcher.stop_owned_bridge(self.config, timeout=0.5)
+                    request.assert_not_called()
+                    finish.assert_not_called()
+                self.assertTrue(record_path.exists(), "failed ownership checks must preserve the record")
         self.assertEqual(server.control_tokens, [])
 
     def test_stop_rejects_stale_pid_wrong_image_and_wrong_service(self):
@@ -541,6 +787,13 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         process.wait(timeout=3)
         self.assertIsNotNone(process.poll())
 
+    def test_real_bridge_without_the_user_site_is_stopped_as_owned(self):
+        process = self.isolated_shutdown_fixture(exit_delay=0, flags=("-s",))
+        self.assertEqual(launcher.stop_owned_bridge(self.config, timeout=12),
+                         {"stopped": True, "pid": process.pid})
+        process.wait(timeout=3)
+        self.assertIsNotNone(process.poll())
+
     def test_real_isolated_bridge_is_bounded_after_grace_timeout(self):
         process = self.isolated_shutdown_fixture(exit_delay=60)
         self.assertEqual(launcher.stop_owned_bridge(self.config, timeout=0.25),
@@ -565,7 +818,7 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         child.terminate.assert_called_once()
         parent.terminate.assert_not_called()
 
-    def test_analysis_child_match_requires_direct_child_and_exact_script(self):
+    def test_analysis_child_match_requires_descendant_and_exact_script(self):
         from unittest.mock import Mock
         node = self.root / "node.exe"
         node.write_bytes(b"fixture")
@@ -583,6 +836,59 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         parent = Mock()
         parent.children.return_value = [expected, unrelated, wrong_script]
         self.assertEqual(launcher.owned_model_children(self.config, parent), [expected])
+        parent.children.assert_called_once_with(recursive=True)
+
+    def test_venv_delegate_and_nested_analysis_workers_match_exact_images_and_scripts(self):
+        from unittest.mock import Mock
+        node = self.root / "node.exe"
+        node.write_bytes(b"fixture")
+        script = self.root / "bridge" / "analysis_server.ts"
+        script.write_text("fixture only", encoding="utf-8")
+        delegate = Mock()
+        delegate.exe.return_value = sys._base_executable
+        delegate.cmdline.return_value = [sys._base_executable, str(self.root / "bridge" / "chat_server.py")]
+        flagged = Mock()
+        flagged.exe.return_value = sys._base_executable
+        flagged.cmdline.return_value = [sys._base_executable, "-s", str(self.root / "bridge" / "chat_server.py")]
+        analysis = Mock()
+        analysis.exe.return_value = str(node)
+        analysis.cmdline.return_value = [str(node), "--import", "tsx", str(script)]
+        unrelated = Mock()
+        unrelated.exe.return_value = sys._base_executable
+        unrelated.cmdline.return_value = [sys._base_executable, str(self.root / "preview.py")]
+        wrong_image = Mock()
+        wrong_image.exe.return_value = str(node)
+        wrong_image.cmdline.return_value = delegate.cmdline.return_value
+        parent = Mock()
+        parent.children.return_value = [delegate, unrelated, wrong_image, analysis, flagged]
+        self.assertEqual(launcher.owned_model_children(self.config, parent), [analysis, delegate, flagged])
+        parent.children.assert_called_once_with(recursive=True)
+
+    def test_core_model_workers_require_this_installations_exact_script_and_loader(self):
+        from unittest.mock import Mock
+        node = self.root / "node.exe"
+        node.write_bytes(b"fixture")
+        loader = (self.root / "node_modules" / "tsx" / "dist" / "loader.mjs").as_uri()
+        gateway = Mock()
+        gateway.exe.return_value = str(node)
+        gateway.cmdline.return_value = [str(node), "--import", loader,
+                                       str(self.root / "scripts" / "model-gateway.ts")]
+        probe = Mock()
+        probe.exe.return_value = str(node)
+        probe.cmdline.return_value = [str(node), "--import", "tsx",
+                                     str(self.root / "scripts" / "model-probe.ts")]
+        wrong_loader = Mock()
+        wrong_loader.exe.return_value = str(node)
+        wrong_loader.cmdline.return_value = [str(node), "--import", "file:///other/loader.mjs",
+                                            str(self.root / "scripts" / "model-gateway.ts")]
+        wrong_root = Mock()
+        wrong_root.exe.return_value = str(node)
+        wrong_root.cmdline.return_value = [str(node), "--import", loader,
+                                          str(self.root.parent / "scripts" / "model-gateway.ts")]
+        parent = Mock()
+        parent.children.return_value = [gateway, wrong_loader, probe, wrong_root]
+        self.assertEqual(launcher.owned_model_children(self.config, parent), [gateway, probe])
+        parent.children.assert_called_once_with(recursive=True)
 
     def test_bounded_cleanup_terminates_only_verified_bridge_after_worker_drains(self):
         from unittest.mock import Mock
@@ -612,7 +918,8 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
         self.assertEqual(launcher.stop_owned_bridge(self.config),
                          {"stopped": False, "alreadyStopped": True})
         self.owned_record()
-        with patch.object(launcher, "process_identity", return_value=(True, 42)):
+        with patch.object(launcher, "process_identity", return_value=(True, 42)), \
+             patch("psutil.Process", side_effect=psutil.NoSuchProcess(47231)):
             with self.assertRaisesRegex(launcher.LauncherError, "Cannot verify bridge process ownership"):
                 launcher.stop_owned_bridge(self.config, timeout=0.05)
 
@@ -685,7 +992,7 @@ time.sleep(float(os.environ["FIXTURE_EXIT_DELAY"]))
             self.assertEqual(args, ([str(electron), str(shell), "--client-url", self.config.url],))
             self.assertEqual(kwargs["cwd"], str(self.root))
             self.assertTrue(kwargs["close_fds"])
-            self.assertEqual(kwargs["env"]["WECHATVIBE_INSTANCE_ID"], self.config.instance_id)
+            self.assertEqual(kwargs["env"]["KYF_INSTANCE_ID"], self.config.instance_id)
         with patch.object(launcher.subprocess, "Popen", side_effect=OSError("synthetic failure")):
             with self.assertRaisesRegex(launcher.LauncherError, "Could not open dedicated Electron shell"):
                 launcher.open_client(self.config.url, self.root)

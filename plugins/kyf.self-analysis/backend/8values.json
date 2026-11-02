@@ -1,0 +1,494 @@
+{
+  "source": "https://github.com/8values/8values.github.io",
+  "revision": "3971ed8bc0c3dda18f9b001013327f382343b74f",
+  "license": "MIT",
+  "translation": "本项目简体中文译文；检索词为本项目编写，非原题库内容。",
+  "items": [
+    {
+      "id": 1001,
+      "number": 1,
+      "english": "Oppression by corporations is more of a concern than oppression by governments.",
+      "effect": {"econ": 10, "dipl": 0, "govt": -5, "scty": 0},
+      "text": "比起政府的压迫，我更担心企业的压迫。",
+      "yes": ["资本压迫", "资本家", "企业剥削", "公司压榨"],
+      "no": ["政府压迫", "公权力", "企业自由", "政府更可怕"]
+    },
+    {
+      "id": 1002,
+      "number": 2,
+      "english": "It is necessary for the government to intervene in the economy to protect consumers.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "政府有必要干预经济以保护消费者。",
+      "yes": ["保护消费者", "政府监管", "市场监管", "消费者权益"],
+      "no": ["干预经济", "监管太多", "自由市场", "市场自律"]
+    },
+    {
+      "id": 1003,
+      "number": 3,
+      "english": "The freer the markets, the freer the people.",
+      "effect": {"econ": -10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "市场越自由，人民就越自由。",
+      "yes": ["自由市场", "市场自由", "经济自由", "放开市场"],
+      "no": ["资本控制", "市场失灵", "自由市场弊端", "市场垄断"]
+    },
+    {
+      "id": 1004,
+      "number": 4,
+      "english": "It is better to maintain a balanced budget than to ensure welfare for all citizens.",
+      "effect": {"econ": -10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "保持预算平衡比保障所有公民的福利更重要。",
+      "yes": ["预算平衡", "财政纪律", "福利养懒人", "削减福利"],
+      "no": ["全民福利", "福利保障", "赤字支出", "福利更重要"]
+    },
+    {
+      "id": 1005,
+      "number": 5,
+      "english": "Publicly-funded research is more beneficial to the people than leaving it to the market.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 10},
+      "text": "相比把研究交给市场，公共资金资助的研究对人民更有益。",
+      "yes": ["公共科研", "基础研究", "国家资助", "科研经费"],
+      "no": ["企业研发", "市场研发", "民间科研", "政府科研低效"]
+    },
+    {
+      "id": 1006,
+      "number": 6,
+      "english": "Tariffs on international trade are important to encourage local production.",
+      "effect": {"econ": 5, "dipl": 0, "govt": -10, "scty": 0},
+      "text": "对国际贸易征收关税对鼓励本国生产很重要。",
+      "yes": ["关税保护", "保护本国产业", "贸易壁垒", "本土制造"],
+      "no": ["自由贸易", "取消关税", "关税太高", "贸易保护主义"]
+    },
+    {
+      "id": 1007,
+      "number": 7,
+      "english": "From each according to his ability, to each according to his needs.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "各尽所能，按需分配。",
+      "yes": ["按需分配", "各尽所能", "共产主义", "满足基本需要"],
+      "no": ["多劳多得", "按劳分配", "按需分配不现实", "平均主义"]
+    },
+    {
+      "id": 1008,
+      "number": 8,
+      "english": "It would be best if social programs were abolished in favor of private charity.",
+      "effect": {"econ": -10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "最好取消社会福利项目，改由私人慈善来承担。",
+      "yes": ["私人慈善", "民间慈善", "取消福利", "福利养懒人"],
+      "no": ["社会保障", "公共福利", "慈善不可靠", "政府兜底"]
+    },
+    {
+      "id": 1009,
+      "number": 9,
+      "english": "Taxes should be increased on the rich to provide for the poor.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "应该提高对富人的税收来帮助穷人。",
+      "yes": ["富人税", "贫富差距", "向富人征税", "劫富济贫"],
+      "no": ["富人税太高", "不该劫富济贫", "减税", "税收惩罚成功"]
+    },
+    {
+      "id": 1010,
+      "number": 10,
+      "english": "Inheritance is a legitimate form of wealth.",
+      "effect": {"econ": -10, "dipl": 0, "govt": 0, "scty": -5},
+      "text": "继承遗产是一种正当的财富来源。",
+      "yes": ["继承遗产", "传给孩子", "合法继承", "财产继承"],
+      "no": ["遗产税", "世袭财富", "靠投胎", "继承不公平"]
+    },
+    {
+      "id": 1011,
+      "number": 11,
+      "english": "Basic utilities like roads and electricity should be publicly owned.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "道路和电力等基础公共设施应该公有。",
+      "yes": ["公共设施", "公有", "电力国有", "公共道路"],
+      "no": ["私有化", "民营电力", "公共设施低效", "私人经营"]
+    },
+    {
+      "id": 1012,
+      "number": 12,
+      "english": "Government intervention is a threat to the economy.",
+      "effect": {"econ": -10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "政府干预会威胁经济。",
+      "yes": ["政府干预", "行政干预", "放开管制", "市场被管死"],
+      "no": ["市场失灵", "宏观调控", "经济调控", "政府托底"]
+    },
+    {
+      "id": 1013,
+      "number": 13,
+      "english": "Those with a greater ability to pay should receive better healthcare.",
+      "effect": {"econ": -10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "支付能力更强的人应该得到更好的医疗服务。",
+      "yes": ["高端医疗", "私立医院", "有钱看好医生", "医疗市场化"],
+      "no": ["医疗公平", "人人平等", "看不起病", "医疗不该看钱"]
+    },
+    {
+      "id": 1014,
+      "number": 14,
+      "english": "Quality education is a right of all people.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 5},
+      "text": "优质教育是所有人的权利。",
+      "yes": ["教育公平", "优质教育", "受教育权", "教育资源平等"],
+      "no": ["教育是商品", "教育市场化", "付费教育", "教育不该免费"]
+    },
+    {
+      "id": 1015,
+      "number": 15,
+      "english": "The means of production should belong to the workers who use them.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "生产资料应该属于使用它们的工人。",
+      "yes": ["生产资料", "工人所有", "工人合作社", "劳动者所有"],
+      "no": ["私人产权", "企业家所有", "资本所有", "投资者权益"]
+    },
+    {
+      "id": 1016,
+      "number": 16,
+      "english": "The United Nations should be abolished.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -5, "scty": 0},
+      "text": "应该废除联合国。",
+      "yes": ["废除联合国", "联合国没用", "联合国解散", "退出联合国"],
+      "no": ["支持联合国", "联合国作用", "多边机制", "国际合作"]
+    },
+    {
+      "id": 1017,
+      "number": 17,
+      "english": "Military action by our nation is often necessary to protect it.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -10, "scty": 0},
+      "text": "我国采取军事行动往往是保护国家所必需的。",
+      "yes": ["军事行动", "保卫国家", "出兵", "军事防卫"],
+      "no": ["反战", "不该出兵", "战争不能解决", "军事冒险"]
+    },
+    {
+      "id": 1018,
+      "number": 18,
+      "english": "I support regional unions, such as the European Union.",
+      "effect": {"econ": -5, "dipl": 10, "govt": 10, "scty": 5},
+      "text": "我支持欧盟这样的区域联盟。",
+      "yes": ["欧盟", "区域联盟", "区域一体化", "区域合作"],
+      "no": ["退出欧盟", "反对欧盟", "区域联盟弊端", "各国自主"]
+    },
+    {
+      "id": 1019,
+      "number": 19,
+      "english": "It is important to maintain our national sovereignty.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -5, "scty": 0},
+      "text": "维护我国的国家主权很重要。",
+      "yes": ["国家主权", "维护主权", "领土主权", "国家独立"],
+      "no": ["主权让渡", "超国家", "主权不重要", "世界公民"]
+    },
+    {
+      "id": 1022,
+      "number": 22,
+      "english": "Wars do not need to be justified to other countries.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -10, "scty": 0},
+      "text": "发动战争不需要向其他国家说明正当理由。",
+      "yes": ["不必解释战争", "想打就打", "无需国际认可", "战争不需要理由"],
+      "no": ["战争正当性", "国际法", "出师有名", "战争要有理由"]
+    },
+    {
+      "id": 1023,
+      "number": 23,
+      "english": "Military spending is a waste of money.",
+      "effect": {"econ": 0, "dipl": 10, "govt": 10, "scty": 0},
+      "text": "军费开支是在浪费钱。",
+      "yes": ["浪费军费", "军费太高", "削减军费", "反对军备竞赛"],
+      "no": ["增加军费", "国防投入", "军费必要", "保卫国家要花钱"]
+    },
+    {
+      "id": 1024,
+      "number": 24,
+      "english": "International aid is a waste of money.",
+      "effect": {"econ": -5, "dipl": -10, "govt": 0, "scty": 0},
+      "text": "国际援助是在浪费钱。",
+      "yes": ["对外援助浪费", "不该援外", "撒钱", "先顾自己国家"],
+      "no": ["国际援助", "人道援助", "援外有意义", "帮助贫困国家"]
+    },
+    {
+      "id": 1027,
+      "number": 27,
+      "english": "Governments should be accountable to the international community.",
+      "effect": {"econ": 0, "dipl": 10, "govt": 5, "scty": 0},
+      "text": "政府应该向国际社会负责。",
+      "yes": ["国际监督", "向国际社会负责", "国际问责", "国际义务"],
+      "no": ["不干涉内政", "不需要外人管", "国内自己决定", "反对国际监督"]
+    },
+    {
+      "id": 1028,
+      "number": 28,
+      "english": "Even when protesting an authoritarian government, violence is not acceptable.",
+      "effect": {"econ": 0, "dipl": 5, "govt": -5, "scty": 0},
+      "text": "即使是在抗议威权政府时，暴力也是不可接受的。",
+      "yes": ["非暴力抗议", "和平抗议", "反对暴力", "暴力不可接受"],
+      "no": ["武装反抗", "暴力革命", "反抗暴政", "暴力是必要的"]
+    },
+    {
+      "id": 1029,
+      "number": 29,
+      "english": "My religious values should be spread as much as possible.",
+      "effect": {"econ": 0, "dipl": -5, "govt": -10, "scty": -10},
+      "text": "我的宗教价值观应该尽可能广泛地传播。",
+      "yes": ["传教", "传播信仰", "宗教价值", "宣教"],
+      "no": ["不要传教", "信仰自由", "不强加信仰", "宗教私人事务"]
+    },
+    {
+      "id": 1030,
+      "number": 30,
+      "english": "Our nation's values should be spread as much as possible.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -5, "scty": 0},
+      "text": "我国的价值观应该尽可能广泛地传播。",
+      "yes": ["传播本国价值观", "文化输出", "推广价值观", "国家价值"],
+      "no": ["不输出价值观", "文化多样性", "尊重他国", "别强加价值观"]
+    },
+    {
+      "id": 1031,
+      "number": 31,
+      "english": "It is very important to maintain law and order.",
+      "effect": {"econ": 0, "dipl": -5, "govt": -10, "scty": -5},
+      "text": "维护法律与秩序非常重要。",
+      "yes": ["法律与秩序", "维护秩序", "遵纪守法", "社会治安"],
+      "no": ["打破秩序", "恶法非法", "秩序不是一切", "自由优先"]
+    },
+    {
+      "id": 1032,
+      "number": 32,
+      "english": "The general populace makes poor decisions.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": 0},
+      "text": "普通民众会做出糟糕的决定。",
+      "yes": ["民众愚昧", "大众盲从", "民众不理性", "乌合之众"],
+      "no": ["群众智慧", "相信人民", "集体智慧", "民众能判断"]
+    },
+    {
+      "id": 1033,
+      "number": 33,
+      "english": "Physician-assisted suicide should be legal.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 0},
+      "text": "医生协助自杀应该合法。",
+      "yes": ["协助自杀", "安乐死合法", "自主选择死亡", "有尊严地死"],
+      "no": ["反对安乐死", "反对协助自杀", "生命不可放弃", "医生不能助死"]
+    },
+    {
+      "id": 1034,
+      "number": 34,
+      "english": "The sacrifice of some civil liberties is necessary to protect us from acts of terrorism.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": 0},
+      "text": "为了保护我们免受恐怖袭击，有必要牺牲一部分公民自由。",
+      "yes": ["反恐", "安全优先", "牺牲自由", "反恐必要"],
+      "no": ["自由不能牺牲", "借反恐打压", "反恐侵犯权利", "公民自由"]
+    },
+    {
+      "id": 1035,
+      "number": 35,
+      "english": "Government surveillance is necessary in the modern world.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": 0},
+      "text": "在现代世界，政府监控是必要的。",
+      "yes": ["政府监控", "监控必要", "天网", "监控保安全"],
+      "no": ["监控侵犯隐私", "监控国家", "反对监控", "隐私权"]
+    },
+    {
+      "id": 1036,
+      "number": 36,
+      "english": "The very existence of the state is a threat to our liberty.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 0},
+      "text": "国家的存在本身就威胁着我们的自由。",
+      "yes": ["无政府主义", "国家压迫", "国家威胁自由", "消灭国家"],
+      "no": ["国家必要", "国家保护自由", "国家保障权利", "不能没有政府"]
+    },
+    {
+      "id": 1037,
+      "number": 37,
+      "english": "Regardless of political opinions, it is important to side with your country.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -10, "scty": -5},
+      "text": "无论持有什么政治观点，站在自己国家一边都很重要。",
+      "yes": ["支持祖国", "国家立场", "国家面前无分歧", "爱国立场"],
+      "no": ["盲目爱国", "不能无条件支持", "批评国家", "道理比立场重要"]
+    },
+    {
+      "id": 1038,
+      "number": 38,
+      "english": "All authority should be questioned.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 5},
+      "text": "所有权威都应该受到质疑。",
+      "yes": ["质疑权威", "挑战权威", "不迷信权威", "权威也会错"],
+      "no": ["服从权威", "尊重权威", "不要质疑", "听领导的"]
+    },
+    {
+      "id": 1039,
+      "number": 39,
+      "english": "A hierarchical state is best.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": 0},
+      "text": "等级分明的国家最好。",
+      "yes": ["等级秩序", "上下有序", "等级制度", "各安其位"],
+      "no": ["反对等级", "人人平等", "打破等级", "去等级化"]
+    },
+    {
+      "id": 1040,
+      "number": 40,
+      "english": "It is important that the government follows the majority opinion, even if it is wrong.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 0},
+      "text": "政府遵循多数人的意见很重要，即使多数人的意见是错的。",
+      "yes": ["多数决定", "服从多数", "尊重民意", "多数人的选择"],
+      "no": ["多数人暴政", "民粹", "少数权利", "多数也会错"]
+    },
+    {
+      "id": 1041,
+      "number": 41,
+      "english": "The stronger the leadership, the better.",
+      "effect": {"econ": 0, "dipl": -10, "govt": -10, "scty": 0},
+      "text": "领导越强有力越好。",
+      "yes": ["强有力领导", "强人政治", "铁腕", "集中权力"],
+      "no": ["权力制衡", "分权", "反对强人", "限制领导权力"]
+    },
+    {
+      "id": 1042,
+      "number": 42,
+      "english": "Democracy is more than a decision-making process.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 0},
+      "text": "民主不仅仅是一种决策程序。",
+      "yes": ["民主价值", "民主生活", "民主不只是投票", "民主权利"],
+      "no": ["民主只是程序", "民主只是工具", "投票机制", "民主决策方式"]
+    },
+    {
+      "id": 1043,
+      "number": 43,
+      "english": "Environmental regulations are essential.",
+      "effect": {"econ": 5, "dipl": 0, "govt": 0, "scty": 10},
+      "text": "环境监管必不可少。",
+      "yes": ["环境监管", "环保法规", "污染治理", "环保必要"],
+      "no": ["环保过度", "环保阻碍发展", "放松环保", "环保成本太高"]
+    },
+    {
+      "id": 1045,
+      "number": 45,
+      "english": "Children should be educated in religious or traditional values.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -5, "scty": -10},
+      "text": "应该教育儿童接受宗教价值观或传统价值观。",
+      "yes": ["传统教育", "宗教教育", "传承传统", "孩子信仰"],
+      "no": ["不灌输宗教", "自主选择信仰", "反对传统教育", "世俗教育"]
+    },
+    {
+      "id": 1047,
+      "number": 47,
+      "english": "Religion should play a role in government.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": -10},
+      "text": "宗教应该在政府中发挥作用。",
+      "yes": ["宗教治国", "宗教参与政治", "宗教立法", "信仰指导政府"],
+      "no": ["政教分离", "世俗政府", "宗教不该干政", "反对神权"]
+    },
+    {
+      "id": 1048,
+      "number": 48,
+      "english": "Churches should be taxed the same way other institutions are taxed.",
+      "effect": {"econ": 5, "dipl": 0, "govt": 0, "scty": 10},
+      "text": "教会应该和其他机构一样纳税。",
+      "yes": ["教会纳税", "宗教机构纳税", "取消宗教免税", "税收平等"],
+      "no": ["教会免税", "宗教免税", "宗教税收优惠", "教会不应纳税"]
+    },
+    {
+      "id": 1055,
+      "number": 55,
+      "english": "Drug use should be legalized or decriminalized.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 2},
+      "text": "吸毒应该合法化或非刑事化。",
+      "yes": ["毒品合法化", "吸毒非刑事化", "大麻合法", "减害政策"],
+      "no": ["严厉禁毒", "反对毒品合法化", "吸毒违法", "毒品必须禁"]
+    },
+    {
+      "id": 1056,
+      "number": 56,
+      "english": "Same-sex marriage should be legal.",
+      "effect": {"econ": 0, "dipl": 0, "govt": 10, "scty": 10},
+      "text": "同性婚姻应该合法。",
+      "yes": ["同性婚姻", "婚姻平权", "同性结婚", "支持同婚"],
+      "no": ["反对同性婚姻", "同婚不合法", "婚姻男女", "不同意同婚"]
+    },
+    {
+      "id": 1057,
+      "number": 57,
+      "english": "No cultures are superior to others.",
+      "effect": {"econ": 0, "dipl": 10, "govt": 5, "scty": 10},
+      "text": "没有哪种文化比其他文化更优越。",
+      "yes": ["文化平等", "尊重不同文化", "文化无高下", "多元文化"],
+      "no": ["文化优越", "落后文化", "先进文化", "文明高低"]
+    },
+    {
+      "id": 1058,
+      "number": 58,
+      "english": "Sex outside marriage is immoral.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -5, "scty": -10},
+      "text": "婚姻以外（包括婚前）的性行为是不道德的。",
+      "yes": ["婚前性行为不道德", "婚外性行为", "性只能在婚内", "性道德"],
+      "no": ["婚前性行为正常", "性自由", "婚姻不是前提", "自愿就好"]
+    },
+    {
+      "id": 1059,
+      "number": 59,
+      "english": "If we accept migrants at all, it is important that they assimilate into our culture.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -5, "scty": -10},
+      "text": "如果我们接受移民，他们融入我们的文化很重要。",
+      "yes": ["移民同化", "融入本地文化", "入乡随俗", "移民融入"],
+      "no": ["保留移民文化", "多元文化", "不必同化", "尊重移民文化"]
+    },
+    {
+      "id": 1060,
+      "number": 60,
+      "english": "Abortion should be prohibited in most or all cases.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": -10},
+      "text": "在大多数或所有情况下，都应该禁止堕胎。",
+      "yes": ["禁止堕胎", "反对堕胎", "生命始于受孕", "堕胎违法"],
+      "no": ["堕胎权", "生育自主", "身体自主", "支持堕胎合法"]
+    },
+    {
+      "id": 1061,
+      "number": 61,
+      "english": "Gun ownership should be prohibited for those without a valid reason.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": 0},
+      "text": "没有正当理由的人应该被禁止拥有枪支。",
+      "yes": ["枪支管制", "限制持枪", "持枪需要理由", "禁枪"],
+      "no": ["持枪权", "自由拥枪", "自卫权", "反对禁枪"]
+    },
+    {
+      "id": 1062,
+      "number": 62,
+      "english": "I support single-payer, universal healthcare.",
+      "effect": {"econ": 10, "dipl": 0, "govt": 0, "scty": 0},
+      "text": "我支持单一支付方的全民医疗制度。",
+      "yes": ["单一支付方", "全民医疗", "全民医保", "公共医疗保险"],
+      "no": ["反对全民医疗", "商业医疗保险", "多支付方", "医保市场化"]
+    },
+    {
+      "id": 1063,
+      "number": 63,
+      "english": "Prostitution should be illegal.",
+      "effect": {"econ": 0, "dipl": 0, "govt": -10, "scty": -10},
+      "text": "卖淫应该是非法的。",
+      "yes": ["卖淫违法", "禁止卖淫", "反对卖淫合法化", "打击性交易"],
+      "no": ["卖淫合法化", "性工作合法", "性交易非刑事化", "性工作者权利"]
+    },
+    {
+      "id": 1067,
+      "number": 67,
+      "english": "We should open our borders to immigration.",
+      "effect": {"econ": 0, "dipl": 10, "govt": 10, "scty": 0},
+      "text": "我们应该向移民开放边境。",
+      "yes": ["开放边境", "欢迎移民", "放开移民", "自由迁徙"],
+      "no": ["限制移民", "关闭边境", "收紧移民", "反对移民"]
+    },
+    {
+      "id": 1069,
+      "number": 69,
+      "english": "All people - regardless of factors like culture or sexuality - should be treated equally.",
+      "effect": {"econ": 10, "dipl": 10, "govt": 10, "scty": 10},
+      "text": "所有人都应该受到平等对待，不论其文化或性取向等因素。",
+      "yes": ["平等对待", "反歧视", "性取向平等", "文化平等"],
+      "no": ["区别对待", "歧视合理", "不同文化不同待遇", "性取向歧视"]
+    },
+    {
+      "id": 1070,
+      "number": 70,
+      "english": "It is important that we further my group's goals above all others.",
+      "effect": {"econ": -10, "dipl": -10, "govt": -10, "scty": -10},
+      "text": "我们应该把推动自己群体的目标置于所有其他群体之上，这很重要。",
+      "yes": ["本群体优先", "自己人优先", "本族优先", "群体利益至上"],
+      "no": ["平等对待各群体", "反对群体偏袒", "不分你我", "普遍利益"]
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "kind": "zhiji-ffmpeg-lgpl",
+  "version": "7.1",
+  "license": "LGPL-2.1-or-later",
+  "configuration": "--prefix=/usr --target-os=mingw32 --arch=x86_64 --cc=gcc --cxx=g++ --disable-autodetect --disable-gpl --disable-nonfree --disable-version3 --disable-debug --enable-stripping --disable-doc --disable-x86asm --disable-network --disable-hwaccels --disable-avdevice --disable-postproc --disable-ffplay --disable-ffprobe --enable-w32threads --disable-pthreads --extra-cflags='-ffile-prefix-map=.=src -fdebug-prefix-map=.=src -fmacro-prefix-map=.=src' --extra-ldflags='-static -Wl,--no-insert-timestamp'",
+  "sourceArchive": "ffmpeg-7.1.tar.xz",
+  "sourceUrl": "https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz",
+  "sourceSha256": "40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6",
+  "sourceSignatureVerified": true,
+  "sourceSigningFingerprint": "FCF986EA15E6E293A5644F10B4322F04D67658D8",
+  "sourceModified": false,
+  "toolchain": {
+    "name": "w64devkit",
+    "version": "2.11.0",
+    "gcc": "16.2.0",
+    "url": "https://github.com/skeeto/w64devkit/releases/download/v2.11.0/w64devkit-x64-2.11.0.7z.exe",
+    "sha256": "54c2bb9962e8a30c8270e34c5efc3d5fee579f53087fa7d435b95fbba2af7b2b"
+  },
+  "files": [
+    {
+      "name": "build-ffmpeg.sh",
+      "bytes": 844,
+      "sha256": "d2d9f218256fb50b809dc0b78bb6d04d266b25603de9cc6b5677a3bcf2dc5cd9"
+    },
+    {
+      "name": "BUILD-INFO.md",
+      "bytes": 3431,
+      "sha256": "46d8dfcacff64405a7ddb8ff81a236e191937c3bc69f41fbe0060d7e42f1f084"
+    },
+    {
+      "name": "ffmpeg-7.1.tar.xz",
+      "bytes": 11011364,
+      "sha256": "40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6"
+    },
+    {
+      "name": "ffmpeg-7.1.tar.xz.asc",
+      "bytes": 520,
+      "sha256": "9bd1689dce76b109034dcc4765a406e84e8799a2fd857b000c0a4d9744b70617"
+    },
+    {
+      "name": "ffmpeg-buildconf.txt",
+      "bytes": 1496,
+      "sha256": "4e93b94477831f9879f8cffea66e7e07282e7110a7fbd59d1abe3e4a8f7f4178"
+    },
+    {
+      "name": "ffmpeg-devel.asc",
+      "bytes": 1709,
+      "sha256": "397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5"
+    },
+    {
+      "name": "FFmpeg-LGPL-2.1.txt",
+      "bytes": 26526,
+      "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+    },
+    {
+      "name": "FFmpeg-LICENSE.md",
+      "bytes": 4376,
+      "sha256": "cb48bf09a11f5fb576cddb0431c8f5ed0a60157a9ec942adffc13907cbe083f2"
+    },
+    {
+      "name": "ffmpeg-license.txt",
+      "bytes": 1561,
+      "sha256": "ca4b540ec1ad7554269fafc2e61149a3fbf9aaad6f79d4e7fc969dee26332080"
+    },
+    {
+      "name": "ffmpeg-version.txt",
+      "bytes": 848,
+      "sha256": "7f3c92865ec509666fe0e4e4773b90083bc811a4514bbdc31a8326301396a0bd"
+    },
+    {
+      "name": "ffmpeg.exe",
+      "bytes": 20995072,
+      "sha256": "9dac1399ec43497e2560e067cdbe13f85134df2d75069de9fab7c19e5516a581"
+    },
+    {
+      "name": "GCC-GPL-3.0.txt",
+      "bytes": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "name": "GCC-RUNTIME-LIBRARY-EXCEPTION.txt",
+      "bytes": 3324,
+      "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
+    },
+    {
+      "name": "MinGW-w64-runtime-COPYING.txt",
+      "bytes": 15076,
+      "sha256": "ecff91ddb5799c8b79a4bdb576921b9c3e2989783fd1944527e8eb9b41a5ff5f"
+    }
+  ]
+}

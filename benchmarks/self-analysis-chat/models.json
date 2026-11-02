@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "defaults": {
+    "maxTokens": 512,
+    "threads": 2,
+    "interOpThreads": 1,
+    "batchSize": 8,
+    "padding": "right",
+    "truncation": "tail-preserve-query-prefix-and-special-tokens",
+    "normalize": true,
+    "executionProviders": [
+      "cpu"
+    ]
+  },
+  "allowedHosts": [
+    "modelscope.cn",
+    "www.modelscope.cn",
+    "cdn-lfs-cn-1.modelscope.cn",
+    "cdn-lfs-cn-2.modelscope.cn"
+  ],
+  "models": [
+    {
+      "key": "bge-small-zh-v1.5",
+      "modelId": "BAAI/bge-small-zh-v1.5",
+      "sourceRepo": "Xenova/bge-small-zh-v1.5",
+      "sourceRevision": "313386ad7ffad360a4870fd1910f8ecaf1a05151",
+      "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+      "dimensions": 512,
+      "precision": "fp32",
+      "pooling": "cls",
+      "license": "MIT",
+      "cacheDir": ".local/core/embeddings/bge-small-zh-v1.5",
+      "queryInstruction": "为这个句子生成表示以用于检索相关文章：",
+      "queryTemplate": "{instruction}{text}",
+      "batchSize": 8,
+      "onnx": "model.onnx",
+      "files": [
+        {
+          "name": "model.onnx",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=onnx%2Fmodel.onnx",
+          "bytes": 94851877,
+          "sha256": "69a0b846f4f116b5e6aabf9546ea6754d02264f3211a13a1bd69b31b8040749a"
+        },
+        {
+          "name": "tokenizer.json",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=tokenizer.json",
+          "bytes": 439125,
+          "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=tokenizer_config.json",
+          "bytes": 367,
+          "sha256": "e6f3b96db926a37d4039995fbf5ad17de158dfb8f6343d607e4dbaad18d75f5a"
+        },
+        {
+          "name": "MODEL_CARD.md",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=README.md",
+          "bytes": 1057,
+          "sha256": "cb22054df1a98f7ee9d5b281d023e67c27cc316e1733baf03fc994d95c3048ab"
+        }
+      ],
+      "documentation": [
+        "https://github.com/FlagOpen/FlagEmbedding/tree/master/research/baai_general_embedding"
+      ]
+    },
+    {
+      "key": "bge-base-zh-v1.5",
+      "modelId": "BAAI/bge-base-zh-v1.5",
+      "sourceRepo": "Xenova/bge-base-zh-v1.5",
+      "sourceRevision": "9a0864f6765ba28315561ccb161fff9727211deb",
+      "revision": "ms-xenova-9a0864f6-fp32-cls-tail512-v1",
+      "dimensions": 768,
+      "precision": "fp32",
+      "pooling": "cls",
+      "license": "MIT",
+      "cacheDir": ".local/benchmarks/self-analysis/models/bge-base-zh-v1.5",
+      "queryInstruction": "为这个句子生成表示以用于检索相关文章：",
+      "queryTemplate": "{instruction}{text}",
+      "batchSize": 8,
+      "onnx": "model.onnx",
+      "documentation": [
+        "https://github.com/FlagOpen/FlagEmbedding/tree/master/research/baai_general_embedding"
+      ],
+      "files": [
+        {
+          "name": "model.onnx",
+          "sourcePath": "onnx/model.onnx",
+          "bytes": 406953171,
+          "sha256": "5e5619f7cca7380b824d329c157dba10bee7cc00d0c139e82fdb7906051b8e4f",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-base-zh-v1.5/repo?Revision=9a0864f6765ba28315561ccb161fff9727211deb&FilePath=onnx%2Fmodel.onnx"
+        },
+        {
+          "name": "tokenizer.json",
+          "sourcePath": "tokenizer.json",
+          "bytes": 439124,
+          "sha256": "7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-base-zh-v1.5/repo?Revision=9a0864f6765ba28315561ccb161fff9727211deb&FilePath=tokenizer.json"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "sourcePath": "tokenizer_config.json",
+          "bytes": 366,
+          "sha256": "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-base-zh-v1.5/repo?Revision=9a0864f6765ba28315561ccb161fff9727211deb&FilePath=tokenizer_config.json"
+        },
+        {
+          "name": "config.json",
+          "sourcePath": "config.json",
+          "bytes": 938,
+          "sha256": "855206771223efad2dfb8e212a716b20c4c71c8094309ca2da79d31bacb03276",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-base-zh-v1.5/repo?Revision=9a0864f6765ba28315561ccb161fff9727211deb&FilePath=config.json"
+        },
+        {
+          "name": "MODEL_CARD.md",
+          "sourcePath": "README.md",
+          "bytes": 1054,
+          "sha256": "919e108ec25b0370c3881ab5b6c4c568b29761961227fa27e922e7a6e2f71a58",
+          "url": "https://modelscope.cn/api/v1/models/Xenova/bge-base-zh-v1.5/repo?Revision=9a0864f6765ba28315561ccb161fff9727211deb&FilePath=README.md"
+        },
+        {
+          "name": "UPSTREAM_MODEL_CARD.md",
+          "sourcePath": "README.md",
+          "bytes": 27758,
+          "sha256": "7f8d638125f442bc2409edf5958dbce3086d91133e79831eff760c6ea2398740",
+          "url": "https://modelscope.cn/api/v1/models/BAAI/bge-base-zh-v1.5/repo?Revision=b01c51d19538ffc43e68b84619c19604325b4e15&FilePath=README.md"
+        }
+      ]
+    },
+    {
+      "key": "qwen3-embedding-0.6b",
+      "modelId": "Qwen/Qwen3-Embedding-0.6B",
+      "sourceRepo": "onnx-community/Qwen3-Embedding-0.6B-ONNX",
+      "sourceRevision": "69da7161993e010fc5c62d2311fe77f2a4f888ec",
+      "revision": "ms-onnx-community-69da7161-fp32-last-tail512-v1",
+      "dimensions": 1024,
+      "precision": "fp32",
+      "pooling": "last-nonpad",
+      "license": "Apache-2.0",
+      "cacheDir": ".local/benchmarks/self-analysis/models/qwen3-embedding-0.6b",
+      "queryInstruction": "Given a Chinese chat situation, retrieve past chat situations with a similar communication intent and interpersonal context.",
+      "queryTemplate": "Instruct: {instruction}\nQuery:{text}",
+      "batchSize": 8,
+      "onnx": "model.onnx",
+      "externalData": [
+        "model.onnx_data"
+      ],
+      "eosToken": "<|endoftext|>",
+      "documentation": [
+        "https://github.com/QwenLM/Qwen3-Embedding",
+        "https://modelscope.cn/models/Qwen/Qwen3-Embedding-0.6B"
+      ],
+      "files": [
+        {
+          "name": "model.onnx",
+          "sourcePath": "onnx/model.onnx",
+          "bytes": 307161415,
+          "sha256": "bf27b2f3f9ef9c32ca337d75b361fa99439deaeaefe82e4701b2dbd8439197cc",
+          "url": "https://modelscope.cn/api/v1/models/onnx-community/Qwen3-Embedding-0.6B-ONNX/repo?Revision=69da7161993e010fc5c62d2311fe77f2a4f888ec&FilePath=onnx%2Fmodel.onnx"
+        },
+        {
+          "name": "model.onnx_data",
+          "sourcePath": "onnx/model.onnx_data",
+          "bytes": 2093436928,
+          "sha256": "f0a61604465929a27e68aa6217c8c89ec6186572f0209fdb7711adda48a9b9a9",
+          "url": "https://modelscope.cn/api/v1/models/onnx-community/Qwen3-Embedding-0.6B-ONNX/repo?Revision=69da7161993e010fc5c62d2311fe77f2a4f888ec&FilePath=onnx%2Fmodel.onnx_data"
+        },
+        {
+          "name": "tokenizer.json",
+          "sourcePath": "tokenizer.json",
+          "bytes": 11423705,
+          "sha256": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a",
+          "url": "https://modelscope.cn/api/v1/models/onnx-community/Qwen3-Embedding-0.6B-ONNX/repo?Revision=69da7161993e010fc5c62d2311fe77f2a4f888ec&FilePath=tokenizer.json"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "sourcePath": "tokenizer_config.json",
+          "bytes": 9731,
+          "sha256": "977648852447cb6587327ff3205b0a84cf2fc9f05621d6c8e88a497caafab2e1",
+          "url": "https://modelscope.cn/api/v1/models/onnx-community/Qwen3-Embedding-0.6B-ONNX/repo?Revision=69da7161993e010fc5c62d2311fe77f2a4f888ec&FilePath=tokenizer_config.json"
+        },
+        {
+          "name": "config.json",
+          "sourcePath": "config.json",
+          "bytes": 1576,
+          "sha256": "66a10929782f3c9a3cd5dec90e2a95c60e05736134a63cd54479eeae80bed175",
+          "url": "https://modelscope.cn/api/v1/models/onnx-community/Qwen3-Embedding-0.6B-ONNX/repo?Revision=69da7161993e010fc5c62d2311fe77f2a4f888ec&FilePath=config.json"
+        },
+        {
+          "name": "MODEL_CARD.md",
+          "sourcePath": "README.md",
+          "bytes": 2413,
+          "sha256": "8f08d3205a023d3ff3f065d58a386f127efa3fe432dc61db3721e35c6716a0dd",
+          "url": "https://modelscope.cn/api/v1/models/onnx-community/Qwen3-Embedding-0.6B-ONNX/repo?Revision=69da7161993e010fc5c62d2311fe77f2a4f888ec&FilePath=README.md"
+        },
+        {
+          "name": "UPSTREAM_MODEL_CARD.md",
+          "sourcePath": "README.md",
+          "bytes": 17237,
+          "sha256": "c34d9b7e5a267ad3fdd13227a253686bc90844ff4744a2a6a86c7c905e3d06f3",
+          "url": "https://modelscope.cn/api/v1/models/Qwen/Qwen3-Embedding-0.6B/repo?Revision=dd3e37eb506b3addbd930037796e25d349ae9010&FilePath=README.md"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>外部聊天 · 知己微信助手</title>
+  <link rel="stylesheet" href="external-import.css">
+</head>
+<body>
+  <header class="ei-header">
+    <nav class="ei-tabs" aria-label="外部聊天页面">
+      <button type="button" data-page="saved" aria-current="page">聊天记录</button>
+      <button type="button" data-page="tasks">导入任务<span id="eiTaskCount"></span></button>
+    </nav>
+    <button id="eiAdd" class="ei-primary" data-mutation="true" type="button">导入聊天</button>
+    <details class="ei-menu"><summary aria-label="更多操作">···</summary><div>
+      <button id="eiUsage" type="button">模型调用</button>
+      <button id="eiRefresh" type="button">刷新</button>
+      <button id="eiSettings" type="button">模型设置</button>
+    </div></details>
+  </header>
+  <div class="ei-shell">
+    <main class="ei-main">
+      <div id="eiError" class="ei-error" role="alert" hidden></div>
+      <div id="eiStatus" class="ei-announcement" role="status" aria-live="polite"></div>
+      <div id="eiContent" class="ei-content"><p class="ei-empty">正在读取本机导入资料…</p></div>
+    </main>
+  </div>
+  <dialog id="eiDialog" aria-labelledby="eiDialogTitle"></dialog>
+  <script src="external-import.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "benchmarkId": "zh-chat-retrieval-20261018-v1",
+  "lockedAtUtc": "2026-10-18T09:14:51.048898+00:00",
+  "datasetSha256": "a5e0fbcd962b37d5321741e684aaafd79e39ea0ff92fa06f682c0abaa00d9013",
+  "protocolSha256": "a23a8b9d59d3da58cab9d25dba0f29c2ec8763fe06c7edc79b41b70e90a2dea0",
+  "encoderSha256": "d161e68d7e7083a0f397a386d02010211d62d95e4d831902b44542bcf18e49e8",
+  "modelsManifestSha256": "c9024064c53806535105144876938ae352cd92a357b64c5e02dd667bc6f7c3d5",
+  "evaluatorSha256": "500a00c24df0bbe85b25e9fef9620da4f2dbb74cd1a30a5ca8a071340da8c5cf",
+  "runnerSha256": "e27d83749c0446980912f3febeba4951122e7e9167ff72ed92b2f0de9b3a6c5d",
+  "additionalFiles": {
+    "dataset-card.md": "0197022ae59e643af63e4c81ccb629e0cfe6e8b00485cf2ceef3ab0c61ea2a65",
+    "summarize.py": "219215f489584423b1aa09f645a9de0bee4fb510a26d0d8307660e745ad3dae5",
+    "stress.py": "fb6030b4589454e9f034b87a068e1aa2035367897915a565c7e150ff64dd6f16",
+    "memory.py": "ea9b1b0f63702bf64aa50e64a09a5e2e3c859774e27e732d78d0175837d7e009",
+    "download-models.py": "7a9a65118c618036d7456be1247deaa4f793d89adc7ad6f7b264128157e2f37c"
+  },
+  "productionFiles": {
+    "self_samples.py": "8be099199228f45fe20c5b77b60d47dab53dd960a9517db1ac71a66667450c7e",
+    "self_retrieval.py": "704ea9d6f57fabb5350b2e898d4b43bebdfc737d3f9eaf94a060919dfe2bfc84",
+    "self_semantic.py": "8ceb6f1edc816b1c9b83e528923afaa4d37ac51f18cd98a286e3a0ca6924581a",
+    "self_vectors.py": "87cc4b4c5f4b681c085c399ad38dc8247ecc261baf1fbf8700ba2e297bf13014"
+  },
+  "gitCommitAtFreeze": "c64b00fdbba68d619a35c726623b0a6814bbc410",
+  "review": "All160queries/480sources independently read by an AI reviewer who authored none, plus directed cross-family review. No formal model scores viewed before freeze. Not human or exhaustive pair labels."
+}

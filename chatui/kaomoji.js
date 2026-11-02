@@ -1,4 +1,5 @@
 "use strict";
+// Modified by Know Your Friends, 2026-10-13 (Apache-2.0): draft kaomoji only; mood labels are retired.
 (function () {
   const bank = {
     happy: { category: "愉快", variants: ["(＾▽＾)", "(≧▽≦)", "(⌒‿⌒)"] },
@@ -42,12 +43,6 @@
     embarrassed: { category: "尴尬", variants: ["(￣▽￣;)", "(・・;)ゞ", "(〃￣ω￣〃ゞ"] },
     tired: { category: "疲惫", variants: ["(￣o￣) . z Z", "(－_－) zzZ", "( ´△｀)"] }
   };
-  const legacy = {
-    happy: ["开心", "快乐"], affectionate: ["亲近", "喜爱"], neutral: ["平静", "中性"],
-    amused: ["有趣", "搞怪"], sad: ["难过", "悲伤"], anxious: ["不安", "焦虑"],
-    angry: ["生气", "愤怒"], excited: ["兴奋"], surprised: ["惊讶"], shy: ["害羞"],
-    grateful: ["感谢"], tired: ["疲惫"]
-  };
   const categoryGroups = {
     "愉快与期待": ["happy", "amused", "excited", "content", "relieved", "hopeful", "proud"],
     "亲近与感激": ["affectionate", "grateful", "tender", "shy"],
@@ -58,56 +53,11 @@
     "冲突与不悦": ["angry", "frustrated", "irritated", "resentful", "jealous", "suspicious"],
     "疲惫与淡漠": ["bored", "tired", "detached"]
   };
-  const categoryById = new Map(Object.entries(categoryGroups).flatMap(([category, ids]) => ids.map(id => [id, category])));
-  const aliases = new Map();
-  const normalize = value => typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
-  for (const [id, labels] of Object.entries(legacy)) for (const label of [id, ...labels]) aliases.set(normalize(label), id);
-  let catalogEmotions = null;
-  function installCatalog(catalog) {
-    if (!Array.isArray(catalog?.emotions) || !catalog.version) return { missing: ["catalog unavailable"], total: 0 };
-    const missing = catalog.emotions.filter(emotion => !bank[emotion.id] || bank[emotion.id].variants.length < 2).map(emotion => emotion.id);
-    if (missing.length) return { missing, total: catalog.emotions.length };
-    catalogEmotions = catalog.emotions;
-    for (const emotion of catalogEmotions) {
-      for (const value of [emotion.id, emotion.modelLabel, emotion.label, ...(emotion.aliases || [])]) {
-        if (normalize(value)) aliases.set(normalize(value), emotion.id);
-      }
-    }
-    return { missing: [], total: catalogEmotions.length };
-  }
-  function stableIndex(key, length) {
-    let hash = 2166136261;
-    for (const character of String(key)) {
-      hash ^= character.charCodeAt(0);
-      hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0) % length;
-  }
-  function resolve(value) {
-    const candidates = typeof value === "object" && value ? [value.id, value.rawLabel, value.modelLabel, value.label] : [value];
-    for (const candidate of candidates) {
-      const id = aliases.get(normalize(candidate));
-      if (id && bank[id]) return id;
-    }
-    return null;
-  }
-  function pick(value, messageId) {
-    const id = resolve(value);
-    return id ? bank[id].variants[stableIndex(messageId, bank[id].variants.length)] : "";
-  }
+  // Kaomoji the user can insert into a draft, grouped by feeling; no analysis catalog is involved.
   function panelItems() {
-    const emotions = catalogEmotions ? [...catalogEmotions] : [];
-    const ids = new Set(emotions.map(emotion => emotion.id));
-    for (const [id, labels] of Object.entries(legacy)) if (!ids.has(id)) emotions.push({ id, label: labels[0] });
-    const groups = new Map(Object.keys(categoryGroups).map(category => [category, []]));
-    for (const emotion of emotions) {
-      const entry = bank[emotion.id];
-      if (!entry) continue;
-      const category = categoryById.get(emotion.id) || entry.category;
-      if (!groups.has(category)) groups.set(category, []);
-      groups.get(category).push({ label: emotion.label, variants: entry.variants });
-    }
-    return [...groups].filter(([, items]) => items.length).map(([category, items]) => ({ category, items }));
+    return Object.entries(categoryGroups).map(([category, ids]) => ({
+      category, items: ids.filter(id => bank[id]).map(id => ({ label: bank[id].category, variants: bank[id].variants })),
+    })).filter(group => group.items.length);
   }
-  window.Kaomoji = Object.freeze({ installCatalog, pick, panelItems, resolve });
+  window.Kaomoji = Object.freeze({ panelItems });
 })();

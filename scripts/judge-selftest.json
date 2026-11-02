@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "qualityVerified": false,
+  "samples": [
+    {"state": "嗯嗯，好的，晚安。", "expected": false},
+    {"state": "周六陪妈妈去医院复查，医生说恢复得不错。", "expected": true},
+    {"state": "今天没有出门，也没有什么新事情。", "expected": false}
+  ],
+  "questions": {"has_content": {"type": "noul", "instructions": "这段聊天里有没有本人经历的具体事情？"}}
+}

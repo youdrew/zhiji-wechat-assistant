@@ -1,5 +1,7 @@
+// Know Your Friends modification (2026-10-09): cover RFC1918 HTTP boundaries and public-host rejection.
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { DEFAULT_MODEL_TIMEOUT_MS, MAX_MODEL_TIMEOUT_MS, modelTimeoutMs } from "../electron/model-timeout";
 
 import {
   generateStructured, listModels, ModelConnectorError, testConnection,
@@ -72,12 +74,45 @@ it("rejects unsafe endpoints and never lets SDKs read a key from the URL", () =>
     assert.throws(() => validateModelConfig({ ...base, baseUrl: url }), ModelConnectorError);
   }
   assert.equal(validateModelConfig(configs.ollama).baseUrl, "http://127.0.0.1:11434");
-  assert.throws(() => validateModelConfig({ ...configs.ollama,
-    baseUrl: "http://192.168.1.2:11434" }), (error: unknown) => {
-    assert.ok(error instanceof ModelConnectorError);
-    assert.equal(error.code, "invalid-url");
-    return true;
-  });
+});
+
+it("allows RFC1918 IPv4 HTTP boundaries while preserving existing loopback endpoints", () => {
+  for (const host of ["10.0.0.0", "10.255.255.255", "172.16.0.0", "172.31.255.255",
+    "192.168.0.0", "192.168.255.255", "localhost", "127.0.0.1", "[::1]"]) {
+    const baseUrl = `http://${host}:8080/v1`;
+    assert.equal(validateModelConfig({ ...configs.anthropic, baseUrl }).baseUrl, baseUrl, host);
+  }
+});
+
+it("rejects public, non-RFC1918 and lookalike HTTP hosts with invalid-url", () => {
+  for (const host of ["9.255.255.255", "11.0.0.0", "172.15.255.255", "172.32.0.0",
+    "192.167.255.255", "192.169.0.0", "8.8.8.8", "100.64.0.1", "169.254.1.1",
+    "0.0.0.0", "[fc00::1]", "[::ffff:192.168.1.1]", "example.invalid",
+    "10.0.0.1.example.invalid", "192.168.1.1.example.invalid", "localhost.example.invalid",
+    "10.0.0.256", "0x08080808"]) {
+    assert.throws(() => validateModelConfig({ ...configs.anthropic,
+      baseUrl: `http://${host}:8080/v1` }), (error: unknown) => {
+      assert.ok(error instanceof ModelConnectorError, host);
+      assert.equal(error.code, "invalid-url", host);
+      return true;
+    });
+  }
+  assert.equal(validateModelConfig({ ...configs.anthropic,
+    baseUrl: "https://example.invalid/v1" }).baseUrl, "https://example.invalid/v1");
+});
+
+it("sends an Anthropic request to a private HTTP endpoint without allowing redirects", async () => {
+  let calls = 0;
+  const result = await withMockFetch((url, init) => {
+    calls++;
+    assert.equal(url.origin, "http://10.23.45.67:8080");
+    assert.equal(url.pathname, "/v1/messages");
+    assert.equal(init?.redirect, "error");
+    return json(generationFixture("anthropic"));
+  }, () => generateStructured({ ...configs.anthropic, baseUrl: "http://10.23.45.67:8080/v1" },
+    { system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64 }));
+  assert.equal(calls, 1);
+  assert.equal(result.text, '{"ok":true}');
 });
 
 it("accepts only integer context sizes within the supported token range", () => {
@@ -211,21 +246,56 @@ it("sends an output cap only when the caller sets one, up to 32768", async () =>
   assert.equal(calls, 0);
 });
 
-it("accepts a 240 second timeout and rejects anything longer", async () => {
+it("accepts long inference limits while rejecting unbounded request timeouts", async () => {
   let calls = 0;
   await withMockFetch(() => {
     calls++;
     return json(generationFixture("responses"));
   }, async () => {
     const result = await generateStructured(configs.responses, {
-      system: "Return JSON.", prompt: "synthetic prompt", timeoutMs: 240_000,
+      system: "Return JSON.", prompt: "synthetic prompt", timeoutMs: MAX_MODEL_TIMEOUT_MS,
     });
     assert.equal(result.text, '{"ok":true}');
     await assert.rejects(() => generateStructured(configs.responses, {
-      system: "Return JSON.", prompt: "synthetic prompt", timeoutMs: 240_001,
+      system: "Return JSON.", prompt: "synthetic prompt", timeoutMs: MAX_MODEL_TIMEOUT_MS + 1,
     }), (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-request");
   });
   assert.equal(calls, 1);
+});
+
+it("validates the shared saved deadline and defaults existing settings to sixty minutes", () => {
+  assert.equal(modelTimeoutMs(), DEFAULT_MODEL_TIMEOUT_MS);
+  for (const value of [60_000, 3_600_000, MAX_MODEL_TIMEOUT_MS]) assert.equal(modelTimeoutMs(value), value);
+  for (const value of [0, 59_999, MAX_MODEL_TIMEOUT_MS + 1, 60_000.5, "3600000", true, {}, NaN, Infinity]) {
+    assert.throws(() => modelTimeoutMs(value));
+    assert.throws(() => validateModelConfig({ ...configs.responses, timeoutMs: value as number }),
+      (error: unknown) => error instanceof ModelConnectorError && error.code === "invalid-request");
+  }
+});
+
+it("uses saved inference timeouts above legacy request limits but keeps connection probes short", async context => {
+  const limits: number[] = [];
+  const original = AbortSignal.timeout;
+  context.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    limits.push(milliseconds);
+    return original(milliseconds);
+  });
+  let dispatchers = 0;
+  await withMockFetch((_url, init) => {
+    if ((init as RequestInit & { dispatcher?: unknown }).dispatcher) dispatchers++;
+    return json(generationFixture("responses"));
+  }, async () => {
+    await generateStructured({ ...configs.responses, timeoutMs: 7_200_000 }, {
+      system: "Synthetic", prompt: "Synthetic", timeoutMs: 45_000,
+    });
+    assert.ok(limits.includes(7_200_000));
+    assert.ok(!limits.includes(45_000));
+    limits.length = 0;
+    await testConnection({ ...configs.responses, timeoutMs: 7_200_000 });
+    assert.ok(limits.includes(15_000));
+    assert.ok(!limits.includes(7_200_000));
+    assert.equal(dispatchers, 2, "bounded signals own timeout instead of undici's implicit five-minute deadline");
+  });
 });
 
 function truncatedFixture(protocol: Protocol): unknown {
@@ -256,6 +326,8 @@ it("reports output cut at the provider's cap as truncated, not as a format error
       }), (error: unknown) => {
         assert.ok(error instanceof ModelConnectorError, protocol);
         assert.equal(error.code, "output-truncated", protocol);
+        // The text that did arrive travels with the error, so the caller can salvage it.
+        assert.equal(error.partialText, '{"answers":{"intent_detail_flirt":[0.05,0.05', protocol);
         return true;
       });
     });
@@ -355,4 +427,148 @@ it("stops before buffering a response larger than the connector limit", async ()
       return true;
     });
   });
+});
+
+it("asks chat-template servers to answer structured requests without thinking", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  await withMockFetch((_url, init) => {
+    bodies.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+    return json(generationFixture("chat_completions"));
+  }, async () => {
+    await generateStructured(configs.chat_completions, { system: "Return JSON.", prompt: "synthetic prompt",
+      maxOutputTokens: 8192, jsonMode: true, disableThinking: true });
+    await generateStructured(configs.chat_completions, { system: "Return JSON.", prompt: "synthetic prompt",
+      maxOutputTokens: 8192, jsonMode: true });
+  });
+  assert.deepEqual(bodies[0].chat_template_kwargs, { thinking: false, enable_thinking: false });
+  assert.equal((bodies[0].response_format as { type: string }).type, "json_object");
+  assert.equal(bodies[0].max_tokens, 8192);
+  assert.equal(bodies[1].chat_template_kwargs, undefined, "thinking is left alone unless asked");
+});
+
+it("drops only the template field when a hosted API rejects it, then plain JSON", async () => {
+  for (const rejections of [1, 2]) {
+    const bodies: Record<string, unknown>[] = [];
+    const result = await withMockFetch((_url, init) => {
+      bodies.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+      return bodies.length <= rejections
+        ? json({ error: { message: "Unrecognized request argument supplied: chat_template_kwargs" } }, 400)
+        : json(generationFixture("chat_completions"));
+    }, () => generateStructured(configs.chat_completions, { system: "Return JSON.", prompt: "synthetic prompt",
+      maxOutputTokens: 64, jsonMode: true, disableThinking: true }));
+    assert.equal(result.text, '{"ok":true}');
+    assert.equal(bodies.length, rejections + 1);
+    assert.equal(bodies[1].chat_template_kwargs, undefined);
+    assert.equal((bodies[1].response_format as { type: string }).type, "json_object");
+    if (rejections === 2) assert.equal(bodies[2].response_format, undefined);
+  }
+});
+
+it("rejects a non-boolean thinking switch", async () => {
+  await assert.rejects(generateStructured(configs.chat_completions, { system: "s", prompt: "p",
+    disableThinking: "yes" as unknown as boolean }), (error: unknown) =>
+    error instanceof ModelConnectorError && error.code === "invalid-request");
+});
+
+function sse(events: Array<Record<string, unknown>>, done = false): Response {
+  const frames = events.map(event => `${typeof event.type === "string" ? `event: ${event.type}\n` : ""}` +
+    `data: ${JSON.stringify(event)}\n\n`).join("") + (done ? "data: [DONE]\n\n" : "");
+  return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+}
+
+function chatChunks(finishReason: string): Array<Record<string, unknown>> {
+  const chunk = (delta: unknown, finish: string | null = null) => ({ id: "chat_test", object: "chat.completion.chunk",
+    model: "test-model", choices: [{ index: 0, delta, finish_reason: finish }] });
+  return [chunk({ role: "assistant", content: '{"ok":' }), chunk({ content: "true}" }), chunk({}, finishReason),
+    { id: "chat_test", object: "chat.completion.chunk", model: "test-model", choices: [],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }];
+}
+
+function responseEvents(terminal: "response.completed" | "response.incomplete"): Array<Record<string, unknown>> {
+  const response = { id: "resp_test", object: "response", model: "test-model", output: [] };
+  return [{ type: "response.created", response: { ...response, status: "in_progress" } },
+    { type: "response.output_text.delta", delta: '{"ok":' }, { type: "response.output_text.delta", delta: "true}" },
+    { type: terminal, response: { ...response, usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+      ...(terminal === "response.incomplete" ?
+        { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } : { status: "completed" }) } }];
+}
+
+it("streams structured requests with usage and still reports a cut at the output cap", async () => {
+  const request = { system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64, jsonMode: true,
+    disableThinking: true, stream: true };
+  const bodies: Record<string, any>[] = [];
+  const chat = await withMockFetch((_url, init) => {
+    bodies.push(JSON.parse(String(init?.body || "{}")));
+    return sse(chatChunks("stop"), true);
+  }, () => generateStructured(configs.chat_completions, request));
+  assert.equal(chat.text, '{"ok":true}');
+  assert.deepEqual(chat.usage, { inputTokens: 3, outputTokens: 2 });
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].stream, true);
+  assert.deepEqual(bodies[0].stream_options, { include_usage: true });
+  assert.equal(bodies[0].response_format.type, "json_object");
+  assert.deepEqual(bodies[0].chat_template_kwargs, { thinking: false, enable_thinking: false });
+
+  const responses = await withMockFetch(() => sse(responseEvents("response.completed")),
+    () => generateStructured(configs.responses, request));
+  assert.equal(responses.text, '{"ok":true}');
+  assert.deepEqual(responses.usage, { inputTokens: 3, outputTokens: 2 });
+
+  for (const [protocol, reply] of [["chat_completions", () => sse(chatChunks("length"), true)],
+    ["responses", () => sse(responseEvents("response.incomplete"))]] as const) {
+    let calls = 0;
+    await assert.rejects(withMockFetch(() => { calls++; return reply(); },
+      () => generateStructured(configs[protocol], request)), (error: unknown) =>
+      error instanceof ModelConnectorError && error.code === "output-truncated");
+    assert.equal(calls, 1, protocol);
+  }
+});
+
+it("reads a gateway's whole reply to a stream request once, keeping usage and truncation", async () => {
+  const request = { system: "Return JSON.", prompt: "synthetic prompt", maxOutputTokens: 64, jsonMode: true,
+    stream: true };
+  let calls = 0;
+  const result = await withMockFetch(() => { calls++; return json(generationFixture("chat_completions")); },
+    () => generateStructured(configs.chat_completions, request));
+  assert.equal(result.text, '{"ok":true}');
+  assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 2 });
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(withMockFetch(() => { calls++; return json(truncatedFixture("chat_completions")); },
+    () => generateStructured(configs.chat_completions, request)), (error: unknown) =>
+    error instanceof ModelConnectorError && error.code === "output-truncated");
+  assert.equal(calls, 1);
+});
+
+it("sends the same structured request once without SSE when a server rejects streaming", async () => {
+  const bodies: Record<string, any>[] = [];
+  const result = await withMockFetch((_url, init) => {
+    bodies.push(JSON.parse(String(init?.body || "{}")));
+    return bodies.length === 1 ? json({ error: { message: "stream unsupported" } }, 400)
+      : json(generationFixture("chat_completions"));
+  }, () => generateStructured(configs.chat_completions, { system: "Return JSON.", prompt: "synthetic prompt",
+    maxOutputTokens: 64, jsonMode: true, disableThinking: true, stream: true }));
+  assert.equal(result.text, '{"ok":true}');
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[1].stream, undefined);
+  assert.equal(bodies[1].stream_options, undefined);
+  assert.equal(bodies[1].response_format.type, "json_object");
+  assert.deepEqual(bodies[1].chat_template_kwargs, { thinking: false, enable_thinking: false });
+  // A provider failure is not a stream rejection; a long generation is never sent twice.
+  let calls = 0;
+  await assert.rejects(withMockFetch(() => { calls++; return json({ error: { message: "upstream" } }, 502); },
+    () => generateStructured(configs.chat_completions, { system: "s", prompt: "p", stream: true })),
+  (error: unknown) => error instanceof ModelConnectorError && error.status === 502);
+  assert.equal(calls, 1);
+});
+
+it("keeps protocols without streaming bounded when a caller asks to stream", async () => {
+  for (const protocol of ["anthropic", "gemini", "ollama"] as const) {
+    await withMockFetch(() => new Response(null, {
+      status: 200, headers: { "content-length": String(3 * 1024 * 1024) },
+    }), async () => {
+      await assert.rejects(generateStructured(configs[protocol], { system: "s", prompt: "p", maxOutputTokens: 64,
+        stream: true }), (error: unknown) => error instanceof ModelConnectorError && error.code === "response-too-large");
+    });
+  }
 });

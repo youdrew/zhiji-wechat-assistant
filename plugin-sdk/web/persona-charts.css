@@ -1,0 +1,139 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+/* Shared 性格分析 / 三观分析 charts (added 2026-10-25). Each page maps the --kpc-* colors to its own theme. */
+/* Two cards share each row, as on the 性格分析 tab; a lone third card (道德基础) takes half a row. */
+.kpc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 640px) { .kpc-grid { grid-template-columns: 1fr; } }
+.kpc-card { display: flex; flex-direction: column; justify-content: flex-start; width: 100%; min-width: 0; margin: 0; padding: 12px 14px 14px; text-align: left; cursor: pointer;
+  font: inherit; color: var(--kpc-text, inherit); background: var(--kpc-panel, transparent);
+  border: 1px solid var(--kpc-line, #3a3a3a); border-radius: 6px; white-space: normal; }
+.kpc-card:hover { border-color: var(--kpc-line-strong, #555); }
+.kpc-card[aria-pressed="true"] { border-color: var(--kpc-accent, #3d8f5f); }
+.kpc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.kpc-title { font-size: 13px; font-weight: 500; }
+.kpc-aside { color: var(--kpc-muted, #8c8c8c); font-size: 13px; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.kpc-rows { display: grid; gap: 12px; }
+.kpc-row { display: grid; grid-template-columns: 4em minmax(40px, 1fr); align-items: center; gap: 10px; }
+.kpc-label { color: var(--kpc-muted, #8c8c8c); font-size: 12px; white-space: nowrap; }
+.kpc-track { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--kpc-track, #333); }
+.kpc-track.unknown { height: 0; background: none; border-top: 1px dashed var(--kpc-line-strong, #555); }
+.kpc-axis .kpc-row { grid-template-columns: 3em minmax(40px, 1fr) 3em 5.5em; }
+.kpc-dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; z-index: 1;
+  box-sizing: border-box; background: var(--kpc-accent, #3d8f5f); }
+.kpc-dot.some { background: var(--kpc-accent-soft, #5d9f78); }
+.kpc-dot.weak { background: var(--kpc-panel, #222); border: 2px solid var(--kpc-accent, #3d8f5f); }
+.kpc-mbti { gap: 14px; }
+.kpc-mbti .kpc-row { grid-template-columns: 4em 1em minmax(40px, 1fr) 1em 5em; gap: 8px; }
+.kpc-letter { color: var(--kpc-faint, #666); font-size: 12px; font-weight: 500; text-align: center; }
+.kpc-letter.on { color: var(--kpc-text, inherit); }
+.kpc-value { color: var(--kpc-text, inherit); font-size: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.kpc-value.unknown { color: var(--kpc-faint, #666); }
+/* A plane names all four ends outside the box, as on a printed quadrant chart. */
+.kpc-planebox { display: grid; grid-template-columns: auto minmax(120px, 240px) auto; justify-content: center; align-items: center;
+  grid-template-areas: ". top ." "left plane right" ". bottom ."; gap: 6px 8px; }
+.kpc-plane { grid-area: plane; position: relative; display: block; aspect-ratio: 1; border: 1px solid var(--kpc-line-strong, #555);
+  border-radius: 4px; background-image: linear-gradient(var(--kpc-grid, rgba(128, 128, 128, .12)) 1px, transparent 1px),
+  linear-gradient(90deg, var(--kpc-grid, rgba(128, 128, 128, .12)) 1px, transparent 1px); background-size: 10% 10%; }
+.kpc-plane::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 1px solid var(--kpc-line-strong, #555); }
+.kpc-plane::after { content: ""; position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid var(--kpc-line-strong, #555); }
+.kpc-plane > .kpc-dot { top: 50%; left: 50%; }
+.kpc-plane.unknown { border-style: dashed; }
+.kpc-plane.unknown::before { border-left-style: dashed; }
+.kpc-plane.unknown::after { border-top-style: dashed; }
+.kpc-plane-status { grid-column: 1 / -1; grid-row: 4; color: var(--kpc-muted, #8c8c8c); font-size: 12px; line-height: 1.5; text-align: center; }
+.kpc-end { color: var(--kpc-muted, #8c8c8c); font-size: 11px; line-height: 1; white-space: nowrap; }
+.kpc-end.top { grid-area: top; justify-self: center; }
+.kpc-end.bottom { grid-area: bottom; justify-self: center; }
+.kpc-end.left { grid-area: left; justify-self: end; }
+.kpc-end.right { grid-area: right; justify-self: start; }
+/* Quadrant names sit in the outer corners, away from points near the middle of each quadrant. */
+.kpc-quadrant { position: absolute; width: 50%; height: 50%; box-sizing: border-box; padding: 5px 6px; display: flex;
+  color: var(--kpc-faint, #666); font-size: 11px; line-height: 1; }
+.kpc-plane.tinted .kpc-quadrant { color: var(--kpc-text, inherit); }
+.kpc-quadrant.q0 { left: 0; top: 0; align-items: flex-start; justify-content: flex-start; }
+.kpc-quadrant.q1 { left: 50%; top: 0; align-items: flex-start; justify-content: flex-end; }
+.kpc-quadrant.q2 { left: 0; top: 50%; align-items: flex-end; justify-content: flex-start; }
+.kpc-quadrant.q3 { left: 50%; top: 50%; align-items: flex-end; justify-content: flex-end; }
+.kpc-plane.tinted .q0 { background: var(--kpc-q0, rgba(232, 120, 160, .2)); border-top-left-radius: 3px; }
+.kpc-plane.tinted .q1 { background: var(--kpc-q1, rgba(222, 186, 70, .2)); border-top-right-radius: 3px; }
+.kpc-plane.tinted .q2 { background: var(--kpc-q2, rgba(96, 136, 204, .2)); border-bottom-left-radius: 3px; }
+.kpc-plane.tinted .q3 { background: var(--kpc-q3, rgba(150, 124, 220, .2)); border-bottom-right-radius: 3px; }
+.kpc-plane-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: var(--kpc-faint, #666); font-size: 11px; line-height: 1; }
+.kpc-self { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; box-sizing: border-box; z-index: 1;
+  border: 2px solid var(--kpc-self, #7f77dd); border-radius: 2px; }
+/* 知己分析 extension (2026-10-27): slider rows reuse the MBTI row without the letter columns; the extra
+   row under a plane or pooled axis card needs its own narrower grid. Humour styles grow from the midpoint,
+   conflict handling is a five-cell heat strip that stays dashed without any recorded conflict. */
+.kpc-slide .kpc-row, .kpc-rows .kpc-slide-row { grid-template-columns: 6em minmax(40px, 1fr) 5.5em; }
+.kpc-diverge .kpc-row { grid-template-columns: 4.5em minmax(40px, 1fr) 3.5em; }
+.kpc-diverge-track::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px;
+  border-left: 1px solid var(--kpc-faint, #666); }
+.kpc-bar { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--kpc-accent, #3d8f5f); }
+.kpc-heat { display: flex; height: 24px; border: 1px solid var(--kpc-line-strong, #555); border-radius: 4px; overflow: hidden; }
+.kpc-heat.empty { height: auto; justify-content: center; padding: 8px 10px; border-style: dashed;
+  color: var(--kpc-faint, #666); }
+.kpc-heat-cell { display: grid; place-items: center; min-width: 2.6em; font-size: 11px; color: var(--kpc-text, inherit);
+  background: var(--kpc-accent-soft, #5d9f78); }
+.kpc-heat-cell + .kpc-heat-cell { border-left: 1px solid var(--kpc-panel, #222); }
+.kpc-heat-cell.on { background: var(--kpc-accent, #3d8f5f); }
+.kpc-heat-cell.none { flex-grow: 0; background: none; color: var(--kpc-faint, #666);
+  border-left: 1px dashed var(--kpc-line-strong, #555); }
+/* 性格时间线 (added 2026-11-01): five plots share one half-year axis; the column overlay spans all five. */
+.kpc-periods { margin-bottom: 10px; padding: 12px 14px 12px; color: var(--kpc-text, inherit); background: var(--kpc-panel, transparent);
+  border: 1px solid var(--kpc-line, #3a3a3a); border-radius: 6px; }
+.kpc-p-body { display: grid; grid-template-columns: 4em minmax(0, 1fr) 2.4em; align-items: center; gap: 0 10px; }
+.kpc-periods .kpc-head { align-items: center; }
+.kpc-periods .kpc-aside { margin-left: auto; }
+/* The categorical palette, checked for colorblind separation on both surfaces. Text stays in the page's ink. */
+.kpc-tone-0 { --kpc-tone: #3987e5; } .kpc-tone-1 { --kpc-tone: #d95926; } .kpc-tone-2 { --kpc-tone: #199e70; } .kpc-tone-3 { --kpc-tone: #c98500; }
+.kpc-tone-4 { --kpc-tone: #d55181; } .kpc-tone-5 { --kpc-tone: #008300; } .kpc-tone-6 { --kpc-tone: #9085e9; } .kpc-tone-7 { --kpc-tone: #e66767; }
+:root[data-theme="light"] .kpc-tone-0 { --kpc-tone: #2a78d6; } :root[data-theme="light"] .kpc-tone-1 { --kpc-tone: #eb6834; }
+:root[data-theme="light"] .kpc-tone-2 { --kpc-tone: #1baf7a; } :root[data-theme="light"] .kpc-tone-3 { --kpc-tone: #eda100; }
+:root[data-theme="light"] .kpc-tone-4 { --kpc-tone: #e87ba4; } :root[data-theme="light"] .kpc-tone-5 { --kpc-tone: #008300; }
+:root[data-theme="light"] .kpc-tone-6 { --kpc-tone: #6250d6; } :root[data-theme="light"] .kpc-tone-7 { --kpc-tone: #e34948; }
+.kpc-help { position: relative; flex: none; }
+.kpc-help summary { width: 16px; height: 16px; color: var(--kpc-muted, #8c8c8c); border: 1px solid var(--kpc-line-strong, #555); border-radius: 50%; font-size: 11px; line-height: 16px; text-align: center; list-style: none; cursor: pointer; }
+.kpc-help summary::-webkit-details-marker { display: none; }
+.kpc-help summary:hover, .kpc-help[open] summary { color: var(--kpc-text, inherit); border-color: var(--kpc-text, inherit); }
+.kpc-help-note { position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; width: min(380px, 72vw); padding: 4px 12px 10px; color: var(--kpc-text, inherit); background: var(--kpc-panel, #222);
+  border: 1px solid var(--kpc-line-strong, #555); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, .3); font-size: 12px; line-height: 1.6; }
+.kpc-help-note p { margin: 6px 0 0; }
+.kpc-p-name { padding: 0; border: 0; background: none; color: var(--kpc-muted, #8c8c8c); font: inherit; font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer; }
+.kpc-p-name:hover, .kpc-p-name[aria-pressed="true"] { color: var(--kpc-text, inherit); }
+.kpc-p-name.plain { cursor: default; }
+.kpc-p-plot { grid-column: 2; position: relative; height: 42px; margin: 2px 0; background: color-mix(in srgb, var(--kpc-tone) 13%, transparent); border: 1px solid color-mix(in srgb, var(--kpc-tone) 55%, transparent); border-radius: 4px; box-sizing: border-box; }
+.kpc-p-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.kpc-p-mid { stroke: var(--kpc-line, #3a3a3a); stroke-width: 1; stroke-dasharray: 3 3; }
+.kpc-p-band { fill: var(--kpc-tone); opacity: .3; stroke: none; }
+.kpc-p-whisker { stroke: var(--kpc-tone); stroke-width: 4; opacity: .45; }
+.kpc-p-line { fill: none; stroke: var(--kpc-tone); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.kpc-p-dot { position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--kpc-tone); }
+.kpc-p-dot.on { width: 10px; height: 10px; margin: -5px 0 0 -5px; border: 2px solid var(--kpc-panel, #222); box-sizing: content-box; z-index: 1; }
+.kpc-p-value { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; cursor: pointer; }
+.kpc-p-value:hover { color: var(--kpc-text, inherit); text-decoration: underline; }
+.kpc-p-value.unknown { color: var(--kpc-faint, #666); }
+.kpc-p-cols { grid-column: 2; display: grid; align-self: stretch; z-index: 2; }
+.kpc-p-col { min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: pointer; }
+.kpc-p-col:hover:not(:disabled), .kpc-p-col.on { background: var(--kpc-grid, rgba(128, 128, 128, .12)); }
+.kpc-p-strip { grid-column: 2; display: grid; min-height: 20px; margin-top: 2px; }
+.kpc-p-seg { min-width: 0; padding: 0 3px; overflow: hidden; color: var(--kpc-text, inherit); background: var(--kpc-grid, rgba(128, 128, 128, .12));
+  border-radius: 2px; font-size: 11px; line-height: 20px; text-align: center; white-space: nowrap; text-overflow: ellipsis; box-shadow: inset -2px 0 0 var(--kpc-panel, #222); }
+.kpc-toned { color: var(--kpc-text, inherit); background: color-mix(in srgb, var(--kpc-tone) 32%, transparent); border: 1px solid var(--kpc-tone); }
+.kpc-p-name.kpc-toned { padding: 2px 0; border-radius: 3px; text-align: center; }
+.kpc-p-name.kpc-toned:hover, .kpc-p-name.kpc-toned[aria-pressed="true"] { background: color-mix(in srgb, var(--kpc-tone) 60%, transparent); }
+.kpc-p-seg.kpc-toned { margin-right: 2px; border-radius: 3px; line-height: 18px; box-shadow: none; }
+button.kpc-p-seg { position: relative; display: block; width: 100%; font-family: inherit; border-top: 0; border-bottom: 0; border-left: 0; border-right: 0; cursor: pointer; }
+button.kpc-p-seg.kpc-toned { border: 1px solid var(--kpc-tone); width: calc(100% - 2px); }
+button.kpc-p-seg:hover { filter: brightness(1.25); }
+.kpc-p-seg.empty { background: none; box-shadow: none; }
+.kpc-p-seg.empty:hover { background: var(--kpc-grid, rgba(128, 128, 128, .12)); filter: none; }
+.kpc-p-seg.edited::after { content: ""; position: absolute; top: 2px; right: 2px; width: 4px; height: 4px; border-radius: 50%; background: var(--kpc-text, #fff); }
+/* Several partners of one period stack one chip per name; the strip centers its segments so single
+   chips stay at their own height between taller stacks. */
+.kpc-p-strip.stacked { align-items: center; }
+.kpc-p-seg.stack { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 2px 3px; background: none; box-shadow: none; }
+.kpc-p-chip { min-width: 0; overflow: hidden; border-radius: 2px; background: var(--kpc-grid, rgba(128, 128, 128, .12)); font-size: 11px; line-height: 16px; text-align: center; white-space: nowrap; text-overflow: ellipsis; }
+.kpc-p-chip.kpc-toned { border-radius: 3px; }
+.kpc-p-value.edited { text-decoration: underline dotted; }
+.kpc-p-years { min-height: 18px; margin-top: 4px; container-type: inline-size; }
+.kpc-p-years .kpc-p-seg { padding: 0; color: var(--kpc-muted, #8c8c8c); background: none; border-radius: 0; box-shadow: inset 2px 0 0 var(--kpc-panel, #222), inset -2px 0 0 var(--kpc-panel, #222), inset 0 1px 0 var(--kpc-line, #3a3a3a); font-variant-numeric: tabular-nums; }
+@container (max-width: 420px) { .kpc-p-years.long .kpc-p-seg:nth-child(even) { color: transparent; } }

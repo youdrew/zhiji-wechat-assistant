@@ -1,0 +1,15 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+:root { color-scheme: dark; font-family: system-ui, "Microsoft YaHei", sans-serif; background: #141414; color: #ddd; }
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { display: flex; flex-direction: column; }
+[hidden] { display: none !important; }
+#imageViewport { flex: 1; min-height: 0; overflow: auto; position: relative; overscroll-behavior: contain; }
+#imageCanvas { display: flex; align-items: center; justify-content: center; min-width: 100%; min-height: 100%; }
+#previewImage { flex: none; display: block; user-select: none; }
+#imageStatus { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; padding: 24px; color: #999; font-size: 13px; text-align: center; }
+.image-toolbar { flex: none; display: flex; align-items: center; justify-content: center; gap: 6px; height: 48px; border-top: 1px solid #282828; background: #1b1b1b; }
+.image-toolbar button { min-width: 36px; height: 30px; padding: 0 12px; border: 0; border-radius: 4px; color: #ddd; background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
+.image-toolbar button:hover:not(:disabled) { background: #303030; }
+.image-toolbar button:disabled { opacity: .35; cursor: default; }
+.image-toolbar button:focus-visible { outline: 2px solid #07b361; outline-offset: 1px; }

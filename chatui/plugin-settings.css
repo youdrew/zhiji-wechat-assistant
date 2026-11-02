@@ -1,0 +1,74 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+/* 设置 → 插件 (2026-10-13). */
+.plugin-settings-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.plugin-settings-title .settings-action-btn { font-weight: normal; }
+.plugin-list { display: flex; flex-direction: column; gap: 6px; }
+.plugin-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-search); color: var(--text-main); font-size: 12px; }
+.plugin-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.plugin-main p { margin: 0; overflow-wrap: anywhere; }
+.plugin-name-line { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.plugin-name-line strong { font-size: 13px; font-weight: 600; }
+.plugin-meta, .plugin-desc, .plugin-state { color: var(--text-secondary); }
+.plugin-source { padding: 0 5px; border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-secondary); font-size: 11px; line-height: 16px; }
+.plugin-state-blocked, .plugin-state-unresponsive, .plugin-state-exited, .plugin-problem { color: #d99595; }
+.plugin-log summary { cursor: pointer; color: var(--text-secondary); }
+.plugin-log pre { max-height: 140px; overflow: auto; margin: 4px 0 0; padding: 6px; font: 11px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-chat); border-radius: 4px; user-select: text; }
+.plugin-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.plugin-settings-entry { white-space: nowrap; }
+.plugin-settings-entry::before { content: "⚙"; margin-right: 5px; }
+.plugin-overview, .plugin-detail { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+#pluginOverview[hidden], #pluginDetail[hidden], #pluginLeaveConfirm[hidden] { display: none; }
+.plugin-config-back, .plugin-config-link { border: 0; background: transparent; padding: 2px 0; color: var(--color-green); font: inherit; font-size: 12px; text-align: left; cursor: pointer; align-self: flex-start; }
+.plugin-config-link:disabled { color: var(--text-muted); cursor: default; }
+.plugin-config-back:focus-visible, .plugin-config-link:focus-visible { outline: 2px solid var(--color-green); outline-offset: 3px; }
+.plugin-config-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
+.plugin-config-heading h2 { margin: 0; font: inherit; overflow-wrap: anywhere; }
+.plugin-config-state, .plugin-config-description { margin: 0; font-size: 12px; color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; }
+.plugin-config-state { min-height: 19px; }
+.plugin-config-feedback { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.plugin-config-feedback:empty { display: none; }
+.plugin-config-group { padding: 0 0 16px; margin: 0 0 16px; border-bottom: 1px solid var(--border-color); min-width: 0; }
+.plugin-config-group h3 { margin: 0 0 12px; color: var(--text-main); font-size: 13px; font-weight: 600; }
+.plugin-config-group > .plugin-config-description { margin-bottom: 12px; }
+.plugin-config-model, .plugin-config-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
+.plugin-config-model .plugin-config-link { align-self: auto; }
+.plugin-config-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 16px; }
+.plugin-config-field:first-of-type { margin-top: 0; }
+.plugin-config-label { color: var(--text-main); font-size: 13px; cursor: pointer; }
+.plugin-config-check { display: flex; align-items: flex-start; gap: 8px; }
+.plugin-config-check input { margin: 3px 0 0; flex-shrink: 0; accent-color: var(--color-green); }
+.plugin-config-input:not([type="checkbox"]) { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-main); background: var(--bg-chat); font: inherit; font-size: 13px; }
+.plugin-config-input:focus-visible { outline: 2px solid var(--color-green); outline-offset: 2px; }
+.plugin-config-input:disabled { opacity: .6; }
+.plugin-config-input[aria-invalid="true"] { border-color: #d99595; }
+.plugin-config-error { margin: 0; font-size: 12px; color: #d99595; }
+body.theme-light .plugin-config-error { color: #a53f3f; }
+body.theme-light .plugin-config-input[aria-invalid="true"] { border-color: #a53f3f; }
+.plugin-config-error:empty, .plugin-config-field > .plugin-config-description:empty { display: none; }
+.plugin-config-form { min-width: 0; }
+.plugin-config-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.plugin-config-effective { margin-top: 12px; }
+.plugin-leave-confirm { padding: 12px; border: 1px solid var(--color-green); border-radius: 5px; background: var(--bg-search); color: var(--text-main); }
+.plugin-leave-confirm p { font-size: 13px; margin: 0 0 10px; }
+@media (max-width: 570px) {
+  .plugin-row { flex-wrap: wrap; }
+  .plugin-actions { flex-wrap: wrap; }
+  .plugin-main { flex-basis: 100%; }
+  .plugin-config-heading { flex-direction: column; gap: 3px; }
+}
+@media (pointer: coarse) {
+  .plugin-settings-entry, .plugin-config-back, .plugin-config-link { min-height: 44px; }
+  .plugin-config-check { padding: 8px 0; }
+}
+.plugin-switch { position: relative; width: 36px; height: 20px; padding: 0; border: 0; border-radius: 10px; background: var(--text-muted); cursor: pointer; transition: background .2s; }
+.plugin-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.plugin-switch[aria-checked="true"] { background: var(--color-green); }
+.plugin-switch[aria-checked="true"]::after { transform: translateX(16px); }
+.plugin-switch:disabled { opacity: .4; cursor: default; }
+.plugin-switch:focus-visible { outline: 2px solid var(--color-green); outline-offset: 2px; }
+.plugin-group-title { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
+.plugin-row-problem { background: transparent; }
+/* The 模型调用 entry in the left rail is a real button with the rail's icon look. */
+button.nav-item { border: 0; padding: 0; background: transparent; font: inherit; }
+button.nav-item:hover { background-color: var(--bg-rail-hover); }
+button.nav-item:focus-visible { outline: 2px solid var(--color-green); outline-offset: 2px; }

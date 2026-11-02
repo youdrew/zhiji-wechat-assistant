@@ -14,7 +14,7 @@ $lines = New-Object 'System.Collections.Generic.List[string]'
 $owned = New-Object 'System.Collections.Generic.List[string]'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $id = [Guid]::NewGuid().ToString('N')
-$reportName = 'WechatVibe-startup-report-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $id.Substring(0,8) + '.txt'
+$reportName = 'KnowYourFriends-startup-report-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $id.Substring(0,8) + '.txt'
 $exitCode = 0
 function Record([string]$message) { $lines.Add($message); Write-Host $message }
 function Record-Python([string]$line) {
@@ -80,7 +80,7 @@ function Writable([string]$directory, [string]$label) {
     if (!(Test-Path -LiteralPath $directory -PathType Container)) { Record "write.$label=not_present"; return }
     $item = Get-Item -LiteralPath $directory -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Record "write.$label=skipped_reparse_point"; return }
-    $file = Join-Path $directory ('.wechatvibe-diagnostic-' + $id + '.tmp')
+    $file = Join-Path $directory ('.kyf-diagnostic-' + $id + '.tmp')
     try {
         $stream = New-Object IO.FileStream($file, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
         $stream.Dispose()
@@ -220,7 +220,7 @@ except OSError as exc: emit('startup_log', status='unreadable', **error_fields(e
 emit('probe_complete', status='ok')
 '@
 try {
-    Record 'WechatVibe Startup Diagnostics v1'
+    Record 'Zhiji WeChat Assistant Startup Diagnostics v1'
     Write-Host '正在检查启动环境，通常一分钟内完成。不会启动客户端或读取聊天。'
     Record ('time='+(Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz'))
     Record ('windows='+[Environment]::OSVersion.Version.ToString()+'; os64='+[Environment]::Is64BitOperatingSystem)
@@ -231,11 +231,11 @@ try {
         Record ('windows_tool.'+$name+'.present='+(Test-Path -LiteralPath (Join-Path $env:SystemRoot ('System32\'+$name)) -PathType Leaf))
     }
     Record 'scope=local checks only; no chat, account configuration, key or full-log export'
-    foreach ($name in @('WECHATVIBE_PYTHON','WECHATVIBE_NODE','PYTHONHOME','PYTHONPATH','NODE_OPTIONS','NODE_PATH','HTTP_PROXY','HTTPS_PROXY')) {
+    foreach ($name in @('KYF_PYTHON','KYF_NODE','PYTHONHOME','PYTHONPATH','NODE_OPTIONS','NODE_PATH','HTTP_PROXY','HTTPS_PROXY')) {
         Record ('environment.'+$name+'.present='+[bool][Environment]::GetEnvironmentVariable($name))
     }
-    if (!(Test-Path -LiteralPath (Join-Path $root 'WechatVibe.exe') -PathType Leaf)) {
-        Record 'placement=invalid; put this BAT beside WechatVibe.exe and run it again'
+    if (!(Test-Path -LiteralPath (Join-Path $root 'KnowYourFriends.exe') -PathType Leaf)) {
+        Record 'placement=invalid; put this BAT beside KnowYourFriends.exe and run it again'
         throw 'wrong_placement'
     }
     if (!(Safe-Path $client)) { Record 'installation=redirected_client_directory; probes_skipped'; throw 'unsafe_layout' }
@@ -245,11 +245,11 @@ try {
               if ($version -is [string] -and $version.Length -le 80 -and $version -match '^(\d{1,3}\.\d{1,3}\.\d{1,3})(?:[-+][A-Za-z0-9.-]+)?$') { Record ('package_version='+$Matches[1]) } }
         catch { Record 'package_version=unreadable' }
     }
-    if (Safe-Path (Join-Path $root 'WechatVibe.exe')) {
-        $version=(Get-Item -LiteralPath (Join-Path $root 'WechatVibe.exe')).VersionInfo.FileVersion
+    if (Safe-Path (Join-Path $root 'KnowYourFriends.exe')) {
+        $version=(Get-Item -LiteralPath (Join-Path $root 'KnowYourFriends.exe')).VersionInfo.FileVersion
         if ($version -match '^\d{1,5}(?:\.\d{1,5}){2,3}$') { Record ('exe_version='+$version) }
     }
-    $required=@('WechatVibe.exe','resources\app.asar','resources\client\package.json',
+    $required=@('KnowYourFriends.exe','resources\app.asar','resources\client\package.json',
       'resources\client\scripts\start-real-client.py','resources\client\bridge\chat_server.py',
       'resources\client\bridge\real_http.py','resources\client\bridge\real_backend.py',
       'resources\client\runtime\python\python.exe','resources\client\runtime\python\python314.dll',
@@ -261,7 +261,7 @@ try {
         elseif (Test-Path -LiteralPath $file -PathType Leaf) { Record ('file.'+$relative+'=present; bytes='+(Get-Item -LiteralPath $file).Length) }
         else { Record ('file.'+$relative+'=MISSING') }
     }
-    foreach ($relative in @('WechatVibe.exe','resources\app.asar','resources\client\scripts\start-real-client.py')) {
+    foreach ($relative in @('KnowYourFriends.exe','resources\app.asar','resources\client\scripts\start-real-client.py')) {
         $file=Join-Path $root $relative
         if ((Safe-Path $file) -and (Test-Path -LiteralPath $file -PathType Leaf)) {
             $hash=[Security.Cryptography.SHA256]::Create(); $stream=[IO.File]::OpenRead($file)
@@ -280,7 +280,7 @@ try {
     }
     $python=Join-Path $client 'runtime\python\python.exe'
     if ((Safe-Path $python) -and (Test-Path -LiteralPath $python -PathType Leaf)) {
-        $probeFile=Join-Path ([IO.Path]::GetTempPath()) ('wechatvibe-diag-'+$id+'.py')
+        $probeFile=Join-Path ([IO.Path]::GetTempPath()) ('kyf-diag-'+$id+'.py')
         New-OwnedText $probeFile $pythonSource
         Record 'python_probe=running; maximum 45 seconds'
         $result=Probe $python ('-I -B -X utf8 "'+$probeFile+'" "'+$root+'"') 45000

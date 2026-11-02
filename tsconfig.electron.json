@@ -15,6 +15,6 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
-  "include": ["electron/**/*.ts", "shared/**/*.ts"],
+  "include": ["electron/**/*.ts", "shared/**/*.ts", "plugin-sdk/node/execution-relay.ts", "plugins/kyf.advisor/engine/runtime.ts"],
   "exclude": ["node_modules", "dist", "dist-electron", "tests", "scripts", "src"]
 }
