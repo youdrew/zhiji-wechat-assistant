@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "kind": "zhiji-msvc-app-local",
+  "version": "14.44.35211.0",
+  "platform": "win-x64-release",
+  "origin": {
+    "url": "https://download.visualstudio.microsoft.com/download/pr/990c720a-46ce-4dc7-87b9-c2eb615d34b9/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe",
+    "alias": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+    "bytes": 25635768,
+    "sha256": "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b",
+    "authenticodeStatus": "Valid",
+    "publisherOrganization": "Microsoft Corporation",
+    "extraction": "WiX dark static Burn/MSI extraction; no installation"
+  },
+  "provenance": {
+    "community2022RedistBytesMatch": true,
+    "dllSignaturesObserved": "Valid: Authenticode or Windows catalog signed by Microsoft Corporation; fixed hashes anchor extracted bytes",
+    "signatureScope": "Installer has Microsoft Authenticode. Catalog validation is not described as an embedded DLL signature."
+  },
+  "licenseFile": "Microsoft-Visual-Cpp-Runtime-2015-2022.rtf",
+  "noticeFile": "Microsoft-Visual-Cpp-Runtime-NOTICE.md",
+  "files": [
+    {
+      "name": "msvcp140.dll",
+      "bytes": 557728,
+      "sha256": "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9",
+      "version": "14.44.35211.0",
+      "msvcImports": [
+        "vcruntime140.dll",
+        "vcruntime140_1.dll"
+      ]
+    },
+    {
+      "name": "msvcp140_1.dll",
+      "bytes": 35952,
+      "sha256": "bfad5aef4c63a669e3c140655cdfdf395b6c979b400a447bd5dcb65ed8826c3d",
+      "version": "14.44.35211.0",
+      "msvcImports": [
+        "msvcp140.dll",
+        "vcruntime140.dll"
+      ]
+    },
+    {
+      "name": "msvcp140_atomic_wait.dll",
+      "bytes": 50304,
+      "sha256": "640b2aefced484d0368eea5bdd06addd0658a3a70a49256e560d6923b404a479",
+      "version": "14.44.35211.0",
+      "msvcImports": [
+        "msvcp140.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll"
+      ]
+    },
+    {
+      "name": "vcruntime140.dll",
+      "bytes": 124544,
+      "sha256": "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
+      "version": "14.44.35211.0",
+      "msvcImports": []
+    },
+    {
+      "name": "vcruntime140_1.dll",
+      "bytes": 49792,
+      "sha256": "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f",
+      "version": "14.44.35211.0",
+      "msvcImports": [
+        "vcruntime140.dll"
+      ]
+    },
+    {
+      "name": "Microsoft-Visual-Cpp-Runtime-2015-2022.rtf",
+      "bytes": 9235,
+      "sha256": "8099dc3cf9502c335da829e5c755948a12e3e6de490eb492a99deb673d883d8b"
+    },
+    {
+      "name": "Microsoft-Visual-Cpp-Runtime-NOTICE.md",
+      "bytes": 1727,
+      "sha256": "1294b38e83b5aea2098b903c2e286609060df61d1bdb453144bf0080deb7c606"
+    }
+  ]
+}
