@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "id": "kyf.friend-analysis",
+  "name": "知己分析",
+  "version": "0.2.0",
+  "description": "按好友分析近期概述、关系记忆候选、性格与三观、聊天互动与关系趋势",
+  "author": "Know Your Friends",
+  "core": { "api": [1] },
+  "runtime": { "type": "python", "entry": "backend/main.py" },
+  "events": ["friend.opened", "human.changed"],
+  "contributes": {
+    "settings": {
+      "schema": 1,
+      "description": "设置知己分析的后续自动更新行为；保存不会立即发起分析。",
+      "groups": [{
+        "id": "automation", "title": "更新方式",
+        "fields": [{ "key": "autoUpdate", "title": "自动增量更新", "type": "boolean", "default": true,
+          "description": "打开已经分析过的好友，或修改其关系记忆与资料时，符合小量更新条件才自动分析。关闭后仍可手动分析；正在运行的任务继续完成。" }]
+      }]
+    },
+    "chatHeader": [{ "id": "analysis", "label": "知己分析", "kind": "friend-window" }],
+    "schemes": [{
+      "id": "default",
+      "name": "默认方案",
+      "summary": "近期概述、关系记忆候选、性格分析、三观分析、聊天分析与关系趋势；增量更新，已有结果保留",
+      "page": "ui/index.html",
+      "tabs": [
+        { "id": "overview", "title": "好友概述" },
+        { "host": "memories" },
+        { "id": "persona", "title": "性格分析" },
+        { "id": "values", "title": "三观分析" },
+        { "id": "chat", "title": "聊天分析" },
+        { "id": "trend", "title": "关系趋势" }
+      ]
+    }]
+  }
+}

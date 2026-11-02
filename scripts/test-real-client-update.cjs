@@ -13,7 +13,7 @@ function release(version = "1.0.2") {
   return {
     tag_name: tag, html_url: `${RELEASES_URL}/tag/${tag}`, draft: false, prerelease: false,
     assets: [asset("update-manifest.json", 200), asset("update-manifest.sig", 64),
-      asset(`WechatVibe-${version}-windows-x64.zip`, 900_000_000), asset("SHA256SUMS.txt", 200)],
+      asset(`KnowYourFriends-${version}-windows-x64.zip`, 900_000_000), asset("SHA256SUMS.txt", 200)],
   };
 }
 
@@ -43,6 +43,9 @@ async function main() {
   });
   assert.equal(assessRelease("1.0.1", { ...release(), prerelease: true }).status, "invalid-release");
   assert.equal(assessRelease("1.0.1", { ...release(), html_url: "https://other.example/release" }).status, "invalid-release");
+  const formerRepository = "https://github.com/youdrew/know-your-friends/releases";
+  assert.equal(assessRelease("1.0.1", { ...release(), html_url: `${formerRepository}/tag/v1.0.2` }).status,
+    "invalid-release", "the former repository URL is not an alternate update source");
   assert.equal(assessRelease("1.0.1", { ...release(), tag_name: "v1.0.2-rc.1" }).status, "invalid-release");
   const missingArchive = release();
   missingArchive.assets.splice(2, 1);
@@ -62,6 +65,11 @@ async function main() {
   const redirectedAsset = release();
   redirectedAsset.assets[2].browser_download_url = "https://other.example/file.zip";
   assert.equal(assessRelease("1.0.1", redirectedAsset).status, "incomplete-release");
+  const formerRepositoryAsset = release();
+  formerRepositoryAsset.assets[2].browser_download_url =
+    `${formerRepository}/download/v1.0.2/KnowYourFriends-1.0.2-windows-x64.zip`;
+  assert.equal(assessRelease("1.0.1", formerRepositoryAsset).status, "incomplete-release",
+    "all signed release assets must belong to the current official repository");
 
   const requests = [];
   const successfulFetch = async (url, options) => {
@@ -70,7 +78,7 @@ async function main() {
   };
   // GitHub metadata alone must never make a Release trustworthy.
   assert.equal((await checkForUpdates("1.0.1", { fetchImpl: successfulFetch })).status, "invalid-release");
-  assert.equal(requests[0].url, "https://api.github.com/repos/tswawa/WechatVibe/releases/latest");
+  assert.equal(requests[0].url, "https://api.github.com/repos/youdrew/zhiji-wechat-assistant/releases/latest");
   assert.equal(requests[0].options.redirect, "error");
   assert.equal((await checkForUpdates("1.0.1", { fetchImpl: fetched("{}", { status: 404 }) })).status, "no-release");
   assert.equal((await checkForUpdates("1.0.1", { fetchImpl: fetched("", { status: 403, headers: { "x-ratelimit-remaining": "0" } }) })).status, "rate-limited");

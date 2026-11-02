@@ -22,6 +22,7 @@ from pathlib import Path
 VERSION = "real-ui-1"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "bridge"))
+from core_runtime import python_flags
 from instance_identity import default_port, instance_id
 
 PORTABLE_PYTHON = PROJECT_ROOT / "runtime" / "python" / "python.exe"
@@ -29,7 +30,7 @@ PORTABLE_PYTHON = PROJECT_ROOT / "runtime" / "python" / "python.exe"
 
 def selected_python_exe(value=None):
     """Resolve a PATH command before comparing it with a running Python image."""
-    value = value if value is not None else os.environ.get("WECHATVIBE_PYTHON")
+    value = value if value is not None else os.environ.get("KYF_PYTHON")
     if not value:
         return PORTABLE_PYTHON if PORTABLE_PYTHON.is_file() else Path(sys.executable)
     candidate = Path(value)
@@ -44,8 +45,8 @@ PYTHON_EXE = selected_python_exe()
 START_TIMEOUT = 20.0
 STOP_TIMEOUT = 30.0
 STOP_CLEANUP_TIMEOUT = 8.0
-CONTROL_TOKEN_ENV = "WECHATVIBE_CONTROL_TOKEN"
-CONTROL_TOKEN_HEADER = "X-WechatVibe-Control-Token"
+CONTROL_TOKEN_ENV = "KYF_CONTROL_TOKEN"
+CONTROL_TOKEN_HEADER = "X-KYF-Control-Token"
 
 
 class LauncherError(Exception):
@@ -97,9 +98,13 @@ def health(config):
             try:
                 payload = json.loads(body)
                 if (payload.get("version") == VERSION and
-                        payload.get("instanceId") == config.instance_id and
-                        (expected_app_version is None or
-                         payload.get("appVersion") == expected_app_version)):
+                        payload.get("instanceId") == config.instance_id):
+                    if (expected_app_version is not None and
+                            payload.get("appVersion") != expected_app_version):
+                        running_version = payload.get("appVersion")
+                        if not isinstance(running_version, str) or not running_version.strip():
+                            return "wrong service (health app version invalid)"
+                        return "outdated"
                     return "ready"
             except (ValueError, AttributeError):
                 pass
@@ -344,7 +349,8 @@ def start_service(config, log_path, control_token):
     environment[CONTROL_TOKEN_ENV] = control_token
     with log_path.open("ab", buffering=0) as log_file:
         return subprocess.Popen(
-            [str(config.python_exe), str(config.root / "bridge" / "chat_server.py")],
+            [str(config.python_exe), *python_flags(config.python_exe),
+             str(config.root / "bridge" / "chat_server.py")],
             cwd=str(config.root), env=environment, stdin=subprocess.DEVNULL,
             stdout=log_file, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
@@ -359,6 +365,16 @@ def ensure_service(config, starter=start_service, *, recovery=False):
         if recovery and config.no_auto_recovery_marker.exists():
             raise LauncherError("Automatic recovery is disabled after clearing the current account")
         state = health(config)
+        if state == "outdated":
+            # A source update changes package.json before the running bridge exits.
+            # Keep recovery passive; an explicit launch replaces only a verified
+            # bridge while holding this installation's launch mutex throughout.
+            if recovery:
+                return False, None
+            stop_owned_bridge(config)
+            state = health(config)
+            if state != "unavailable" or port_occupied(config.port):
+                raise LauncherError("Outdated bridge port is still occupied; no replacement started")
         if state == "ready":
             if not recovery:
                 clear_no_auto_recovery(config)
@@ -470,6 +486,17 @@ def owned_bridge_records(config, *, include_dead=False):
     return records
 
 
+def bridge_script_argument(command):
+    """The script of a bridge command line, ``python [-s] chat_server.py``; None for anything else.
+
+    Bridges started before the bundled runtime ran with -s have no flag and stay recognized.
+    """
+    arguments = command[1:]
+    if arguments[:1] == ["-s"]:
+        arguments = arguments[1:]
+    return arguments[0] if len(arguments) == 1 else None
+
+
 def verify_owned_process(config, record):
     """Read only image and argv; never inspect another process's open files."""
     try:
@@ -485,8 +512,9 @@ def verify_owned_process(config, record):
         portable = (config.root / "runtime" / "python" / "python.exe")
         if portable.is_file() and expected_image != portable.resolve(strict=True):
             raise LauncherError("Bridge interpreter differs from this installed runtime")
-        if (str(image).casefold() != str(expected_image).casefold() or len(command) != 2 or
-                str(Path(command[1]).resolve(strict=True)).casefold() != str(expected_script).casefold()):
+        script = bridge_script_argument(command)
+        if (str(image).casefold() != str(expected_image).casefold() or script is None or
+                str(Path(script).resolve(strict=True)).casefold() != str(expected_script).casefold()):
             raise LauncherError("Bridge image or script command line differs from this installation")
         alive, created = process_identity(record["pid"])
         if not alive or created != record["created_filetime"]:
@@ -524,25 +552,44 @@ def wait_for_bridge_exit(record, deadline):
     return bridge_exited(record)
 
 
+def is_owned_node_worker(config, image, command):
+    scripts = {config.root / "bridge" / "analysis_server.ts",
+               config.root / "scripts" / "model-gateway.ts",
+               config.root / "scripts" / "model-probe.ts"}
+    loaders = {"tsx", (config.root / "node_modules" / "tsx" / "dist" / "loader.mjs").as_uri()}
+    return (image.name.casefold() == "node.exe" and len(command) >= 4 and
+            command[1] == "--import" and command[2] in loaders and
+            Path(command[3]).resolve() in {script.resolve() for script in scripts})
+
+
 def owned_model_children(config, bridge_process):
-    """Recognize only this verified bridge's direct analysis workers."""
+    """Recognize exact analysis workers and Windows venv Python delegates."""
     import psutil
-    expected_script = (config.root / "bridge" / "analysis_server.ts").resolve()
+    bridge_script = (config.root / "bridge" / "chat_server.py").resolve()
+    python_images = {config.python_exe.resolve(strict=True)}
+    # Windows venv python.exe can forward to a base interpreter. Only trust the
+    # base of this very launcher, when it runs under the configured interpreter.
+    base_python = getattr(sys, "_base_executable", None)
+    if Path(sys.executable).resolve() in python_images and base_python:
+        python_images.add(Path(base_python).resolve(strict=True))
     children = []
+    delegates = []
     try:
-        for child in bridge_process.children():
+        for child in bridge_process.children(recursive=True):
             try:
                 command = child.cmdline()
                 image = Path(child.exe()).resolve(strict=True)
-                if (image.name.casefold() == "node.exe" and len(command) >= 4 and
-                        command[1:3] == ["--import", "tsx"] and
-                        Path(command[3]).resolve() == expected_script):
+                script = bridge_script_argument(command)
+                if is_owned_node_worker(config, image, command):
                     children.append(child)
+                elif image in python_images and script is not None and Path(script).resolve() == bridge_script:
+                    delegates.append(child)
             except psutil.NoSuchProcess:
                 continue
     except (OSError, ValueError, psutil.Error) as error:
         raise LauncherError(f"Cannot inspect owned analysis workers: {error}") from error
-    return children
+    # Stop analysis workers before their delegated Python host and its wrapper.
+    return children + delegates
 
 
 def finish_owned_shutdown(config, record, children, timeout=STOP_CLEANUP_TIMEOUT):
@@ -599,11 +646,12 @@ def finish_owned_shutdown(config, record, children, timeout=STOP_CLEANUP_TIMEOUT
 
 
 def orphan_analysis_children(config, record):
-    """Verified analysis workers for this launch when the bridge already exited.
+    """Legacy analysis workers left behind when the bridge already exited.
 
-    A dead parent cannot enumerate children, so this matches only ``node.exe`` running
-    ``--import tsx <this root>/bridge/analysis_server.ts`` and created after this launch's
-    recorded start. It never matches a process name/port alone or another installation.
+    A dead parent cannot enumerate descendants, so retain the legacy match for
+    ``node.exe --import tsx <this root>/bridge/analysis_server.ts`` created after
+    the recorded start. Standalone probes and gateways need verified ancestry;
+    this process-table scan must never claim them by script and start time alone.
     """
     import psutil
     expected_script = (config.root / "bridge" / "analysis_server.ts").resolve()
@@ -694,7 +742,7 @@ def abort_owned_launch(config, record, timeout=STOP_CLEANUP_TIMEOUT):
 def stop_owned_bridge(config, timeout=STOP_TIMEOUT):
     with launch_mutex(config):
         state = health(config)
-        if state not in ("ready", "unavailable"):
+        if state not in ("ready", "outdated", "unavailable"):
             raise LauncherError(f"Port {config.port} has a wrong service ({state}); nothing was stopped")
         records = owned_bridge_records(config, include_dead=True)
         live_records = []
@@ -724,9 +772,9 @@ def stop_owned_bridge(config, timeout=STOP_TIMEOUT):
                 return {"stopped": True, "pid": record["pid"]}
             raise
         children = owned_model_children(config, process)
-        if state == "ready":
+        if state in ("ready", "outdated"):
             current = health(config)
-            if current == "ready":
+            if current in ("ready", "outdated"):
                 request_owned_shutdown(config, record["control_token"])
             elif current != "unavailable":
                 raise LauncherError("Bridge health changed to another service; nothing was stopped")
@@ -743,7 +791,7 @@ def open_client(url, root=PROJECT_ROOT):
     if not electron.is_file() or not script.is_file():
         raise LauncherError("Dedicated Electron shell is unavailable; install project dependencies before opening the client")
     try:
-        environment = {**os.environ, "WECHATVIBE_INSTANCE_ID": instance_id(root)}
+        environment = {**os.environ, "KYF_INSTANCE_ID": instance_id(root)}
         subprocess.Popen([str(electron), str(script), "--client-url", url],
                          cwd=str(root), env=environment, close_fds=True)
     except OSError as error:

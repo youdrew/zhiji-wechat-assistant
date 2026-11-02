@@ -1,0 +1,22 @@
+ffmpeg is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 2.1 of the License, or (at your option) any later version.
+
+ffmpeg is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public
+License along with ffmpeg; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ffmpeg version 7.1 Copyright (c) 2000-2024 the FFmpeg developers
+  built with gcc 16.2.0 (GCC)
+  configuration: --prefix=/usr --target-os=mingw32 --arch=x86_64 --cc=gcc --cxx=g++ --disable-autodetect --disable-gpl --disable-nonfree --disable-version3 --disable-debug --enable-stripping --disable-doc --disable-x86asm --disable-network --disable-hwaccels --disable-avdevice --disable-postproc --disable-ffplay --disable-ffprobe --enable-w32threads --disable-pthreads --extra-cflags='-ffile-prefix-map=.=src -fdebug-prefix-map=.=src -fmacro-prefix-map=.=src' --extra-ldflags='-static -Wl,--no-insert-timestamp'
+  libavutil      59. 39.100 / 59. 39.100
+  libavcodec     61. 19.100 / 61. 19.100
+  libavformat    61.  7.100 / 61.  7.100
+  libavfilter    10.  4.100 / 10.  4.100
+  libswscale      8.  3.100 /  8.  3.100
+  libswresample   5.  3.100 /  5.  3.100

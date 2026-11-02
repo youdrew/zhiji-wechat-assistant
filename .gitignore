@@ -12,6 +12,9 @@ __pycache__/
 *.db-*
 *.sqlite*
 WechatVibe-label-library.txt
+# The author's SDK release is copied into the 微信发送 plugin locally; only its README is tracked.
+plugins/kyf.wechat-send/sdk/*
+!plugins/kyf.wechat-send/sdk/README.md
 
 # Local account data, credentials and machine-specific files
 wechatauto_logs/
@@ -41,3 +44,7 @@ CURRENT_TASKS.md
 *_REVIEW.md
 SOURCE_MANIFEST.json
 tools/sync-source.ps1
+
+# Agent coordination notes between sessions; local only.
+docs/loop/
+.mcp.json

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>知己分析 · 默认方案</title>
+  <link rel="stylesheet" href="/plugin-sdk/web/persona-charts.css">
+  <link rel="stylesheet" href="page.css">
+  <script src="/plugin-sdk/web/kyf-host.js" defer></script>
+  <script src="/plugin-sdk/web/time-trend.js" defer></script>
+  <script src="/plugin-sdk/web/persona-charts.js" defer></script>
+  <script src="page-core.js" defer></script>
+  <script src="friend-trend-math.js" defer></script>
+  <script src="friend-trend.js" defer></script>
+  <script src="friend-overview.js" defer></script>
+  <script src="friend-persona.js" defer></script>
+  <script src="friend-chat.js" defer></script>
+  <script src="page.js" defer></script>
+</head>
+<body class="fa-plugin-page">
+  <!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+  <main class="fa-main">
+    <section id="pageOverview" class="fa-page" hidden></section>
+    <section id="pagePersona" class="fa-page" hidden></section>
+    <section id="pageValues" class="fa-page" hidden></section>
+    <section id="pageChat" class="fa-page" hidden></section>
+    <section id="pageTrend" class="fa-page" hidden></section>
+  </main>
+  <aside id="faSheet" class="fa-sheet" role="dialog" aria-modal="false" aria-labelledby="faSheetTitle" hidden>
+    <div class="fa-sheet-head">
+      <h2 id="faSheetTitle"></h2>
+      <button type="button" id="faSheetClose" class="fa-plain" aria-label="关闭">关闭</button>
+    </div>
+    <div id="faSheetBody" class="fa-sheet-body"></div>
+  </aside>
+  <div id="faToast" class="fa-toast" role="status" hidden></div>
+</body>
+</html>

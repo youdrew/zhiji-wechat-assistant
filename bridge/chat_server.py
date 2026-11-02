@@ -39,6 +39,8 @@ def main():
     bridge_dir = str(Path(__file__).resolve().parent)
     if bridge_dir not in sys.path:
         sys.path.insert(0, bridge_dir)
+    from account_store import pin_temp_directory
+    pin_temp_directory(Path(bridge_dir).parent)
     from real_http import main as serve
     return serve(classify)
 

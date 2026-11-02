@@ -14,14 +14,24 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 from pathlib import Path
 
 from packaging.requirements import Requirement
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from reader_dependency import READER_DEPENDENCIES, stage_reader_distribution
+from ffmpeg_dependency import stage_imageio_distribution
+from opencv_dependency import stage_opencv_sources
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "bridge"))
+from core_runtime import python_flags  # noqa: E402
+
 STAGE = ROOT / ".local" / "real-client-package" / "client"
-PYTHON_SOURCE = os.environ.get("WECHATVIBE_BUILD_PYTHON")
+PYTHON_SOURCE = os.environ.get("KYF_BUILD_PYTHON")
 PYTHON_ROOT = (Path(PYTHON_SOURCE).resolve().parent if PYTHON_SOURCE
                else Path(sys.base_prefix).resolve())
 PYTHON_SITE = Path(sysconfig.get_path("purelib")).resolve()
@@ -30,10 +40,12 @@ PYTHON_ROOT_PACKAGES = (
     "wechatauto-replica", "cryptography", "zstandard", "psutil", "jieba",
     "Pillow", "uiautomation", "pywin32", "pyperclip", "colorama",
     "opencv-python", "numpy", "comtypes", "setuptools", "tzdata", "packaging", "PyYAML",
+    # Modified by Know Your Friends, 2026-10-10: local media decoding.
+    "silk-python", "imageio-ffmpeg",
 )
 # These are declared upstream but absent in the already-working read-only host.
 # Their imports are confined to optional GUI/OCR/media paths, not this bridge.
-KNOWN_MISSING_OPTIONAL = {"winsdk", "imageio-ffmpeg", "pyautogui"}
+KNOWN_MISSING_OPTIONAL = {"winsdk", "pyautogui"}
 NODE_ROOT_PACKAGES = (
     "@anthropic-ai/sdk", "@google/genai", "@huggingface/tokenizers",
     "ollama", "onnxruntime-node", "openai", "tsx", "undici", "@opencode-ai/sdk",
@@ -144,6 +156,11 @@ def python_distributions() -> tuple[list, list]:
         if not dist.files:
             raise RuntimeError(f"distribution has no RECORD: {requested}")
         chosen[canonical] = dist
+        if canonical == "wechatauto-replica":
+            # The community installer ships the reviewed DB/media subset, not
+            # this distribution's GUI, send or Moments dependency graph.
+            pending.extend(READER_DEPENDENCIES)
+            continue
         for raw in dist.requires or []:
             requirement = Requirement(raw)
             if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
@@ -157,6 +174,12 @@ def stage_python_packages() -> dict:
     chosen, omitted = python_distributions()
     summaries = []
     for dist in sorted(chosen, key=lambda item: item.metadata["Name"].lower()):
+        if dist.metadata["Name"].lower().replace("_", "-") == "wechatauto-replica":
+            summaries.append(stage_reader_distribution(dist, PYTHON_SITE, target, copy_file))
+            continue
+        if dist.metadata["Name"].lower().replace("_", "-") == "imageio-ffmpeg":
+            summaries.append(stage_imageio_distribution(dist, PYTHON_SITE, target, STAGE, ROOT, copy_file))
+            continue
         count = size = 0
         for record in dist.files or []:
             source = Path(dist.locate_file(record)).resolve()
@@ -171,8 +194,11 @@ def stage_python_packages() -> dict:
             size += source.stat().st_size
         if count == 0:
             raise RuntimeError(f"distribution has no files in active site-packages: {dist.metadata['Name']}")
-        summaries.append({"name": dist.metadata["Name"], "version": dist.version,
-                          "recordedFiles": count, "recordedBytes": size})
+        summary = {"name": dist.metadata["Name"], "version": dist.version,
+                   "recordedFiles": count, "recordedBytes": size}
+        if dist.metadata["Name"].lower().replace("_", "-") == "opencv-python":
+            summary["ffmpegSources"] = stage_opencv_sources(ROOT, target, STAGE, dist.version, copy_file)
+        summaries.append(summary)
     # This upstream .pth is in pywin32's RECORD and contains only relative imports.
     if not (target / "pywin32.pth").is_file():
         raise RuntimeError("pywin32.pth missing from staged RECORD")
@@ -278,10 +304,103 @@ def verify_staged_sdk_imports() -> None:
             raise RuntimeError(f"staged model SDK cannot load: {package}")
 
 
+RETRIEVAL_NODE_PROBE = r"""
+const fs = require('node:fs'), path = require('node:path'), Module = require('node:module');
+const root = fs.realpathSync(path.join(process.cwd(), 'node_modules'));
+const resolve = Module._resolveFilename;
+// A stage inside the checkout must not borrow missing packages from its parent.
+Module._resolveFilename = function (...args) {
+  const filename = resolve.apply(this, args);
+  if (!Module.isBuiltin(filename)) {
+    const relative = path.relative(root, fs.realpathSync(filename));
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+      throw new Error('dependency-outside-stage');
+    }
+  }
+  return filename;
+};
+const name = process.argv[1], value = require(name);
+if (name === 'onnxruntime-node') {
+  // Requiring ORT loads its native binding; no model/session or download is needed.
+  if (typeof value.InferenceSession?.create !== 'function' ||
+      !value.listSupportedBackends().some(backend => backend.name === 'cpu')) throw new Error('cpu-backend-missing');
+} else if (typeof value.Tokenizer !== 'function') throw new Error('tokenizer-missing');
+"""
+
+RETRIEVAL_PYTHON_PROBE = """
+import sys
+from pathlib import Path
+import numpy as np
+if not Path(np.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()):
+    raise RuntimeError('numpy-outside-stage')
+values = np.asarray([1.0, 2.0], dtype=np.float32)
+if float(values @ values) != 5.0:
+    raise RuntimeError('numpy-native-operation-failed')
+"""
+
+
+def verify_staged_retrieval_imports() -> None:
+    """Probe the shipped interpreters and native dependencies, without weights/network."""
+    environment = {key: os.environ[key] for key in
+                   ("SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP") if key in os.environ}
+    environment.update(OPENBLAS_NUM_THREADS="2", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2")
+    node_exe = STAGE / "runtime" / "node" / "node.exe"
+    python_exe = STAGE / "runtime" / "python" / "python.exe"
+    probes = [(name, [str(node_exe), "-e", RETRIEVAL_NODE_PROBE, name])
+              for name in ("onnxruntime-node", "@huggingface/tokenizers")]
+    probes.append(("numpy", [str(python_exe), "-I", "-B", "-c", RETRIEVAL_PYTHON_PROBE,
+                              str(STAGE / "runtime" / "python" / "Lib" / "site-packages")]))
+    for name, command in probes:
+        try:
+            probe = subprocess.run(command, cwd=STAGE, env=environment,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise RuntimeError(f"staged retrieval runtime cannot load: {name}") from None
+        if probe.returncode != 0:
+            raise RuntimeError(f"staged retrieval runtime cannot load: {name}")
+
+
+USER_SITE_PROBE = """
+import site
+import sys
+from pathlib import Path
+user = Path(sys.argv[1]).resolve()
+if site.ENABLE_USER_SITE or any(Path(entry).resolve().is_relative_to(user) for entry in sys.path if entry):
+    raise RuntimeError('user-site-loaded')
+"""
+
+
+def verify_staged_user_site_disabled() -> None:
+    """Started the way the client starts it, the shipped Python ignores the user's own packages.
+
+    Its ._pth file leaves the user site on, read from APPDATA or PYTHONUSERBASE; both point
+    at an existing site-packages here, so only the client's -s keeps them off sys.path.
+    """
+    environment = {key: os.environ[key] for key in
+                   ("SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP") if key in os.environ}
+    python_exe = STAGE / "runtime" / "python" / "python.exe"
+    with tempfile.TemporaryDirectory(prefix="kyf-user-site-") as temporary:
+        user = Path(temporary)
+        version = f"Python{sys.version_info.major}{sys.version_info.minor}"
+        for base in (user / "appdata" / "Python", user / "userbase"):
+            (base / version / "site-packages").mkdir(parents=True)
+        environment.update(APPDATA=str(user / "appdata"), PYTHONUSERBASE=str(user / "userbase"))
+        command = [str(python_exe), *python_flags(python_exe), "-B", "-c", USER_SITE_PROBE, str(user)]
+        try:
+            probe = subprocess.run(command, cwd=STAGE, env=environment,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise RuntimeError("staged Python cannot run the user site probe") from None
+    if probe.returncode != 0:
+        raise RuntimeError("staged Python loads packages from the user's own Python")
+
+
 def stage_node_runtime() -> dict:
-    executable = os.environ.get("WECHATVIBE_BUILD_NODE") or shutil.which("node")
+    executable = os.environ.get("KYF_BUILD_NODE") or shutil.which("node")
     if not executable:
-        raise RuntimeError("node.exe not found; set WECHATVIBE_BUILD_NODE")
+        raise RuntimeError("node.exe not found; set KYF_BUILD_NODE")
     source = Path(executable).resolve()
     if not source.is_file() or source.name.lower() != "node.exe":
         raise RuntimeError(f"invalid node.exe: {source}")
@@ -293,7 +412,7 @@ def stage_node_runtime() -> dict:
     candidates = [source.parent / "LICENSE", source.parent / "LICENSE.txt",
                   ROOT / "licenses" / f"node-LICENSE-{version.lstrip('v')}.txt",
                   ROOT / ".local" / "real-client-package" / f"node-LICENSE-{version.lstrip('v')}.txt"]
-    override = os.environ.get("WECHATVIBE_NODE_LICENSE")
+    override = os.environ.get("KYF_NODE_LICENSE")
     if override:
         candidates.insert(0, Path(override))
     license_source = next((candidate for candidate in candidates if candidate.is_file()), None)
@@ -306,6 +425,81 @@ def stage_node_runtime() -> dict:
 def staged_inventory(path: Path) -> dict:
     files = [item for item in path.rglob("*") if item.is_file()]
     return {"files": len(files), "bytes": sum(item.stat().st_size for item in files)}
+
+
+READER_PYTHON_PROBE = r"""
+import importlib.util
+from pathlib import Path
+import sys
+site_root = Path(sys.argv[1]).resolve()
+import wechatauto
+from wechatauto.db import WeChatDB
+from wechatauto.media import MediaDownloader
+assert Path(wechatauto.__file__).resolve().is_relative_to(site_root)
+assert callable(WeChatDB) and callable(MediaDownloader)
+assert not hasattr(wechatauto, 'WeChat') and not hasattr(wechatauto, 'quick_send')
+assert not hasattr(MediaDownloader, 'download_image_original')
+for name in ('wx', 'guia', 'sender', 'moment', 'moment_observer', 'recall', 'uia_driver', 'ui', 'uia', 'msgs'):
+    assert importlib.util.find_spec('wechatauto.' + name) is None
+assert (Path(wechatauto.__file__).parent / 'KYF_READ_ONLY.md').is_file()
+"""
+
+
+def verify_staged_reader_imports() -> None:
+    """Load only reader classes in an isolated process; never open an account."""
+    environment = {key: os.environ[key] for key in
+                   ("SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP") if key in os.environ}
+    python = STAGE / "runtime" / "python" / "python.exe"
+    command = [str(python), "-I", "-B", "-c", READER_PYTHON_PROBE,
+               str(STAGE / "runtime" / "python" / "Lib" / "site-packages")]
+    try:
+        result = subprocess.run(command, cwd=STAGE, env=environment,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError("staged read-only WeChat dependency cannot load") from None
+    if result.returncode:
+        raise RuntimeError("staged read-only WeChat dependency cannot load")
+
+
+FFMPEG_PYTHON_PROBE = r"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import imageio_ffmpeg
+site_root = Path(sys.argv[1]).resolve()
+manifest = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+exe = Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve()
+assert Path(imageio_ffmpeg.__file__).resolve().is_relative_to(site_root)
+assert exe.is_relative_to(site_root) and exe.name == 'ffmpeg-zhiji-lgpl.exe'
+assert {path.name for path in exe.parent.glob('*.exe')} == {exe.name}
+expected = next(row for row in manifest['files'] if row['name'] == 'ffmpeg.exe')
+assert hashlib.sha256(exe.read_bytes()).hexdigest() == expected['sha256']
+kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True, timeout=15,
+              creationflags=0x08000000 if os.name == 'nt' else 0)
+version = subprocess.run([str(exe), '-version'], **kwargs).stdout.decode('utf-8')
+assert 'ffmpeg version 7.1' in version
+assert not any(flag in version for flag in ('--enable-gpl', '--enable-nonfree', '--enable-version3'))
+license_text = ' '.join(subprocess.run([str(exe), '-L'], **kwargs).stdout.decode('utf-8').split())
+assert 'GNU Lesser General Public License' in license_text and 'version 2.1' in license_text
+"""
+
+
+def verify_staged_ffmpeg_imports() -> None:
+    environment = {key: os.environ[key] for key in
+                   ("SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP") if key in os.environ}
+    command = [str(STAGE / "runtime" / "python" / "python.exe"), "-I", "-B", "-c", FFMPEG_PYTHON_PROBE,
+               str(STAGE / "runtime" / "python" / "Lib" / "site-packages"),
+               str(STAGE / "runtime" / "ffmpeg" / "manifest.json")]
+    try:
+        result = subprocess.run(command, cwd=STAGE, env=environment,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError("staged LGPL FFmpeg wrapper cannot load") from None
+    if result.returncode:
+        raise RuntimeError("staged LGPL FFmpeg wrapper cannot load")
 
 
 def stage_advisor_engine():
@@ -361,6 +555,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Node package closure staged: {len(node['packages'])} packages")
     verify_staged_sdk_imports()
     print("Staged model SDK imports verified")
+    verify_staged_retrieval_imports()
+    print("Staged local retrieval runtimes verified")
+    verify_staged_reader_imports()
+    print("Staged read-only WeChat dependency verified")
+    verify_staged_ffmpeg_imports()
+    print("Staged LGPL FFmpeg binary and wrapper verified")
+    verify_staged_user_site_disabled()
+    print("Staged Python ignores user site packages")
     advisor = stage_advisor_engine()
     print("Read-only Advisor engine staged and verified")
     manifest = {"python": python, "node": node, "advisor": advisor,

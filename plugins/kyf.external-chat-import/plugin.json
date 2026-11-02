@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "kyf.external-chat-import",
+  "name": "外部聊天识别",
+  "version": "0.1.0",
+  "description": "将聊天截图和录屏画面转录为可核对的消息候选；由应用确认保存，不启动分析或发送消息",
+  "author": "Know Your Friends",
+  "core": { "api": [1] },
+  "runtime": { "type": "python", "entry": "backend/main.py" },
+  "events": [],
+  "contributes": {}
+}

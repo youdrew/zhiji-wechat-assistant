@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "kind": "zhiji-opencv-ffmpeg-sources",
+  "packageVersion": "4.13.0.90",
+  "binary": {
+    "name": "opencv_videoio_ffmpeg4130_64.dll",
+    "bytes": 28578304,
+    "sha256": "fcc614672159094a35815b7ea2819a648cbf86c30d90c57e8c6ba1432f594548"
+  },
+  "binaryCommit": "d82ad9a54a7b42a1648a9cae8fed5c2f20ea396c",
+  "sourceCommit": "62bd53c24feadd92af0146462317fcd4d64fd842",
+  "files": [
+    {
+      "name": "SOURCES.md",
+      "bytes": 1933,
+      "sha256": "f886422bc9777ef05e200e633134eebe9c9379983260cd16b60c08d8a15b8e77"
+    },
+    {
+      "name": "aom-src-v3.13.1.tar.xz",
+      "bytes": 4343500,
+      "sha256": "ef595304016a81b7b1cc57493bd141cce28ac9782b8681622cf0aaed44fdc262",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/sources/build/aom/aom-src-v3.13.1.tar.xz",
+      "gitBlobSha": "036bd9f9f36ce50574305b73e2e600fbf8dc08e7"
+    },
+    {
+      "name": "ffmpeg-src-n4.4.6.tar.xz",
+      "bytes": 9401104,
+      "sha256": "5fae660a212ba26ef02c673ad0f762a3ede8874144dac66a46db60779c8d28b0",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/sources/build/ffmpeg/ffmpeg-src-n4.4.6.tar.xz",
+      "gitBlobSha": "dbc91659a44680f5caf5fcbba00cdc8f71420402"
+    },
+    {
+      "name": "libvpx-src-v1.15.2.tar.xz",
+      "bytes": 4389248,
+      "sha256": "78012fc3819cfcde7b160b0fa40a85133b6b2c50d0cc368af40b6e8d3d42a934",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/sources/build/libvpx/libvpx-src-v1.15.2.tar.xz",
+      "gitBlobSha": "a5be82f5fec3b7e51b4b05b1c81ec7518f74b43f"
+    },
+    {
+      "name": "license.txt",
+      "bytes": 27393,
+      "sha256": "1f9d4168b4a9a2bdd1851023735a41d0ab09ffa5fcc1a721a99ebc1d7d35a9c5",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/license.txt",
+      "gitBlobSha": "e018837a39f7de3b0f61539ec3decf120052d0f1"
+    },
+    {
+      "name": "opencv-videoio-ffmpeg.tar.xz",
+      "bytes": 36908,
+      "sha256": "760732f6f7880479fdbd365eab030a59646f14c330fa01c891819e8f788d54cf",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/sources/opencv/opencv-videoio-ffmpeg.tar.xz",
+      "gitBlobSha": "c488e9f8a2442405d638efba9b9e371f04b5e6dc"
+    },
+    {
+      "name": "opencv_ffmpeg.tar.xz",
+      "bytes": 17016,
+      "sha256": "b7691a653b143e56878d1aa9a525b24ef0ec11406beae68eaf062cc673d86a50",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/sources/opencv_ffmpeg.tar.xz",
+      "gitBlobSha": "d60b48814c815d1fef988e8ac6b59a99e1c35e5e"
+    },
+    {
+      "name": "openh264-api-headers-v1.8.0.tar.xz",
+      "bytes": 15432,
+      "sha256": "90c9333fe8dd9ce8f6585b7a2dae595276338f42b2850dbe2a75218e2957d1db",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/sources/build/openh264/openh264-api-headers-v1.8.0.tar.xz",
+      "gitBlobSha": "5c44920eff87e8b856864c67e8cf573d556613a1"
+    },
+    {
+      "name": "readme.txt",
+      "bytes": 2467,
+      "sha256": "26e4734e7ac1e72adac7a06a747ac9a997ee3714bc2ed8b745ff27dee35a2ad9",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_3rdparty/62bd53c24feadd92af0146462317fcd4d64fd842/readme.txt",
+      "gitBlobSha": "597aa139ca45f641ee9f76ba1b5b6684e4370a28"
+    }
+  ]
+}

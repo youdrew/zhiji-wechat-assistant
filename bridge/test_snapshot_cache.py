@@ -227,5 +227,142 @@ class SnapshotCacheTests(unittest.TestCase):
                 state.future.result(timeout=3)
 
 
+class WalReader(cache.SnapshotCacheMixin):
+    def __init__(self, account_dir, workdir, source, wal):
+        self.account_dir = str(account_dir)
+        self.workdir = str(workdir)
+        self.source, self.wal = source, wal
+        self._keys = {REL: b"k" * 32}
+
+    def _db_path(self, _rel):
+        return str(self.source)
+
+    def _wal_path(self, _rel):
+        return str(self.wal) if self.wal.exists() else None
+
+
+REL = os.path.join("message", "message_0.db")
+SALT = bytes(range(1, 9))
+
+
+def rows_db(path, values):
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("PRAGMA page_size=4096")
+        connection.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+        connection.executemany("INSERT INTO t VALUES (?)", [(value,) for value in values])
+
+
+def values_in(path):
+    with closing(sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True)) as connection:
+        return [row[0] for row in connection.execute("SELECT v FROM t ORDER BY rowid")]
+
+
+def pages_of(path):
+    data = Path(path).read_bytes()
+    return [(index // 4096 + 1, data[index:index + 4096]) for index in range(0, len(data), 4096)]
+
+
+class IncrementalWalTests(unittest.TestCase):
+    """Committed WAL frames merge into the previous snapshot without re-reading the main file."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        account_dir, workdir = self.root / "account", self.root / "snapshots"
+        account_dir.mkdir()
+        workdir.mkdir()
+        self.source = account_dir / "message_0.db"
+        self.source.write_bytes(b"encrypted main file stays untouched")
+        self.wal = account_dir / "message_0.db-wal"
+        self.wal.write_bytes(self.wal_header(SALT))
+        self.reader = WalReader(account_dir, workdir, self.source, self.wal)
+        self.built = cache._destination(self.reader, REL)
+        rows_db(self.built, ["a"])
+        self.newer = self.root / "newer.db"
+        shutil.copyfile(self.built, self.newer)
+        rows_db(self.newer, ["b"])
+        cache._write_stamp(self.built, cache._source_signature(self.reader, REL), 0)
+        cache._record_wal_state(self.reader, REL, self.built)
+        decrypt = patch.object(cache.upstream, "_decrypt_page", side_effect=lambda _key, page, _pgno: page)
+        decrypt.start()
+        self.addCleanup(decrypt.stop)
+
+    @staticmethod
+    def wal_header(salt):
+        return bytes(16) + salt + bytes(8)
+
+    def append_frames(self, pages, *, salt=SALT, commit=True):
+        with self.wal.open("ab") as wal:
+            for index, (pgno, page) in enumerate(pages):
+                marker = len(pages) if commit and index == len(pages) - 1 else 0
+                wal.write(pgno.to_bytes(4, "big") + marker.to_bytes(4, "big") + salt + bytes(8) + page)
+
+    def test_new_commit_merges_only_wal_frames(self):
+        self.assertEqual(cache._wal_state(self.built), (SALT, 0))
+        self.append_frames(pages_of(self.newer))
+        with patch.object(cache.upstream.WeChatDB, "_decrypt_file") as full:
+            self.assertTrue(cache._merge_new_wal_frames(self.reader, REL, self.built))
+            full.assert_not_called()
+        self.assertEqual(values_in(self.built), ["a", "b"])
+        self.assertEqual(cache._saved_signature(self.built), cache._source_signature(self.reader, REL))
+        self.assertEqual(cache._wal_state(self.built), (SALT, len(pages_of(self.newer))))
+
+    def test_open_transaction_waits_for_its_commit(self):
+        pages = pages_of(self.newer)
+        self.append_frames(pages[:1], commit=False)
+        self.assertTrue(cache._merge_new_wal_frames(self.reader, REL, self.built))
+        self.assertEqual(values_in(self.built), ["a"])
+        self.assertEqual(cache._wal_state(self.built), (SALT, 0))
+        self.append_frames(pages[1:])
+        self.assertTrue(cache._merge_new_wal_frames(self.reader, REL, self.built))
+        self.assertEqual(values_in(self.built), ["a", "b"])
+
+    def test_restarted_wal_or_checkpointed_main_file_requires_a_full_build(self):
+        before = self.built.read_bytes()
+        self.wal.write_bytes(self.wal_header(b"newsalt!"))
+        self.append_frames(pages_of(self.newer), salt=b"newsalt!")
+        self.assertFalse(cache._merge_new_wal_frames(self.reader, REL, self.built))
+        self.wal.write_bytes(self.wal_header(SALT))
+        self.append_frames(pages_of(self.newer))
+        self.source.write_bytes(b"checkpointed main file has a new size")
+        self.assertFalse(cache._merge_new_wal_frames(self.reader, REL, self.built))
+        self.assertEqual(self.built.read_bytes(), before)
+
+    def test_unverifiable_merge_never_looks_current(self):
+        self.append_frames([(2, bytes([255]) * 4096)])
+        self.assertFalse(cache._merge_new_wal_frames(self.reader, REL, self.built))
+        self.assertIsNone(cache._saved_signature(self.built))
+        self.assertIsNone(cache._wal_state(self.built))
+
+    def test_refresh_publishes_incremental_snapshot_without_a_full_build(self):
+        staged = cache._destination(SimpleReader(self.reader.workdir + "/.snapshot-refresh"), REL)
+        staged.parent.mkdir()
+        for suffix in ("", ".stamp", ".walstate"):
+            shutil.copyfile(str(self.built) + suffix, str(staged) + suffix)
+        self.append_frames(pages_of(self.newer))
+        state = cache._state(self.reader, REL)
+        with patch.object(cache.upstream.WeChatDB, "_open") as full:
+            cache._refresh(self.reader, REL, self.built, state)
+            full.assert_not_called()
+        self.assertEqual(values_in(self.built), ["a", "b"])
+        self.assertIsNone(state.last_error)
+
+    def test_full_build_without_wal_accepts_the_next_generation_from_its_start(self):
+        self.wal.unlink()
+        cache._write_stamp(self.built, cache._source_signature(self.reader, REL), 0)
+        cache._record_wal_state(self.reader, REL, self.built)
+        self.assertEqual(cache._wal_state(self.built), (b"", 0))
+        self.wal.write_bytes(self.wal_header(b"another!"))
+        self.append_frames(pages_of(self.newer), salt=b"another!")
+        self.assertTrue(cache._merge_new_wal_frames(self.reader, REL, self.built))
+        self.assertEqual(values_in(self.built), ["a", "b"])
+
+
+class SimpleReader:
+    def __init__(self, workdir):
+        self.workdir = workdir
+
+
 if __name__ == "__main__":
     unittest.main()

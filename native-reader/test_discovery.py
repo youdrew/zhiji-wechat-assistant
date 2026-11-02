@@ -37,7 +37,7 @@ class DiscoveryTests(unittest.TestCase):
             "APPDATA": str(self.appdata),
             "LOCALAPPDATA": str(self.localappdata),
             "USERPROFILE": str(self.home),
-            "WECHATVIBE_DATA_ROOT": "",
+            "KYF_DATA_ROOT": "",
         })
         env.start()
         self.addCleanup(env.stop)

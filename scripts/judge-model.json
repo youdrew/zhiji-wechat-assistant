@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "modelId": "ggml-org/Julia-1-GGUF",
+  "revision": "ff2a69b1baac01bbac5b46a2f377103c07fd8cc3",
+  "contextTokens": 8192,
+  "license": "Apache-2.0",
+  "source": "https://modelscope.cn/models/ggml-org/Julia-1-GGUF",
+  "allowedHosts": ["modelscope.cn", "www.modelscope.cn", "cdn-lfs-cn-1.modelscope.cn", "cdn-lfs-cn-2.modelscope.cn"],
+  "files": [{
+    "name": "Julia-1-Q8_0.gguf",
+    "url": "https://modelscope.cn/api/v1/models/ggml-org/Julia-1-GGUF/repo?Revision=ff2a69b1baac01bbac5b46a2f377103c07fd8cc3&FilePath=Julia-1-Q8_0.gguf",
+    "bytes": 168166496,
+    "sha256": "1ea6a7e87156eeeda88cb7a36a61265b37ba7b993897b7289b99aea5b5e47069"
+  }]
+}

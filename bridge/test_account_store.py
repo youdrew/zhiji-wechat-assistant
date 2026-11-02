@@ -12,10 +12,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import account_store
 from account_api import AccountAPI
-from account_store import AccountConflict, AccountStore, account_id
-from real_backend import Backend, ResultStore
-from test_real_backend import SyntheticSource, SyntheticAnalyzer
+from account_store import AccountConflict, AccountStore, account_id, pin_temp_directory
+from backend_service import Backend
 from real_http import make_handler
 from http.server import ThreadingHTTPServer
 
@@ -56,25 +56,49 @@ def directory_reparse_alias(target, alias):
             raise unittest.SkipTest('directory junction unavailable')
 
 
+def legacy_results(directory, account):
+    """The retired analysis left one result database per account; clears still remove it."""
+    path = Path(directory) / (account_id(account) + '.sqlite3')
+    if not path.exists():
+        path.write_bytes(b'')
+    return path
+
+
+class TempDirectoryTests(unittest.TestCase):
+    def test_a_checkout_with_local_snapshots_keeps_them_whatever_the_launchers_temp_says(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'TEMP': 'launcher', 'TMP': 'launcher'}), \
+                patch('account_store.tempfile.tempdir', 'launcher'):
+            pin_temp_directory(temp)
+            self.assertEqual((account_store.tempfile.tempdir, os.environ['TEMP']), ('launcher', 'launcher'))
+            pinned = Path(temp) / '.local' / 'tmp'
+            (pinned / 'wechatauto_db').mkdir(parents=True)
+            pin_temp_directory(temp)
+            self.assertEqual(account_store.tempfile.gettempdir(), str(pinned))
+            self.assertEqual((os.environ['TEMP'], os.environ['TMP']), (str(pinned), str(pinned)))
+
+
 class AccountManagementTests(unittest.TestCase):
-    def test_cold_advisor_data_is_also_cleared_without_starting_a_model(self):
-        from advisor_store import AdvisorStoreRoot
+    def test_cold_account_data_is_also_cleared_without_starting_a_model(self):
+        from core_account_db import AccountStores
         account = self.source.current
-        stores = AdvisorStoreRoot(self.root)
-        stores.account(account).create_thread('synthetic-person', 'synthetic-agent', 'local')
+        stores = AccountStores(self.root)
+        stores.account(account).context_begin('synthetic-person', None)
         stores.close()
         calls = []
-        cold_stores = AdvisorStoreRoot(self.root)
-        advisor = SimpleNamespace(
+        cold_stores = AccountStores(self.root)
+        account_data = SimpleNamespace(
             pause_for_account_clear=lambda value: calls.append(('pause', value)),
             clear_account=cold_stores.remove_account,
             resume_after_failed_account_clear=lambda: None)
-        self.backend.advisor_service = lambda: advisor
+        self.backend.account_data = lambda: account_data
+        media_calls = []
+        self.source.clear_media_account = lambda value: media_calls.append(value)
         identifier = self.api.store.register(account, self.cache / account)
         result = self.api.delete(identifier)
         self.assertTrue(result['current'])
         self.assertFalse((self.root / '.local/advisor-data' / account_id(account)).exists())
         self.assertEqual(calls, [('pause', account)])
+        self.assertEqual(media_calls, [account])
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -88,8 +112,7 @@ class AccountManagementTests(unittest.TestCase):
         self.stable_keys.mkdir()
         self.source = SimpleNamespace(lock=threading.RLock(), current='wxid_a_abcd')
         self.source.identity = lambda: (self.source.current, self.cache / self.source.current)
-        self.backend = SimpleNamespace(source=self.source, stores={}, jobs={}, recent_windows={},
-                                       jobs_lock=threading.Lock())
+        self.backend = SimpleNamespace(source=self.source, jobs_lock=threading.Lock())
         self.backend.pause_calls = []
         self.backend.resume_calls = []
         self.backend.shutdown_calls = []
@@ -100,10 +123,8 @@ class AccountManagementTests(unittest.TestCase):
         def scoped():
             account, workdir = self.source.identity()
             workdir.mkdir(exist_ok=True)
-            scope = (account, str(workdir))
-            if scope not in self.backend.stores:
-                self.backend.stores[scope] = ResultStore(self.data / (account_id(account) + '.sqlite3'))
-            return account, str(workdir), self.backend.stores[scope]
+            legacy_results(self.data, account)
+            return account, str(workdir)
 
         self.backend._scoped_identity = scoped
         self.api = AccountAPI(self.backend, self.data, self.cache, self.stable_keys)
@@ -188,6 +209,10 @@ class AccountManagementTests(unittest.TestCase):
         key_file.write_text('synthetic cached key')
         stable_b = self.stable_keys / (b + '.json')
         stable_b.write_text('synthetic stable key')
+        media_b = self.stable_keys / (b + '.media.json')
+        media_b.write_text('synthetic media key')
+        media_a = self.stable_keys / (a + '.media.json')
+        media_a.write_text('other account media key')
         stable_a = self.stable_keys / (a + '.json')
         stable_a.write_text('other account key')
         source = self.root / 'wechat-original.db'
@@ -211,6 +236,8 @@ class AccountManagementTests(unittest.TestCase):
         self.assertEqual(result_a.read_bytes(), before)
         self.assertFalse(key_file.exists())
         self.assertFalse(stable_b.exists())
+        self.assertFalse(media_b.exists())
+        self.assertEqual(media_a.read_text(), 'other account media key')
         self.assertEqual(stable_a.read_text(), 'other account key')
         self.assertTrue(source.exists())
         self.assertEqual(self.backend.shutdown_calls, [])
@@ -261,30 +288,15 @@ class AccountManagementTests(unittest.TestCase):
         self.assertEqual(b_path.read_bytes(), before_b)
         self.assertEqual(original.read_bytes(), b'original untouched')
 
-    def test_running_inactive_account_rejects_deletion_without_exit(self):
-        a, b = 'wxid_a_abcd', 'wxid_b_efgh'
-        a_path = self.observe(a)
-        self.observe(b)
-        self.backend.jobs[(a, 'fixture', 'conversation', 'version')] = {'status': 'running'}
-        with self.assertRaises(AccountConflict):
-            self.api.delete(account_id(a))
-        self.assertTrue(a_path.exists())
-        self.assertEqual(self.backend.shutdown_calls, [])
-        self.assertFalse(self.api.no_recovery_marker.exists())
-
     def test_real_backend_drains_request_and_snapshot_writer_before_current_delete(self):
         account = 'wxid_a_abcd'
         self.source.current = account
         self.source.closed = False
         self.source.close = lambda: setattr(self.source, 'closed', True)
-        analyzer = SyntheticAnalyzer()
-        analyzer.closed = False
-        analyzer.close = lambda: setattr(analyzer, 'closed', True)
-        backend = Backend(self.source, analyzer,
-                          lambda owned, _workdir: ResultStore(self.data / (account_id(owned) + '.sqlite3')))
+        backend = Backend(self.source)
         api = AccountAPI(backend, self.data, self.cache, self.stable_keys)
         api.observe({'account': account, 'self': {'username': 'wxid_a', 'name': 'Fixture'}})
-        result = self.data / (account_id(account) + '.sqlite3')
+        result = legacy_results(self.data, account)
         snapshot = self.cache / account / 'message__message_0.db'
         snapshot.parent.mkdir(exist_ok=True)
         snapshot.write_bytes(b'synthetic snapshot')
@@ -330,8 +342,6 @@ class AccountManagementTests(unittest.TestCase):
         self.assertFalse(deleter.is_alive())
         self.assertEqual(outcomes, [{'deleted': account_id(account), 'current': True, 'exitApp': True}])
         self.assertTrue(self.source.closed)
-        self.assertTrue(analyzer.closed)
-        self.assertFalse(backend.worker_thread.is_alive())
         self.assertFalse(result.exists())
         self.assertFalse(snapshot.exists())
 
@@ -339,12 +349,12 @@ class AccountManagementTests(unittest.TestCase):
         a, b = 'wxid_a_abcd', 'wxid_b_efgh'
         self.source.closed = False
         self.source.close = lambda: setattr(self.source, 'closed', True)
-        backend = Backend(self.source, SyntheticAnalyzer(),
-                          lambda owned, _workdir: ResultStore(self.data / (account_id(owned) + '.sqlite3')))
+        backend = Backend(self.source)
         api = AccountAPI(backend, self.data, self.cache, self.stable_keys)
         for account in (b, a):
             self.source.current = account
             api.observe({'account': account, 'self': {'username': account, 'name': 'Fixture'}})
+            legacy_results(self.data, account)
         result_a = self.data / (account_id(a) + '.sqlite3')
         result_b = self.data / (account_id(b) + '.sqlite3')
         before_b = result_b.read_bytes()
@@ -360,30 +370,13 @@ class AccountManagementTests(unittest.TestCase):
                 api.delete(account_id(a))
         self.assertFalse(api.no_recovery_marker.exists())
         self.assertFalse(backend.closing)
-        self.assertTrue(backend.worker_thread.is_alive())
         self.assertFalse(self.source.closed)
-        self.assertEqual(backend.stores, {})
         self.assertFalse(result_a.exists())  # Already removed data is not rolled back.
         self.assertEqual(result_b.read_bytes(), before_b)
         self.assertEqual(original.read_bytes(), b'synthetic original')
         with backend.request_lease():
             self.assertEqual(backend._scoped_identity()[0], a)
-        self.assertTrue(result_a.exists())  # A fresh app result store can be initialized.
         backend.shutdown()
-
-    def test_recent_window_blocks_deletion_after_main_job_finishes(self):
-        a, b = 'wxid_a_abcd', 'wxid_b_efgh'
-        a_path = self.observe(a)
-        self.observe(b)
-        key = (a, str(a_path), 'conversation', 'version')
-        self.backend.jobs[key] = {'status': 'done', 'recent': {'status': 'queued'}}
-        self.backend.recent_windows[key] = {'iterator': None}
-        with self.assertRaisesRegex(AccountConflict, '账号分析尚未结束'):
-            self.api.delete(account_id(a))
-        self.assertTrue(a_path.exists())
-        self.backend.recent_windows.pop(key)
-        self.assertEqual(self.api.delete(account_id(a)),
-                         {'deleted': account_id(a), 'current': False, 'exitApp': False})
 
     def test_path_escape_and_unowned_cache_are_not_deletable(self):
         self.observe('wxid_a_abcd')

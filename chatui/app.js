@@ -1,7 +1,16 @@
 "use strict";
+// Modified by Know Your Friends, 2026-10-19 (Apache-2.0): isolated drafts and explicit WeChat check/send actions.
+// Modified by Know Your Friends, 2026-10-16 (Apache-2.0): configurable model generation deadlines.
+// Modified by Know Your Friends, 2026-10-09: keep chat visible beside the portrait panel.
+// Modified by Know Your Friends, 2026-10-10: 知己分析 opens per-contact windows; hidden in group chats.
+// Modified by Know Your Friends, 2026-10-10 (Apache-2.0): scoped inline message analysis.
+// Modified by Know Your Friends, 2026-10-11: explicit startup state and active-chat-only preloading.
+// Modified by Know Your Friends, 2026-10-11 (Apache-2.0): actionable inline WeChat login guidance.
+// Modified by Know Your Friends, 2026-10-13 (Apache-2.0): account-scoped chat context menu.
+// Modified by Know Your Friends, 2026-10-13 (Apache-2.0): plugin architecture; the WechatVibe label,
+// portrait, background-analysis and local-model UI is retired.
+// Modified by Know Your Friends, 2026-10-14 (Apache-2.0): blank context budgets use Core's default on save.
 const chatState = window.ViewState.create("chat");
-const labelState = window.ViewState.create("labels");
-const portraitState = window.ViewState.create("portrait");
 const settingsState = window.ViewState.create("settings");
 const byId = id => document.getElementById(id);
 const element = (tag, className = "", text) => {
@@ -11,12 +20,8 @@ const element = (tag, className = "", text) => {
   return node;
 };
 const text = (id, value) => { byId(id).textContent = value == null ? "" : String(value); };
-const setStripStatus = (message = "") => {
-  text("stripStatusText", message);
-  byId("stripStatusText").title = "";
-  const item = byId("stripStatusItem");
-  if (item) item.style.display = message ? "" : "none";
-};
+// Short status notices for chat-list actions; an empty message has nothing to show.
+const notifyStatus = (message = "") => { if (message) toast(message); };
 const svgIcon = (pathD, className = "", viewBox = "0 0 24 24") => {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   if (className) svg.setAttribute("class", className);
@@ -28,16 +33,22 @@ const svgIcon = (pathD, className = "", viewBox = "0 0 24 24") => {
 };
 function getWatermarks() {
   const key = `read-watermark:${chatState.currentAccount || "default"}`;
-  try { return JSON.parse(localStorage.getItem(key) || "{}"); }
+  try {
+    const marks = JSON.parse(localStorage.getItem(key) || "{}");
+    return marks && typeof marks === "object" && !Array.isArray(marks) ? marks : {};
+  }
   catch { return {}; }
 }
 function markSessionAsRead(username) {
-  if (!username) return;
+  if (window.desktopHost?.isSettingsWindow) return;
+  if (!username || document.hidden || chatState.view !== "chat") return;
   const key = `read-watermark:${chatState.currentAccount || "default"}`;
   const marks = getWatermarks();
   const session = chatState.sessions.get(username);
+  if (!session) return;
   marks[username] = {
-    time: Number(session?.sortTimestamp || session?.time) || 0,
+    // The message timestamp is independent of pinning and conversation ordering.
+    messageTime: Number(session.time) || 0,
     unreadCount: Number(session?.unreadCount) || 0,
     preview: String(session?.preview || ""),
     readAt: Date.now()
@@ -48,77 +59,48 @@ function getVisibleUnreadCount(session) {
   if (!session) return 0;
   const serverUnread = Number(session.unreadCount) || 0;
   if (serverUnread <= 0) return 0;
-  if (session.username === chatState.currentUser) return 0;
+  if (session.username === chatState.currentUser && chatState.view === "chat" && !document.hidden) return 0;
   const marks = getWatermarks();
   const wm = marks[session.username];
   if (!wm) return serverUnread;
-  const curTime = Number(session.sortTimestamp || session.time) || 0;
+  const curTime = Number(session.time) || 0;
   const curPreview = String(session.preview || "");
-  const hasNewTime = wm.time > 0 && curTime > wm.time;
+  const hasNewTime = Number.isFinite(wm.messageTime) && curTime > wm.messageTime;
   const hasIncreasedUnread = serverUnread > wm.unreadCount;
-  const hasNewPreview = (curTime === wm.time && curPreview !== wm.preview && curPreview !== "");
+  // Older watermarks stored sortTimestamp; use their count and preview until the next read.
+  const hasNewPreview = (!Number.isFinite(wm.messageTime) || curTime === wm.messageTime) && curPreview !== wm.preview && curPreview !== "";
   if (hasIncreasedUnread) return serverUnread - wm.unreadCount;
+  if (session.lastMessageFromSelf === true) return 0;
   if (hasNewTime || hasNewPreview) return serverUnread;
   return 0;
 }
-const defaults = { theme: "dark", zoom: "1.0", intent: true, backgroundAnalyze: false };
-const CURRENT_LABEL_SCHEMA = "generic-v9";
-const GENERIC_INTENT_LABELS = Object.freeze({
-  small_talk: "闲聊", share_news: "分享", ask_question: "提问", seek_help: "求助", deny: "否认",
-  give_comfort: "安慰", agree: "同意", invite: "邀约", show_affection: "表达好感",
-  complain: "抱怨", apologize: "道歉", joke: "玩笑", reject: "拒绝",
-  distance: "保持距离", thank: "感谢", greet: "问候", confirm: "确认", inspect: "查看",
-  suggest_action: "建议或指令", explain: "解释", inform: "告知事实",
-  plan: "计划", correct: "纠正或异议", status_report: "状态报告",
-  follow_up: "追问", clarify: "澄清", share_feeling: "表达感受", confide: "倾诉",
-  seek_comfort: "求安慰", seek_company: "求陪伴", show_care: "关心",
-  encourage: "鼓励", praise: "称赞", celebrate: "祝贺", miss_you: "表达想念",
-  test_feelings: "探询心意", set_boundary: "设定边界", reconcile: "缓和关系",
-  show_material: "展示内容", offer_help: "提供帮助", tease: "调侃", close_chat: "告别",
-  general_exchange: "一般交流",
-});
-const GROUNDED_EVIDENCE = Object.freeze({
-  greet: ["greeting_phrase"], thank: ["thanks_phrase"],
-  confirm: ["short_acknowledgement"], inspect: ["first_person_inspection"],
-  agree: ["explicit_acceptance"],
-  reject: ["explicit_refusal"], invite: ["inclusive_invitation"],
-  ask_question: ["answer_seeking_question"], seek_help: ["action_request"],
-  suggest_action: ["advice_marker", "negative_imperative", "imperative_adjustment", "delegated_action"],
-  plan: ["first_person_intention"], correct: ["explicit_correction"],
-  explain: ["causal_explanation", "process_explanation"], complain: ["negative_evaluation"],
-  status_report: ["progress_statement"], share_news: ["sharing_announcement"],
-  deny: ["contextual_denial"],
-  // A deferral grounded by the preceding invitation is an explicit refusal signal.
-  reject: ["explicit_refusal", "contextual_deferral"],
-});
+const defaults = { theme: "dark", zoom: "1.0" };
 settingsState.settings = undefined;
 try { settingsState.settings = { ...defaults, ...JSON.parse(localStorage.getItem("real-ui-settings-1") || "{}") }; }
 catch { settingsState.settings = { ...defaults }; }
 delete settingsState.settings.historyLimit;
+// Retired settings of the WechatVibe label and background-analysis features.
+delete settingsState.settings.intent;
+delete settingsState.settings.backgroundAnalyze;
 if (!["dark", "light"].includes(settingsState.settings.theme)) settingsState.settings.theme = "dark";
 if (!["0.9", "1.0", "1.1", "1.25", "1.5"].includes(settingsState.settings.zoom)) settingsState.settings.zoom = "1.0";
-if (typeof settingsState.settings.intent !== "boolean") settingsState.settings.intent = true;
-// Analysing every added chat in the background is opt-in: it can keep the CPU or GPU busy
-// for hours on a large account.
-if (typeof settingsState.settings.backgroundAnalyze !== "boolean") settingsState.settings.backgroundAnalyze = false;
 const save = () => localStorage.setItem("real-ui-settings-1", JSON.stringify(settingsState.settings));
 chatState.sessions = new Map();
 chatState.selectedConversations = new Set();
 chatState.selectionLoadedAccount = null;
 chatState.conversationSelectionBusy = false;
 chatState.sessionCache = new Map();
-portraitState.profileCache = new Map();
 const sessionCacheMessageLimit = 80;
 const historyWindowLimit = 240;
+// Modified by Know Your Friends, 2026-10-11 (Apache-2.0): continuous, bounded history browsing.
+const historyLoadDistance = 200;
+const historyPrefetchDistance = 800;
 chatState.historyState = null;
 chatState.historyRequest = 0;
 chatState.historyController = null;
-chatState.historySearchRequest = 0;
-chatState.historySearchController = null;
-chatState.historySearchPending = false;
-chatState.historySearchPage = 0;
-chatState.historySearchPageStarts = [null];
-chatState.historySearchQuery = { q: "", date: "" };
+chatState.historyPrefetch = null;
+chatState.historyPrefetchTimer = null;
+chatState.historyScrollFrame = null;
 chatState.self = null;
 chatState.sessionSignature = null;
 chatState.sessionRequest = 0;
@@ -131,55 +113,40 @@ chatState.currentAccount = null;
 chatState.currentUser = null;
 chatState.currentHasMoreBefore = null;
 chatState.messageSourceReady = false;
-portraitState.profileSnapshotsRequireRefresh = new Set();
 chatState.view = "chat";
 chatState.generation = 0;
-portraitState.profileGeneration = 0;
-portraitState.analysisGeneration = 0;
-portraitState.autoIncrementalState = new Map();
-portraitState.activeAnalysisScope = null;
-portraitState.currentAnalysisJob = null;
-labelState.currentRecentJob = null;
 chatState.controller = null;
 chatState.messages = [];
-labelState.results = {};
-labelState.inlineIntentPending = new Map();
-labelState.inlineIntentJobId = null;
-labelState.recentFailed = false;
-labelState.requestedRecentSignatures = new Set();
-labelState.recentPending = false;
-labelState.intentActionState = "idle";
-labelState.intentFeedbackTimer = null;
-labelState.manualRecentAwaitingPost = false;
-labelState.manualRecentJobId = null;
-labelState.manualRecentDeferred = false;
-portraitState.incrementalFailed = false;
-portraitState.analysisNetworkFailed = false;
-labelState.recentNetworkFailed = false;
 chatState.messagePending = false;
 chatState.messageRequest = 0;
 chatState.messageRefreshQueued = false;
 chatState.emptyMessagePolls = 0;
-labelState.selectedAnalysisTimer = null;
-chatState.conversationMood = null;
 chatState.followLatest = true;
 chatState.lastChatScrollTop = 0;
-labelState.catalogReady = false;
-labelState.intentDisplayAliases = new Map();
-labelState.emotionDisplayAliases = new Map();
-labelState.catalogLabelRevision = "";
 let toastTimer;
 let accountUnavailable = false;
 let accountClearedExiting = false;
-let replyPredictionRequest = 0;
-let replyPredictionController = null;
-let startupActive = true;
+let startupActive = !window.desktopHost?.isSettingsWindow;
 let startupStage = "account";
 let startupStageEpoch = 0;
 let startupAttempt = 0;
 let startupWatchdog = null;
 let startupAccountRetryUsed = false;
 let startupAccountRetryTimer = null;
+function renderDatabaseLoading(stage, message, attention = false) {
+  const panel = byId("databaseLoading");
+  panel.hidden = false;
+  panel.dataset.state = attention ? "attention" : "loading";
+  text("databaseLoadingTitle", attention ? "微信数据库读取尚未完成" : "正在读取微信数据库");
+  text("databaseLoadingStatus", message);
+  byId("databaseLoadingRetry").hidden = !attention;
+  byId("databaseLoadingProgress").hidden = attention;
+  const steps = ["account", "sessions", "messages"];
+  for (const item of panel.querySelectorAll("[data-step]")) {
+    item.classList.toggle("done", steps.indexOf(item.dataset.step) < steps.indexOf(stage));
+    item.classList.toggle("active", item.dataset.step === stage);
+  }
+}
 function accountCheckStatus(message, retry = false) {
   text("accountCheckSummary", message);
   text("accountCheckStatus", message);
@@ -191,6 +158,7 @@ function accountCheckStatus(message, retry = false) {
 }
 function showStartup(stage, message, options = {}) {
   accountCheckStatus(message, options.retry === true);
+  renderDatabaseLoading(stage, message, options.retry === true);
   if (!startupActive) return;
   startupStage = stage;
   const epoch = ++startupStageEpoch;
@@ -205,7 +173,10 @@ function showStartup(stage, message, options = {}) {
   byId("startupContinue").hidden = !options.continueEmpty;
   clearTimeout(startupWatchdog);
   if (!options.retry) startupWatchdog = setTimeout(() => {
-    if (startupActive && startupStageEpoch === epoch) byId("startupRetry").hidden = false;
+    if (startupActive && startupStageEpoch === epoch) {
+      byId("startupRetry").hidden = false;
+      byId("databaseLoadingRetry").hidden = false;
+    }
   }, 12000);
 }
 function unlockStartupUi() {
@@ -215,6 +186,7 @@ function unlockStartupUi() {
   if (typeof scheduleBackgroundUpdateChecks === "function") scheduleBackgroundUpdateChecks();
 }
 function completeStartup() {
+  byId("databaseLoading").hidden = true;
   accountCheckStatus(chatState.preloadTotal ? `聊天记录就绪 ${chatState.preloadDone}/${chatState.preloadTotal}` : "微信账号已就绪");
   if (!startupActive) return;
   startupActive = false;
@@ -246,11 +218,8 @@ function cacheCurrentSession(update) {
   const cached = chatState.sessionCache.get(key);
   if (!cached && !Array.isArray(update.messages)) return;
   if (update.windowSerial && cached?.windowSerial > update.windowSerial) return;
-  const entry = { ...(cached || { account: chatState.currentAccount, user: chatState.currentUser, messages: null, results: {}, mood: null, scrollTop: 0, followLatest: true }), ...update };
-  if (Array.isArray(entry.messages)) {
-    entry.messages = entry.messages.slice(-sessionCacheMessageLimit);
-    entry.results = visibleResults(entry.results || {}, entry.messages);
-  }
+  const entry = { ...(cached || { account: chatState.currentAccount, user: chatState.currentUser, messages: null, scrollTop: 0, followLatest: true }), ...update };
+  if (Array.isArray(entry.messages)) entry.messages = entry.messages.slice(-sessionCacheMessageLimit);
   chatState.sessionCache.set(key, entry);
 }
 function cacheSessionWindow(account, session, next, serial, hasMoreBefore) {
@@ -259,9 +228,8 @@ function cacheSessionWindow(account, session, next, serial, hasMoreBefore) {
   if (serial < (cached?.windowSerial || 0)) return;
   const selected = next.slice(-sessionCacheMessageLimit);
   chatState.sessionCache.set(key, {
-    ...(cached || { account, user: session.username, mood: null, scrollTop: 0, followLatest: true }),
+    ...(cached || { account, user: session.username, scrollTop: 0, followLatest: true }),
     messages: selected,
-    results: unchangedMessageResults(cached?.messages || [], selected, cached?.results || {}),
     summarySignature: sessionSummarySignature(session),
     ...(typeof hasMoreBefore === "boolean" ? { hasMoreBefore } : {}),
     windowSerial: serial
@@ -276,31 +244,6 @@ function pruneSessionCache(account, nextSessions) {
   for (const [key, entry] of chatState.sessionCache) {
     if (entry.account !== account || !nextSessions.has(entry.user)) chatState.sessionCache.delete(key);
   }
-  for (const key of portraitState.profileCache.keys()) {
-    const [cachedAccount, user] = JSON.parse(key);
-    if (cachedAccount !== account || !nextSessions.has(user)) portraitState.profileCache.delete(key);
-  }
-  pruneStoredProfiles(account, nextSessions);
-}
-function visibleResults(source, list) {
-  const selected = {};
-  for (const message of list) {
-    const id = String(message.id);
-    if (Object.prototype.hasOwnProperty.call(source, id) && fineMessageResult(source[id])) selected[id] = source[id];
-  }
-  return selected;
-}
-function fineMessageResult(value) {
-  return !!value && typeof value === "object" && !value.batchId && !value.batch && value.state !== "batch-covered";
-}
-function unchangedMessageResults(previous, next, source) {
-  const previousById = new Map(previous.map(message => [String(message.id), JSON.stringify(message)]));
-  const selected = {};
-  for (const message of next) {
-    const id = String(message.id);
-    if (previousById.get(id) === JSON.stringify(message) && Object.prototype.hasOwnProperty.call(source, id) && fineMessageResult(source[id])) selected[id] = source[id];
-  }
-  return selected;
 }
 const percent = value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(1).replace(/\.0$/, "")}%` : "";
 const time = value => { const number = Number(value); if (!Number.isFinite(number) || number <= 0) return ""; const date = new Date(number); return Number.isFinite(date.getTime()) ? date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""; };
@@ -366,6 +309,8 @@ async function api(path, options = {}, signal) {
         if (preparation && typeof preparation === "object" && typeof preparation.reason === "string" &&
             typeof preparation.message === "string" && preparation.message.length <= 240) {
           error.preparation = { reason: preparation.reason, message: preparation.message };
+          if (["preparing", "sessions", "failed", "ready"].includes(preparation.state))
+            error.preparation.state = preparation.state;
         }
       } catch { }
     }
@@ -373,6 +318,7 @@ async function api(path, options = {}, signal) {
   }
   const data = await response.json();
   if (data.error) throw new Error(String(data.error));
+  if (options.method && options.method !== "GET") window.SettingsSync?.changed(path);
   return data;
 }
 function status(container, message, retry) {
@@ -384,47 +330,15 @@ function status(container, message, retry) {
   }
 }
 const isNetworkFailure = error => error instanceof TypeError;
-function canPredictReply() {
-  return chatState.messageSourceReady && !!chatState.currentUser && chatState.currentAccount != null && chatState.sessions.has(chatState.currentUser) &&
-    !chatState.sessions.get(chatState.currentUser).isGroup && chatState.messages.length > 0;
-}
-function updatePredictReplyAvailability() {
-  const button = byId("btnPredictReply");
-  if (!button) return;
-  button.disabled = !canPredictReply() || !!replyPredictionController;
-  button.title = chatState.sessions.get(chatState.currentUser)?.isGroup ? "群聊暂不支持预测" : chatState.messages.length ? "预测对方可能的回应" : "暂无消息";
-}
-function clearReplyPrediction() {
-  replyPredictionController?.abort();
-  replyPredictionController = null;
-  replyPredictionRequest++;
-  const card = byId("replyPrediction");
-  card.hidden = true;
-  card.dataset.lastMessageId = "";
-  byId("replyPredictionBody").replaceChildren();
-  const dock = byId("chatInput").closest(".chat-input-pane");
-  if (card.parentElement !== dock) dock.prepend(card);
-  updatePredictReplyAvailability();
-}
-function placeReplyPrediction(scroll = true) {
-  const card = byId("replyPrediction");
-  const items = [...byId("chatMessages").querySelectorAll(".msg-item")];
-  const host = [...items].reverse().find(item => item.querySelector(".inline-intent-row")) || items.at(-1);
-  const wrap = host?.querySelector(".msg-content-wrap");
-  if (!wrap) return;
-  const intent = wrap.querySelector(".inline-intent-row");
-  if (intent) intent.after(card);
-  else wrap.appendChild(card);
-  if (scroll) requestAnimationFrame(() => { if (!card.hidden && card.isConnected) card.scrollIntoView({ block: "nearest" }); });
-}
 function resetAccountView(message = "当前微信账号未就绪", preserveOtherCaches = false) {
-  cancelApiInsightWork();
-  cancelApiPortraitPoll();
+  window.ConversationMenu?.close();
+  chatState.conversationSelectionEpoch++;
+  chatState.conversationSelectionBusy = false;
+  if (byId("conversationActionConfirm")?.open) byId("conversationActionConfirm").close("cancel");
+  window.ChatMedia?.reset();
+  window.MessageAnalysis?.reset();
   clearTimeout(startupAccountRetryTimer);
   startupAccountRetryTimer = null;
-  clearInlineIntentPending();
-  clearTimeout(labelState.selectedAnalysisTimer);
-  labelState.selectedAnalysisTimer = null;
   cancelHistoryRequest();
   chatState.historyState = null;
   resetHistorySearch();
@@ -435,94 +349,36 @@ function resetAccountView(message = "当前微信账号未就绪", preserveOther
   chatState.controller?.abort();
   chatState.controller = null;
   chatState.advance("generation");
-  portraitState.advance("profileGeneration");
-  portraitState.advance("analysisGeneration");
   chatState.messageRequest++;
   chatState.currentAccount = null;
+  announceFriendAccount("account", null);
   chatState.selectionLoadedAccount = null;
   chatState.selectedConversations.clear();
   updateAddConversationButton();
   chatState.currentUser = null;
+  window.ChatComposer?.setScope(null, null);
   chatState.currentHasMoreBefore = null;
-  window.Advisor?.onSessionChanged(null, null);
+  window.PluginSlots?.onSessionChanged(null, null);
+  window.ExternalImportHost?.onSessionChanged(null, null);
+  window.ModelTraces?.setScope(null, null, chatState.view);
   chatState.messageSourceReady = false;
   chatState.self = null;
   chatState.sessionSignature = null;
   chatState.preloadDone = 0;
   chatState.preloadTotal = 0;
   chatState.sessions.clear();
-  if (!preserveOtherCaches) {
-    chatState.sessionCache.clear();
-    portraitState.profileCache.clear();
-    labelState.apiInsightCache.clear();
-  }
+  if (!preserveOtherCaches) chatState.sessionCache.clear();
   chatState.messages = [];
-  labelState.results = {};
-  chatState.conversationMood = null;
-  labelState.recentFailed = false;
-  labelState.recentPending = false;
-  portraitState.incrementalFailed = false;
-  portraitState.analysisNetworkFailed = false;
-  labelState.recentNetworkFailed = false;
-  if (!preserveOtherCaches) portraitState.autoIncrementalState.clear();
   chatState.messagePending = false;
   chatState.messageRefreshQueued = false;
-  labelState.manualRecentAwaitingPost = false;
-  labelState.manualRecentJobId = null;
-  labelState.manualRecentDeferred = false;
-  setIntentActionState("idle");
-  portraitState.profilePending = false;
-  labelState.requestedRecentSignatures.clear();
-  portraitState.activeAnalysisScope = null;
-  portraitState.currentAnalysisJob = null;
-  labelState.currentRecentJob = null;
-  portraitState.activeMember = "";
-  portraitState.groupMembers = [];
-  portraitState.renderedProfileKey = null;
-  portraitState.renderedProfileSignature = null;
-  portraitState.memberRenderedScope = null;
   chatState.followLatest = true;
   chatState.lastChatScrollTop = 0;
-  byId("chatInput").value = "";
-  byId("btnSend").classList.remove("ready");
   byId("searchInput").value = "";
-  clearReplyPrediction();
   setAvatar("selfAvatar", null, [], "我");
   text("chatTitle", "聊天");
-  byId("chatStatusPill").style.display = "none";
-  text("analysisStatus", "");
-  byId("btnRetryAnalysis").hidden = true;
-  byId("btnRetryProfile").hidden = true;
-  byId("btnResetConversationAnalysis").disabled = true;
-  byId("btnResetPortrait").disabled = true;
+  updateFriendButton();
   status(byId("chatMessages"), message);
   status(byId("sessionList"), message);
-  text("personaHeaderTitle", "人物画像分析");
-  text("heroName", message);
-  text("heroRelationBadge", "");
-  byId("heroAvatar").replaceChildren();
-  byId("heroMbtiRow").hidden = true;
-  text("heroArchetype", "");
-  byId("heroArchetype").style.display = "none";
-  byId("heroMetricBox").replaceChildren();
-  text("heroMbti", "");
-  byId("mbtiCard").hidden = true;
-  byId("mbtiScalesList").replaceChildren();
-  byId("mbtiSources").replaceChildren();
-  byId("radarContainer").replaceChildren();
-  byId("tagCloud").replaceChildren();
-  text("botSummaryText", "");
-  text("stripDbPath", "待读取");
-  text("stripMsgCount", "待读取");
-  text("stripMessageLabel", "消息：");
-  text("stripTextLabel", "文本：");
-  text("stripConfidence", "");
-  text("stripAnalysisLabel", "已分析：");
-  setStripStatus("");
-  byId("groupMemberTabs").replaceChildren();
-  byId("groupMemberTabs").style.display = "none";
-  portraitState.renderedApiPortraitKey = null;
-  clearApiPortraitView();
   updateHistoryNavigation();
 }
 function accountUnavailableError(error) {
@@ -534,6 +390,31 @@ function accountChangedError(error) {
 function contactSnapshotStaleError(error) {
   return error?.status === 503 && error?.code === "ContactSnapshotStaleError";
 }
+function renderAccountUnavailable(error) {
+  const message = error.preparation?.message || "当前微信账号未就绪";
+  const reason = error.preparation?.reason;
+  const title = reason === "wechat_not_running" ? "请先打开并登录微信" :
+    reason === "active_account_unavailable" ? "请确认电脑版微信已登录" : null;
+  if (title) {
+    const card = element("section", "account-login-card");
+    card.setAttribute("aria-label", "微信连接提示");
+    const description = element("div", "account-login-description");
+    description.setAttribute("role", "status");
+    description.append(element("h2", "account-login-title", title), element("p", "account-login-message", message));
+    const button = element("button", "account-login-retry", "我已登录，重新检测");
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "正在检测…";
+      try { await loadSessions(); }
+      finally { button.disabled = false; button.textContent = "我已登录，重新检测"; }
+    });
+    card.append(description, button, element("p", "account-login-hint", "登录后会自动连接"));
+    byId("chatMessages").replaceChildren(card);
+  } else status(byId("chatMessages"), message);
+  const preparing = error.preparation?.state === "preparing" || error.preparation?.reason === "preparing";
+  status(byId("sessionList"), title || message, preparing ? undefined : () => { void loadSessions(); });
+}
 function handleAccountBoundaryError(error) {
   if (accountChangedError(error)) {
     resetAccountView("微信账号已变化，正在读取会话…");
@@ -541,8 +422,12 @@ function handleAccountBoundaryError(error) {
     return true;
   }
   if (accountUnavailableError(error)) {
-    resetAccountView("当前微信账号未就绪");
+    const reason = error.preparation?.message || "当前微信账号未就绪";
+    resetAccountView(reason);
     accountUnavailable = true;
+    renderAccountUnavailable(error);
+    const preparing = error.preparation?.state === "preparing" || error.preparation?.reason === "preparing";
+    showStartup("account", reason, { retry: !preparing, continueEmpty: !preparing });
     return true;
   }
   return false;
@@ -553,101 +438,23 @@ function acceptResponseAccount(account) {
   void loadSessions();
   return false;
 }
-function predictionState(message, retry = false) {
-  const body = byId("replyPredictionBody");
-  const state = element("div", "reply-prediction-state", message);
-  if (retry) {
-    const button = element("button", "reply-prediction-retry", "重试");
-    button.type = "button";
-    button.addEventListener("click", () => { void requestReplyPrediction(); });
-    state.appendChild(button);
-  }
-  body.replaceChildren(state);
-}
-async function predictionApi(payload, signal) {
-  const response = await fetch("/api/predict-reply", {
-    method: "POST", signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
-  });
-  let data = null;
-  try { data = await response.json(); } catch { }
-  if (!response.ok || data?.error) {
-    const error = new Error("Prediction request failed");
-    error.status = response.status;
-    error.code = typeof data?.code === "string" ? data.code : typeof data?.error === "string" ? data.error :
-      typeof data?.error?.code === "string" ? data.error.code : "";
-    throw error;
-  }
-  return data;
-}
-async function requestReplyPrediction() {
-  if (!canPredictReply() || chatState.view !== "chat") return;
-  clearReplyPrediction();
-  const token = ++replyPredictionRequest;
-  const user = chatState.currentUser;
-  const account = chatState.currentAccount;
-  const lastMessageId = String(chatState.messages.at(-1).id);
-  const draft = byId("chatInput").value.trim();
-  const requestId = globalThis.crypto?.randomUUID?.() || `predict-${Date.now()}-${token}`;
-  const payload = { user, account, requestId, expectedLastMessageId: lastMessageId };
-  if (draft) payload.draft = draft;
-  const requestController = new AbortController();
-  replyPredictionController = requestController;
-  const card = byId("replyPrediction");
-  card.hidden = false;
-  card.dataset.lastMessageId = lastMessageId;
-  placeReplyPrediction();
-  predictionState("正在预测…");
-  updatePredictReplyAvailability();
-  try {
-    const data = await predictionApi(payload, requestController.signal);
-    if (token !== replyPredictionRequest || requestController.signal.aborted) return;
-    if (chatState.currentUser !== user || chatState.currentAccount !== account || String(chatState.messages.at(-1)?.id ?? "") !== lastMessageId ||
-      byId("chatInput").value.trim() !== draft) { clearReplyPrediction(); return; }
-    if (data.user !== user || data.account !== account || data.requestId !== requestId ||
-      String(data.lastMessageId) !== lastMessageId || typeof data.basisFingerprint !== "string" || !data.basisFingerprint ||
-      !Array.isArray(data.candidates) || data.candidates.length !== 3 ||
-      data.candidates.some(item => !item || typeof item.label !== "string" || !item.label.trim() ||
-        typeof item.description !== "string" || !item.description.trim())) throw new Error("Invalid prediction response");
-    const body = byId("replyPredictionBody");
-    body.replaceChildren(...data.candidates.map(candidate => {
-      const row = element("div", "reply-prediction-item");
-      row.append(element("span", "reply-prediction-label", candidate.label),
-        element("span", "reply-prediction-description", candidate.description));
-      return row;
-    }));
-  } catch (error) {
-    if (error.name !== "AbortError" && token === replyPredictionRequest && chatState.currentUser === user && chatState.currentAccount === account) {
-      if (error.code === "account-changed" || accountChangedError(error) || accountUnavailableError(error)) {
-        if (error.code === "account-changed") {
-          resetAccountView("微信账号已变化，正在读取会话…");
-          void loadSessions();
-        } else handleAccountBoundaryError(error);
-        return;
-      }
-      const message = error.code === "content-too-long" ? "内容太长，请缩短草稿" :
-        ["no-context", "no-text-context"].includes(error.code) ? "暂无可用文字" :
-          error.status === 409 ? "消息已变化，请重试" : "预测失败，请重试";
-      predictionState(message, !["content-too-long", "no-context", "no-text-context"].includes(error.code));
-    }
-  } finally {
-    if (token === replyPredictionRequest) {
-      replyPredictionController = null;
-      updatePredictReplyAvailability();
-    }
-  }
-}
 function renderSessions() {
+  // A visible conversation stays read when its session snapshot refreshes, even while browsing history.
+  markSessionAsRead(chatState.currentUser);
   const container = byId("sessionList");
   const query = byId("searchInput").value.trim().toLowerCase();
   const existing = new Map([...container.children].filter(node => node.classList.contains("session-item")).map(node => [node.dataset.id, node]));
   let visible = 0;
-  for (const session of chatState.sessions.values()) {
+  const ordered = window.ConversationMenu?.sortSessions([...chatState.sessions.values()]) || chatState.sessions.values();
+  for (const session of ordered) {
     if (!chatState.selectedConversations.has(session.username)) continue;
     if (!`${session.name || ""} ${session.preview || ""}`.toLowerCase().includes(query)) continue;
     let item = existing.get(session.username);
     if (!item) {
       item = element("div", "session-item");
       item.dataset.id = session.username;
+      item.tabIndex = 0;
+      window.ConversationMenu?.attach(item);
       const avatarWrap = element("div", "session-avatar-wrap");
       const info = element("div", "session-info");
       const top = element("div", "session-top");
@@ -683,11 +490,13 @@ function renderSessions() {
     } else badge?.remove();
     const name = item.querySelector(".session-name");
     const displayName = session.name || session.username;
-    if (name.dataset.label !== displayName || name.dataset.pinned !== String(!!session.pinned)) {
+    const pinned = window.ConversationMenu?.isPinned(session) ?? !!session.pinned;
+    item.classList.toggle("pinned", pinned);
+    if (name.dataset.label !== displayName || name.dataset.pinned !== String(pinned)) {
       name.replaceChildren(document.createTextNode(displayName));
-      if (session.pinned) name.appendChild(element("span", "session-pinned", "置顶"));
+      if (pinned) name.appendChild(element("span", "session-pinned", "置顶"));
       name.dataset.label = displayName;
-      name.dataset.pinned = String(!!session.pinned);
+      name.dataset.pinned = String(pinned);
     }
     const timeNode = item.querySelector(".session-time");
     const displayTime = time(session.time);
@@ -719,6 +528,7 @@ function renderSessions() {
     empty.appendChild(button);
     container.appendChild(empty);
   } else if (!visible) status(container, chatState.sessions.size ? "没有匹配的会话" : "暂无会话");
+  window.ConversationMenu?.refresh();
 }
 function updateAddConversationButton() {
   const button = byId("btnAddConversation");
@@ -776,37 +586,29 @@ function validConversationSelection(state, account) {
     state.selectedSessions.every(id => typeof id === "string");
 }
 function clearUnselectedConversation() {
+  window.MessageAnalysis?.reset();
   if (chatState.currentUser) {
-    cacheCurrentSession({ messages: chatState.messages, results: labelState.results, mood: chatState.conversationMood,
-      scrollTop: byId("chatMessages").scrollTop, followLatest: chatState.followLatest });
+    cacheCurrentSession({ messages: chatState.messages, scrollTop: byId("chatMessages").scrollTop,
+      followLatest: chatState.followLatest });
     cancelHistoryRequest();
     chatState.historyState = null;
     resetHistorySearch();
-    clearReplyPrediction();
     chatState.controller?.abort();
     chatState.controller = null;
     chatState.advance("generation");
-    portraitState.profileGeneration++;
-    cancelApiInsightWork();
-    cancelApiPortraitPoll();
     chatState.currentUser = null;
     chatState.messages = [];
-    labelState.results = {};
-    chatState.conversationMood = null;
-    portraitState.activeMember = "";
-    clearProfileView("人物画像");
   }
+  window.ChatComposer?.setScope(chatState.currentAccount, null);
   text("chatTitle", "聊天");
-  byId("btnResetConversationAnalysis").disabled = true;
-  byId("btnResetPortrait").disabled = true;
   showChatEmptyState();
   byId("btnChatHistory").disabled = true;
+  updateFriendButton();
   updateHistoryNavigation();
-  renderMood();
   switchView("chat");
 }
-// After "add all", conversations that appear later join the sidebar as well. Only ids that
-// were never seen are added, so a conversation the user removed by hand stays removed.
+// Following new conversations is an explicit, account-scoped opt-in. Only unseen ids
+// join the sidebar, so a conversation the user removed by hand stays removed.
 const conversationFollowKey = "conversation-follow-v1";
 function readConversationFollow() {
   try {
@@ -832,6 +634,7 @@ function forgetConversationFollow(account) {
 async function trackNewConversations(account) {
   if (chatState.conversationSelectionBusy || chatState.selectionLoadedAccount !== account ||
       account !== chatState.currentAccount) return;
+  const epoch = chatState.conversationSelectionEpoch;
   const entry = readConversationFollow()[account];
   if (!Array.isArray(entry?.known)) return;
   const known = new Set(entry.known);
@@ -841,7 +644,7 @@ async function trackNewConversations(account) {
   const added = [];
   try {
     for (const id of fresh) {
-      if (account !== chatState.currentAccount) return;
+      if (account !== chatState.currentAccount || epoch !== chatState.conversationSelectionEpoch) return;
       if (chatState.selectedConversations.has(id)) {
         added.push(id);
         continue;
@@ -850,187 +653,105 @@ async function trackNewConversations(account) {
         const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
           expectedAccount: account, session: id, selected: true,
         }) });
-        if (account !== chatState.currentAccount || !validConversationSelection(state, account)) return;
+        if (account !== chatState.currentAccount || epoch !== chatState.conversationSelectionEpoch ||
+            !validConversationSelection(state, account)) return;
         chatState.selectedConversations.clear();
         for (const selected of state.selectedSessions) chatState.selectedConversations.add(selected);
         added.push(id);
       } catch { /* stays unknown, so the next session refresh tries it again */ }
     }
   } finally {
-    chatState.conversationSelectionBusy = false;
-    if (added.length && account === chatState.currentAccount) {
+    if (account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch)
+      chatState.conversationSelectionBusy = false;
+    if (added.length && account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch) {
       rememberConversations(account, added);
       renderSessions();
       if (!byId("conversationManager").hidden) renderConversationManager();
     }
   }
 }
+function setConversationAutoFollow(enabled) {
+  const account = chatState.currentAccount;
+  if (!account || chatState.selectionLoadedAccount !== account || chatState.conversationSelectionBusy) return;
+  try {
+    if (enabled) rememberConversations(account, [...chatState.sessions.keys(), ...chatState.selectedConversations]);
+    else forgetConversationFollow(account);
+    text("conversationManagerStatus", enabled ? "以后新出现的会话将自动加入分析列表" : "已关闭自动添加新会话");
+  } catch {
+    text("conversationManagerStatus", "自动添加设置保存失败，请重试");
+  }
+  renderConversationManager();
+}
+function confirmConversationAction({ title, message, confirmLabel }) {
+  const dialog = byId("conversationActionConfirm");
+  text("conversationActionTitle", title);
+  text("conversationActionMessage", message);
+  text("btnConfirmConversationAction", confirmLabel);
+  dialog.returnValue = "";
+  return new Promise(resolve => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true });
+    dialog.showModal();
+    byId("btnCancelConversationAction").focus();
+  });
+}
 async function addAllConversations() {
   const account = chatState.currentAccount;
-  if (!account || chatState.conversationSelectionBusy || !chatState.selectionLoadedAccount ||
-      !chatState.sessions.size) return;
+  const epoch = chatState.conversationSelectionEpoch;
+  if (!account || chatState.conversationSelectionBusy || chatState.selectionLoadedAccount !== account) return;
+  const pending = [...chatState.sessions.keys()].filter(id => !chatState.selectedConversations.has(id));
+  if (!pending.length) return;
   chatState.conversationSelectionBusy = true;
-  text("conversationManagerStatus", "正在添加全部会话…");
   renderConversationManager();
   try {
+    if (!await confirmConversationAction({ title: `添加 ${pending.length} 个会话？`,
+      message: `将整个会话目录中尚未添加的 ${pending.length} 个会话加入分析列表，不受搜索条件影响。添加后可能触发较多分析任务。此操作不会开启“自动添加新会话”。`,
+      confirmLabel: `确认添加 ${pending.length} 个`,
+    })) return;
+    if (account !== chatState.currentAccount || chatState.selectionLoadedAccount !== account ||
+        epoch !== chatState.conversationSelectionEpoch) return;
+    const current = [...chatState.sessions.keys()].filter(id => !chatState.selectedConversations.has(id));
+    if (current.length !== pending.length || pending.some(id => !current.includes(id))) {
+      text("conversationManagerStatus", "会话目录已更新，请重新确认添加范围");
+      return;
+    }
+    text("conversationManagerStatus", "正在添加全部会话…");
     const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
       expectedAccount: account, all: true,
     }) });
-    if (account !== chatState.currentAccount || !validConversationSelection(state, account))
+    if (account !== chatState.currentAccount || chatState.selectionLoadedAccount !== account ||
+        epoch !== chatState.conversationSelectionEpoch) return;
+    if (!validConversationSelection(state, account) || pending.some(id => !state.selectedSessions.includes(id)))
       throw new Error("选择结果不匹配");
     chatState.selectedConversations.clear();
     for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
-    rememberConversations(account, chatState.sessions.keys());
+    let followSaveFailed = false;
+    try {
+      if (Array.isArray(readConversationFollow()[account]?.known)) rememberConversations(account, chatState.sessions.keys());
+    } catch { followSaveFailed = true; }
     renderSessions();
-    text("conversationManagerStatus", "已添加 " + chatState.selectedConversations.size + " 个会话");
+    text("conversationManagerStatus", "已添加 " + chatState.selectedConversations.size + " 个会话" +
+      (followSaveFailed ? "，自动添加设置保存失败，请重新设置" : ""));
     if (!chatState.currentUser) {
       const first = [...chatState.sessions.keys()].find(id => chatState.selectedConversations.has(id));
       if (first) switchSession(first);
     }
   } catch {
-    text("conversationManagerStatus", "操作失败，请重试");
+    if (account === chatState.currentAccount && chatState.selectionLoadedAccount === account &&
+        epoch === chatState.conversationSelectionEpoch)
+      text("conversationManagerStatus", "操作失败，请重试");
   } finally {
-    chatState.conversationSelectionBusy = false;
-    renderConversationManager();
+    if (account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch) {
+      chatState.conversationSelectionBusy = false;
+      renderConversationManager();
+      if (!byId("conversationManager").hidden)
+        (byId("btnAddAllConversations").disabled ? byId("conversationSearch") : byId("btnAddAllConversations")).focus();
+    }
   }
 }
 settingsState.sweepBusy = false;
 settingsState.overviewBusy = false;
 settingsState.analysisOverviewSnapshot = null;
 settingsState.workerSettings = null;
-async function backgroundAnalyzeAll() {
-  if (settingsState.sweepBusy || !settingsState.settings.backgroundAnalyze) return;
-  if (!canAnalyzeLocal() || !chatState.messageSourceReady || chatState.historyState ||
-      !chatState.selectionLoadedAccount ||
-      settingsState.suppressedLocalAccounts.has(chatState.currentAccount)) return;
-  const account = chatState.currentAccount;
-  settingsState.sweepBusy = true;
-  try {
-    // The visible conversation goes first: it is the one the user is reading.
-    const order = [...chatState.sessions.keys()];
-    if (chatState.currentUser && order.includes(chatState.currentUser)) {
-      order.splice(order.indexOf(chatState.currentUser), 1);
-      order.unshift(chatState.currentUser);
-    }
-    for (const id of order) {
-      if (!settingsState.settings.backgroundAnalyze || !canAnalyzeLocal() ||
-          account !== chatState.currentAccount) return;
-      if (!chatState.selectedConversations.has(id)) continue;
-      try {
-        // No per-conversation read here: the backend already knows the running job.
-        await api("/api/analyze", { method: "POST", body: JSON.stringify({
-          account, user: id, mode: "incremental",
-        }) });
-      } catch { /* one broken conversation must not stop the sweep */ }
-    }
-  } finally {
-    settingsState.sweepBusy = false;
-    void loadAnalysisOverview();
-  }
-}
-// Whole-account progress behind the sidebar bar: how many conversations the local
-// background sweep has walked to the end of their history.
-async function loadAnalysisOverview() {
-  // With the sweep off there is nothing to show, so the sidebar stays quiet and unpolled.
-  if (!settingsState.settings.backgroundAnalyze || !canAnalyzeLocal()) {
-    byId("sweepProgress").hidden = true;
-    return;
-  }
-  if (settingsState.overviewBusy) return;
-  settingsState.overviewBusy = true;
-  try {
-    const [data, workers] = await Promise.all([api("/api/analysis-overview"),
-      api("/api/analysis-workers").catch(() => null)]);
-    if (workers) settingsState.workerSettings = workers;
-    if (data && typeof data.conversations === "number") {
-      settingsState.analysisOverviewSnapshot = data;
-      renderAnalysisOverview(data);
-    }
-  } catch { /* keep the last shown progress */ }
-  finally { settingsState.overviewBusy = false; }
-}
-function renderAnalysisOverview(data) {
-  const panel = byId("sweepProgress");
-  if (!data.conversations || !canAnalyzeLocal() || !settingsState.settings.backgroundAnalyze ||
-      !chatState.messageSourceReady) {
-    panel.hidden = true;
-    return;
-  }
-  const analyzed = Math.max(0, Number(data.analyzed) || 0);
-  const total = Math.max(0, Number(data.textTotal) || 0);
-  const complete = Math.max(0, Math.min(Number(data.complete) || 0, data.conversations));
-  // The total is a plain message count and can sit slightly above what is analysable,
-  // so a finished sweep reads 100% instead of stopping just short of it.
-  const percent = complete >= data.conversations ? 100 :
-    total > 0 ? Math.min(100, 100 * analyzed / total) : 0;
-  panel.hidden = false;
-  byId("sweepProgressFill").style.width = percent.toFixed(2) + "%";
-  byId("sweepProgressValue").textContent =
-    percent >= 10 ? Math.floor(percent) + "%" : percent.toFixed(1) + "%";
-  const running = data.running ? chatState.sessions.get(data.running) : null;
-  byId("sweepProgressLabel").textContent =
-    running ? "后台分析 · " + (running.name || data.running) : "后台分析";
-  const details = ["已分析 " + analyzed + " / " + total + " 条文本（" + percent.toFixed(1) + "%）",
-    "完成 " + complete + " / " + data.conversations + " 个会话",
-    "已开始 " + (Number(data.scanned) || 0) + " 个"];
-  const workers = settingsState.workerSettings;
-  if (workers && Number(workers.workers) > 1) {
-    details.push(workers.elastic ? "并行 " + workers.limit + " / " + workers.workers + " 路（随负载调整）"
-      : "并行 " + workers.workers + " 路");
-  }
-  if (workers && typeof workers.gpu === "number") details.push("GPU " + Math.round(workers.gpu) + "%");
-  if (workers && typeof workers.gpuFreeMiB === "number") {
-    details.push("可用显存 " + (workers.gpuFreeMiB / 1024).toFixed(1) + " GB");
-  }
-  if (workers && typeof workers.cpu === "number") details.push("CPU " + Math.round(workers.cpu) + "%");
-  panel.title = details.join(" · ");
-}
-// How many model processes run the local analysis; the bridge owns the pool and the
-// load monitor, this row only mirrors and edits the saved ceiling.
-async function loadWorkerSettings() {
-  try {
-    settingsState.workerSettings = await api("/api/analysis-workers");
-  } catch {
-    settingsState.workerSettings = null;
-  }
-  renderWorkerSettings();
-}
-function renderWorkerSettings() {
-  const hint = byId("workerLimitHint");
-  const row = hint.parentElement;
-  const settings = settingsState.workerSettings;
-  if (!settings) {
-    byId("workerLimitValue").textContent = "—";
-    row.classList.remove("show");
-    return;
-  }
-  byId("workerLimitValue").textContent = String(settings.workers);
-  byId("btnWorkerMinus").disabled = settings.workers <= 1;
-  byId("btnWorkerPlus").disabled = settings.workers >= (settings.max || 4);
-  const elastic = byId("btnToggleElasticWorkers");
-  elastic.textContent = settings.elastic ? "跟随负载" : "固定档位";
-  elastic.classList.toggle("active", !!settings.elastic);
-  elastic.setAttribute("aria-pressed", String(!!settings.elastic));
-  row.classList.add("show");
-  const live = settings.elastic && Number(settings.max) > 1
-    ? "当前 " + settings.limit + " / " + settings.workers + " 路（负载高时自动降档）"
-    : "固定 " + settings.workers + " 路并行";
-  hint.textContent = (Number(settings.workers) > 1
-    ? "越多越快、也越占 CPU 和显存；" : "单路最省资源；") + live + "。";
-}
-async function changeWorkerSettings(delta, elastic) {
-  const current = settingsState.workerSettings;
-  if (!current) return;
-  const max = current.max || 4;
-  const workers = Math.max(1, Math.min(max, (Number(current.workers) || 1) + delta));
-  try {
-    settingsState.workerSettings = await api("/api/analysis-workers", { method: "POST",
-      body: JSON.stringify({ workers, elastic: elastic === undefined ? !!current.elastic : elastic }) });
-  } catch {
-    return;
-  }
-  renderWorkerSettings();
-}
 function showChatEmptyState() {
   const container = byId("chatMessages");
   const empty = element("div", "session-empty chat-empty");
@@ -1041,25 +762,69 @@ function showChatEmptyState() {
   empty.appendChild(button);
   container.replaceChildren(empty);
 }
-function renderConversationManager() {
-  const list = byId("conversationManagerList");
+function filteredConversationManagerSessions() {
   const query = byId("conversationSearch").value.trim().toLowerCase();
-  const checked = conversationRemovalSelection();
-  for (const id of checked) if (!chatState.selectedConversations.has(id)) checked.delete(id);
-  const removeButton = byId("btnRemoveSelectedConversations");
-  removeButton.disabled = chatState.conversationSelectionBusy || !checked.size || checked.size > 1000;
-  removeButton.textContent = checked.size ? `移除所选（${checked.size}）` : "移除所选";
-  removeButton.title = checked.size > 1000 ? "每次最多移除 1000 个会话，请分批选择" : "";
-  byId("btnAddAllConversations").disabled = chatState.conversationSelectionBusy || !chatState.sessions.size;
-  text("conversationManagerCount", `已添加 ${chatState.selectedConversations.size} / ${chatState.sessions.size} 个会话`);
-  list.replaceChildren();
   const sessions = [...chatState.sessions.values()];
   for (const id of chatState.selectedConversations) if (!chatState.sessions.has(id))
     sessions.push({ username: id, name: "已保存但当前不可见的会话", unavailable: true });
-  sessions.sort((left, right) => Number(chatState.selectedConversations.has(right.username)) -
-    Number(chatState.selectedConversations.has(left.username)));
-  for (const session of sessions) {
-    if (!`${session.name || ""} ${session.username}`.toLowerCase().includes(query)) continue;
+  return sessions.filter(session => `${session.name || ""} ${session.username}`.toLowerCase().includes(query))
+    .sort((left, right) => Number(chatState.selectedConversations.has(right.username)) -
+      Number(chatState.selectedConversations.has(left.username)));
+}
+function updateConversationManagerSelection() {
+  const checked = conversationRemovalSelection();
+  for (const id of checked) if (!chatState.selectedConversations.has(id)) checked.delete(id);
+  const busy = chatState.conversationSelectionBusy || !chatState.currentAccount ||
+    chatState.selectionLoadedAccount !== chatState.currentAccount;
+  const removable = filteredConversationManagerSessions().filter(session => chatState.selectedConversations.has(session.username));
+  const visibleChecked = removable.filter(session => checked.has(session.username)).length;
+  const selectAll = byId("conversationSelectAll");
+  selectAll.checked = removable.length > 0 && visibleChecked === removable.length;
+  selectAll.indeterminate = visibleChecked > 0 && visibleChecked < removable.length;
+  selectAll.disabled = busy || !removable.length;
+  const filtered = !!byId("conversationSearch").value.trim();
+  text("conversationSelectAllLabel", `${filtered ? "全选搜索结果中的已添加会话" : "全选已添加"}（${removable.length}）`);
+  byId("btnClearConversationSelection").disabled = busy || !checked.size;
+  const hiddenCount = checked.size - visibleChecked;
+  text("conversationSelectionSummary", `已选 ${checked.size} 个${hiddenCount ? `，其中 ${hiddenCount} 个不在当前搜索结果中` : ""}${checked.size > 1000 ? "。每次最多移除 1000 个，请取消选择后按搜索结果分批移除" : ""}`);
+  const removeButton = byId("btnRemoveSelectedConversations");
+  removeButton.disabled = busy || !checked.size || checked.size > 1000;
+  removeButton.textContent = checked.size ? `移除所选（${checked.size}）` : "移除所选";
+  removeButton.title = checked.size > 1000 ? "每次最多移除 1000 个会话，请分批选择" : "";
+  const pendingCount = [...chatState.sessions.keys()].filter(id => !chatState.selectedConversations.has(id)).length;
+  byId("btnAddAllConversations").disabled = busy || !pendingCount;
+  text("btnAddAllConversations", pendingCount ? `添加全部未添加会话（${pendingCount}）…` : "所有会话均已添加");
+  const follow = byId("conversationAutoFollow");
+  follow.checked = Array.isArray(readConversationFollow()[chatState.currentAccount]?.known);
+  follow.disabled = busy;
+  byId("conversationSearch").disabled = busy;
+  const total = new Set([...chatState.sessions.keys(), ...chatState.selectedConversations]).size;
+  text("conversationManagerCount", `已添加 ${chatState.selectedConversations.size} / ${total} 个会话`);
+  for (const row of byId("conversationManagerList").children) {
+    const checkbox = row.querySelector(".conversation-manager-check");
+    if (checkbox) { checkbox.checked = checked.has(row.dataset.user); checkbox.disabled = busy; }
+  }
+}
+function selectAllRemovableConversations(selected) {
+  if (chatState.conversationSelectionBusy || !chatState.currentAccount ||
+      chatState.selectionLoadedAccount !== chatState.currentAccount) return;
+  const checked = conversationRemovalSelection();
+  for (const session of filteredConversationManagerSessions()) if (chatState.selectedConversations.has(session.username)) {
+    if (selected) checked.add(session.username); else checked.delete(session.username);
+  }
+  updateConversationManagerSelection();
+}
+function clearConversationRemovalSelection() {
+  if (chatState.conversationSelectionBusy) return;
+  conversationRemovalSelection().clear();
+  updateConversationManagerSelection();
+}
+function renderConversationManager() {
+  const list = byId("conversationManagerList");
+  const checked = conversationRemovalSelection();
+  const scrollTop = list.scrollTop;
+  list.replaceChildren();
+  for (const session of filteredConversationManagerSessions()) {
     const row = element("div", "conversation-manager-row");
     row.dataset.user = session.username;
     const selected = chatState.selectedConversations.has(session.username);
@@ -1072,7 +837,7 @@ function renderConversationManager() {
       checkbox.addEventListener("change", () => {
         if (chatState.conversationSelectionBusy) return;
         if (checkbox.checked) checked.add(session.username); else checked.delete(session.username);
-        renderConversationManager();
+        updateConversationManagerSelection();
       });
       row.appendChild(checkbox);
     }
@@ -1087,6 +852,8 @@ function renderConversationManager() {
     list.appendChild(row);
   }
   if (!list.children.length) status(list, chatState.sessions.size ? "没有匹配的会话" : "会话目录尚未就绪");
+  updateConversationManagerSelection();
+  list.scrollTop = scrollTop;
 }
 function conversationRemovalSelection() {
   if (chatState.conversationRemoveAccount !== chatState.currentAccount || !chatState.conversationRemoveSelection) {
@@ -1097,6 +864,7 @@ function conversationRemovalSelection() {
 }
 async function removeSelectedConversations() {
   const account = chatState.currentAccount;
+  const epoch = chatState.conversationSelectionEpoch;
   const checked = conversationRemovalSelection();
   const sessions = [...checked].filter(id => chatState.selectedConversations.has(id));
   if (!account || chatState.selectionLoadedAccount !== account || chatState.conversationSelectionBusy || !sessions.length) return;
@@ -1105,33 +873,58 @@ async function removeSelectedConversations() {
     return;
   }
   chatState.conversationSelectionBusy = true;
-  text("conversationManagerStatus", "正在移除所选会话…");
   renderConversationManager();
   try {
+    const visible = new Set(filteredConversationManagerSessions().map(session => session.username));
+    const hiddenCount = sessions.filter(id => !visible.has(id)).length;
+    const removingAll = sessions.length === chatState.selectedConversations.size;
+    if (!await confirmConversationAction({ title: `移除 ${sessions.length} 个会话？`,
+      message: `将所选 ${sessions.length} 个会话从分析列表移除${hiddenCount ? `（其中 ${hiddenCount} 个不在当前搜索结果中）` : ""}。聊天记录、已有画像和助手记录都会保留。已排队或启动的分析任务可能继续完成。${removingAll ? "列表将被清空，并关闭自动添加新会话。" : ""}`,
+      confirmLabel: `确认移除 ${sessions.length} 个`,
+    })) return;
+    if (account !== chatState.currentAccount || chatState.selectionLoadedAccount !== account ||
+        epoch !== chatState.conversationSelectionEpoch) return;
+    text("conversationManagerStatus", "正在移除所选会话…");
     const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
       expectedAccount: account, sessions, selected: false,
     }) });
-    if (account !== chatState.currentAccount || chatState.selectionLoadedAccount !== account) return;
+    if (account !== chatState.currentAccount || chatState.selectionLoadedAccount !== account ||
+        epoch !== chatState.conversationSelectionEpoch) return;
     if (!validConversationSelection(state, account) || sessions.some(id => state.selectedSessions.includes(id)))
       throw new Error("选择结果不匹配");
     chatState.selectedConversations.clear();
     for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
+    let followSaveFailed = false;
+    try {
+      if (!chatState.selectedConversations.size) forgetConversationFollow(account);
+      else if (Array.isArray(readConversationFollow()[account]?.known)) rememberConversations(account, sessions);
+    }
+    catch { followSaveFailed = true; }
     checked.clear();
     renderSessions();
     if (chatState.currentUser && !chatState.selectedConversations.has(chatState.currentUser)) {
       const next = [...chatState.sessions.keys()].find(id => chatState.selectedConversations.has(id));
       if (next) switchSession(next); else clearUnselectedConversation();
     }
-    text("conversationManagerStatus", `已移除 ${sessions.length} 个会话，聊天和画像已保留`);
+    text("conversationManagerStatus", `已移除 ${sessions.length} 个会话，聊天和画像已保留${followSaveFailed ? "；自动添加设置保存失败，请手动关闭" : ""}`);
   } catch {
-    if (account === chatState.currentAccount && chatState.selectionLoadedAccount === account)
+    if (account === chatState.currentAccount && chatState.selectionLoadedAccount === account &&
+        epoch === chatState.conversationSelectionEpoch)
       text("conversationManagerStatus", "移除失败，请重试");
   } finally {
-    chatState.conversationSelectionBusy = false;
-    if (account === chatState.currentAccount) renderConversationManager();
+    if (account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch) {
+      chatState.conversationSelectionBusy = false;
+      renderConversationManager();
+      if (!byId("conversationManager").hidden)
+        (byId("btnRemoveSelectedConversations").disabled ? byId("conversationSearch") : byId("btnRemoveSelectedConversations")).focus();
+    }
   }
 }
 function openConversationManager() {
+  if (!window.desktopHost?.isSettingsWindow && window.desktopHost?.openSettingsWindow) {
+    void openAppSettings({ tab: "general", section: "conversations" });
+    return;
+  }
   if (!byId("settingsModal").classList.contains("show")) byId("btnSettings").click();
   document.querySelector('.settings-tab-btn[data-tab="general"]')?.click();
   byId("conversationManager").hidden = false;
@@ -1143,9 +936,54 @@ function closeConversationManager() {
   byId("conversationManager").hidden = true;
   text("btnManageConversations", "管理会话");
 }
+async function deleteConversation(user, account, epoch = chatState.conversationSelectionEpoch) {
+  const ownsSelection = () => account === chatState.currentAccount && chatState.selectionLoadedAccount === account &&
+    epoch === chatState.conversationSelectionEpoch;
+  if (!account || !ownsSelection() || chatState.conversationSelectionBusy || !chatState.selectedConversations.has(user)) return;
+  const name = chatState.sessions.get(user)?.name || user;
+  chatState.conversationSelectionBusy = true;
+  renderConversationManager();
+  try {
+    if (!await confirmConversationAction({ title: `删除与“${name}”的会话？`,
+      message: "此会话将从聊天列表移除，聊天记录、已有画像和助手记录会保留。需要时可从信息列表重新添加。",
+      confirmLabel: "删除",
+    })) return;
+    if (!ownsSelection() || !chatState.selectedConversations.has(user)) return;
+    const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
+      expectedAccount: account, session: user, selected: false,
+    }) });
+    if (!ownsSelection()) return;
+    if (!validConversationSelection(state, account) || state.selectedSessions.includes(user))
+      throw new Error("选择结果不匹配");
+    chatState.selectedConversations.clear();
+    for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
+    conversationRemovalSelection().delete(user);
+    let followSaveFailed = false;
+    try {
+      if (!chatState.selectedConversations.size) forgetConversationFollow(account);
+      else if (Array.isArray(readConversationFollow()[account]?.known)) rememberConversations(account, [user]);
+    } catch { followSaveFailed = true; }
+    renderSessions();
+    if (chatState.currentUser === user) {
+      const ordered = window.ConversationMenu?.sortSessions([...chatState.sessions.values()]) || [...chatState.sessions.values()];
+      const next = ordered.find(session => chatState.selectedConversations.has(session.username));
+      if (next) switchSession(next.username); else clearUnselectedConversation();
+    }
+    notifyStatus(followSaveFailed ? "会话已删除，自动添加设置保存失败，请重新设置" : "");
+    text("conversationManagerStatus", "已从列表删除，聊天和画像已保留");
+  } catch {
+    if (ownsSelection()) notifyStatus("删除失败，请重试");
+  } finally {
+    if (ownsSelection()) {
+      chatState.conversationSelectionBusy = false;
+      renderConversationManager();
+    }
+  }
+}
 async function toggleConversationSelected(user) {
   const account = chatState.currentAccount;
-  if (!account || chatState.conversationSelectionBusy || !chatState.selectionLoadedAccount ||
+  const epoch = chatState.conversationSelectionEpoch;
+  if (!account || chatState.conversationSelectionBusy || chatState.selectionLoadedAccount !== account ||
       (!chatState.sessions.has(user) && !chatState.selectedConversations.has(user))) return;
   const selected = !chatState.selectedConversations.has(user);
   chatState.conversationSelectionBusy = true;
@@ -1155,48 +993,77 @@ async function toggleConversationSelected(user) {
     const state = await api("/api/conversation-selection", { method: "POST", body: JSON.stringify({
       expectedAccount: account, session: user, selected,
     }) });
-    if (account !== chatState.currentAccount || state?.account !== account ||
-        !Array.isArray(state.selectedSessions) ||
+    if (account !== chatState.currentAccount || chatState.selectionLoadedAccount !== account ||
+        epoch !== chatState.conversationSelectionEpoch) return;
+    if (!validConversationSelection(state, account) ||
         state.selectedSessions.includes(user) !== selected) throw new Error("选择结果不匹配");
     chatState.selectedConversations.clear();
     for (const id of state.selectedSessions) chatState.selectedConversations.add(id);
+    let followSaveFailed = false;
+    try {
+      if (!selected && Array.isArray(readConversationFollow()[account]?.known)) rememberConversations(account, [user]);
+    } catch { followSaveFailed = true; }
     renderSessions();
     if (selected && chatState.messageSourceReady && chatState.sessions.has(user)) {
       if (!chatState.currentUser) switchSession(user);
       else void preloadSessionWindows(account, new Map([[user, chatState.sessions.get(user)]]), chatState.sessionRequest)
-        .catch(() => text("conversationManagerStatus", "已添加，消息将在点开会话时读取"));
+        .catch(() => {
+          if (account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch)
+            text("conversationManagerStatus", "已添加，消息将在点开会话时读取");
+        });
     } else if (!selected && chatState.currentUser === user) {
       const next = [...chatState.sessions.keys()].find(id => chatState.selectedConversations.has(id));
       if (next) switchSession(next);
       else clearUnselectedConversation();
     }
-    text("conversationManagerStatus", selected ? "已添加" : "已从列表移除");
+    text("conversationManagerStatus", (selected ? "已添加" : "已从列表移除") +
+      (followSaveFailed ? "，自动添加设置保存失败，请重新设置" : ""));
   } catch {
-    text("conversationManagerStatus", "操作失败，请重试");
+    if (account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch)
+      text("conversationManagerStatus", "操作失败，请重试");
   } finally {
-    chatState.conversationSelectionBusy = false;
-    renderConversationManager();
+    if (account === chatState.currentAccount && epoch === chatState.conversationSelectionEpoch) {
+      chatState.conversationSelectionBusy = false;
+      renderConversationManager();
+    }
   }
 }
 async function loadSessions(retryChanged = true) {
   if (accountClearedExiting) return;
   if (chatState.sessionLoading) { chatState.sessionRefreshQueued = true; return; }
   chatState.sessionLoading = true;
+  if (startupActive || !chatState.messageSourceReady || accountUnavailable)
+    showStartup(chatState.currentAccount ? "messages" : "account", chatState.currentAccount ? "正在准备聊天记录…" : "正在连接微信并读取数据库…");
   let request = ++chatState.sessionRequest;
   let followup = null;
   try {
     const data = await api("/api/sessions");
     if (request !== chatState.sessionRequest || accountClearedExiting) return;
     if (typeof data.account !== "string" || !data.account || !Array.isArray(data.sessions)) throw new Error("Invalid sessions response");
+    if (window.desktopHost?.isSettingsWindow) {
+      const changedAccount = chatState.currentAccount !== data.account;
+      if (changedAccount) {
+        chatState.conversationSelectionEpoch++;
+        chatState.conversationSelectionBusy = false;
+        chatState.selectionLoadedAccount = null;
+        if (byId("conversationActionConfirm")?.open) byId("conversationActionConfirm").close("cancel");
+      }
+      await loadConversationSelection(data.account, request);
+      if (request !== chatState.sessionRequest || accountClearedExiting) return;
+      chatState.currentAccount = data.account;
+      chatState.messageSourceReady = data.messagesReady !== false;
+      chatState.self = data.self || null;
+      chatState.sessions = new Map(data.sessions.filter(item => item?.username).map(item => [item.username, item]));
+      accountUnavailable = false;
+      window.ModelTraces?.setScope(data.account, null, "settings");
+      accountCheckStatus(data.messagesReady === false ? "聊天记录正在准备中…" : "微信账号已就绪", data.messagesReady === false);
+      renderConversationManager();
+      if (changedAccount) void window.MediaSettings?.refresh?.();
+      return;
+    }
+    if (startupActive) showStartup("sessions", "正在整理会话列表…");
     const signature = JSON.stringify([data.self, data.sessions, data.account]);
     if (data.messagesReady === false) {
-      for (const key of portraitState.storedProfileSnapshots.keys()) {
-        try {
-          const scope = JSON.parse(key);
-          if (scope[0] === data.account && scope.length === 3) portraitState.profileSnapshotsRequireRefresh.add(key);
-        }
-        catch { }
-      }
       if (chatState.messageSourceReady || chatState.currentAccount !== data.account)
         resetAccountView("聊天记录尚未就绪", false);
       request = chatState.sessionRequest;
@@ -1213,20 +1080,24 @@ async function loadSessions(retryChanged = true) {
       for (const session of data.sessions) if (session?.username) chatState.sessions.set(session.username, session);
       chatState.sessionSignature = signature;
       chatState.currentUser = null;
+      window.ChatComposer?.setScope(chatState.currentAccount, null);
+      window.MessageAnalysis?.reset();
       byId("btnChatHistory").disabled = true;
-      window.Advisor?.onSessionChanged(chatState.currentAccount, null);
+      updateFriendButton();
+      window.PluginSlots?.onSessionChanged(chatState.currentAccount, null);
+      window.ExternalImportHost?.onSessionChanged(chatState.currentAccount, null);
+      window.ModelTraces?.setScope(chatState.currentAccount, null, chatState.view);
       chatState.messages = [];
-      labelState.results = {};
-      chatState.conversationMood = null;
       const preparingMessage = typeof data.preparation?.message === "string" && data.preparation.message.length <= 240
         ? data.preparation.message : "聊天记录尚未就绪，正在重试…";
       status(byId("chatMessages"), preparingMessage);
-      text("analysisStatus", "");
       switchView("chat");
       renderSessions();
       if (!byId("conversationManager").hidden) renderConversationManager();
-      completeStartup();
-      accountCheckStatus(data.preparation?.message ? preparingMessage : "账号已连接，聊天记录校验中", true);
+      // The directory is usable while message databases are still being prepared.
+      unlockStartupUi();
+      const preparing = !data.preparation || data.preparation.state === "preparing" || data.preparation.reason === "preparing";
+      showStartup("messages", preparingMessage, { retry: !preparing });
       return;
     }
     const wasPartial = !chatState.messageSourceReady;
@@ -1240,14 +1111,22 @@ async function loadSessions(retryChanged = true) {
     accountUnavailable = false;
     chatState.currentAccount = data.account;
     chatState.messageSourceReady = true;
-    window.Advisor?.onSessionChanged(chatState.currentAccount, chatState.currentUser);
+    announceFriendAccount("account", data.account);
+    window.PluginSlots?.onSessionChanged(chatState.currentAccount, chatState.currentUser, pluginFriendName(chatState.currentUser));
+    window.ExternalImportHost?.onSessionChanged(chatState.currentAccount, chatState.currentUser, pluginFriendName(chatState.currentUser));
+    window.ModelTraces?.setScope(chatState.currentAccount, chatState.currentUser, chatState.view);
     clearTimeout(startupAccountRetryTimer);
     startupAccountRetryTimer = null;
     const nextSessions = new Map();
     for (const session of data.sessions) if (session?.username) nextSessions.set(session.username, session);
+    let remembered = null;
+    try { remembered = localStorage.getItem(`last-conversation:${chatState.currentAccount}`); } catch {}
+    const preferredSession = () => chatState.selectedConversations.has(chatState.currentUser) && nextSessions.has(chatState.currentUser) ? chatState.currentUser :
+      chatState.selectedConversations.has(remembered) && nextSessions.has(remembered) ? remembered :
+      [...nextSessions.keys()].find(id => chatState.selectedConversations.has(id)) || null;
+    const selected = preferredSession();
     if (!wasPartial && signature === chatState.sessionSignature &&
-        [...nextSessions.values()].filter(session => chatState.selectedConversations.has(session.username))
-          .every(session => sessionWindowReady(data.account, session))) {
+        selected === chatState.currentUser && (!selected || sessionWindowReady(data.account, nextSessions.get(selected)))) {
       completeStartup();
       return;
     }
@@ -1265,40 +1144,60 @@ async function loadSessions(retryChanged = true) {
     }
     chatState.sessions.clear();
     for (const [user, session] of nextSessions) chatState.sessions.set(user, session);
+    window.ChatComposer?.setScope(chatState.currentAccount, chatState.currentUser, {
+      available: chatState.messageSourceReady && chatState.view === "chat", isGroup: chatState.sessions.get(chatState.currentUser)?.isGroup === true });
     chatState.sessionSignature = signature;
     pruneSessionCache(data.account, nextSessions);
     renderSessions();
     if (!byId("conversationManager").hidden) renderConversationManager();
     void trackNewConversations(data.account);
     byId("sessionList").scrollTop = scroll;
-    if (!await preloadSessionWindows(data.account, nextSessions, request)) return;
+    // First paint waits only for its selected conversation; other windows load when opened.
+    const firstWindow = selected ? new Map([[selected, nextSessions.get(selected)]]) : new Map();
+    if (!await preloadSessionWindows(data.account, firstWindow, request)) return;
     if (request !== chatState.sessionRequest || chatState.currentAccount !== data.account) return;
-    let remembered = null;
-    try { remembered = localStorage.getItem(`last-conversation:${chatState.currentAccount}`); } catch {}
-    const selected = chatState.selectedConversations.has(chatState.currentUser) && chatState.sessions.has(chatState.currentUser) ? chatState.currentUser :
-      chatState.selectedConversations.has(remembered) && chatState.sessions.has(remembered) ? remembered :
-      [...chatState.sessions.keys()].find(id => chatState.selectedConversations.has(id));
-    if (!selected) clearUnselectedConversation();
-    else if (selected !== chatState.currentUser) switchSession(selected, accountChanged);
+    // A click during the awaited read takes priority over the initial remembered choice.
+    const activeSelected = preferredSession();
+    if (!activeSelected) clearUnselectedConversation();
+    else if (activeSelected !== chatState.currentUser) switchSession(activeSelected, accountChanged);
     if (chatState.currentUser && chatState.sessions.has(chatState.currentUser)) text("chatTitle", chatState.sessions.get(chatState.currentUser).name || chatState.currentUser);
-    if (!accountChanged && chatState.currentUser && chatState.view === "persona") void loadProfile(portraitState.activeMember);
     completeStartup();
   } catch (error) {
     if (request !== chatState.sessionRequest) return;
+    if (window.desktopHost?.isSettingsWindow) {
+      if (accountChangedError(error) || accountUnavailableError(error)) {
+        chatState.conversationSelectionEpoch++;
+        chatState.conversationSelectionBusy = false;
+        if (byId("conversationActionConfirm")?.open) byId("conversationActionConfirm").close("cancel");
+        chatState.currentAccount = null;
+        chatState.selectionLoadedAccount = null;
+        chatState.sessions.clear();
+        chatState.selectedConversations.clear();
+        chatState.messageSourceReady = false;
+        accountUnavailable = true;
+        window.ModelTraces?.setScope(null, null, "settings");
+        void window.MediaSettings?.refresh?.();
+        renderConversationManager();
+      }
+      accountCheckStatus(error.preparation?.message || "微信账号暂不可用，请重试", true);
+      return;
+    }
     if (accountChangedError(error)) {
       resetAccountView("微信账号已变化，正在读取会话…");
       if (retryChanged !== false) followup = false;
       else showStartup("account", "微信账号已变化，请重试", { retry: true });
     } else if (accountUnavailableError(error)) {
       const reason = error.preparation?.message || "当前微信账号未就绪";
-      const scanFailed = ["keys_incomplete", "scan_limit", "process_read_denied"].includes(error.preparation?.reason);
-      const autoRetry = !scanFailed && startupActive && !startupAccountRetryUsed;
+      // Missing WeChat or an unconfirmed login needs an explicit instruction, not a loading message.
+      const preparing = error.preparation?.state === "preparing" || error.preparation?.reason === "preparing";
+      const requiresAction = !preparing && ["wechat_not_running", "active_account_unavailable", "keys_incomplete", "scan_limit", "process_read_denied"].includes(error.preparation?.reason);
+      const autoRetry = !requiresAction && startupActive && (preparing || !startupAccountRetryUsed);
       if (!accountUnavailable || chatState.currentAccount !== null || chatState.sessions.size) resetAccountView(reason);
       accountUnavailable = true;
-      status(byId("sessionList"), reason, () => { void loadSessions(); });
+      renderAccountUnavailable(error);
       if (autoRetry) {
         startupAccountRetryUsed = true;
-        showStartup("account", "正在重试连接微信…");
+        showStartup("account", preparing ? reason : "正在重试连接微信…");
         const attempt = startupAttempt;
         const pendingRequest = chatState.sessionRequest;
         startupAccountRetryTimer = setTimeout(() => {
@@ -1332,187 +1231,6 @@ async function loadSessions(retryChanged = true) {
     else if (queued) void loadSessions();
   }
 }
-function renderMood() {
-  const mood = chatState.conversationMood;
-  const moodLabel = displayEmotionLabel(mood);
-  const face = mood?.label ? window.Kaomoji.pick(mood, `${chatState.currentUser}:history:${mood.label}`) || String(mood.kaomoji || "").trim() : "";
-  byId("chatStatusPill").style.display = settingsState.settings.intent && mood?.label ? "inline-flex" : "none";
-  text("headerMoodLabel", chatState.sessions.get(chatState.currentUser)?.isGroup ? "群聊氛围" : "人物情绪");
-  text("headerMoodKaomoji", face || moodLabel);
-  byId("chatStatusPill").title = moodLabel ? `${moodLabel} · ${Number(mood.sampleCount) || 0} 条已分析文本` : "";
-}
-function rankedScores(values) {
-  if (!Array.isArray(values)) return [];
-  return values.map((item, index) => ({ item, index, probability: Number(item?.probability) }))
-    .filter(({ item, probability }) => item?.label && Number.isFinite(probability) && probability > 0 && probability <= 1)
-    .sort((left, right) => right.probability - left.probability || left.index - right.index);
-}
-function intentAlias(value) {
-  return String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
-}
-function displayEmotionLabel(item) {
-  for (const value of [item?.rawLabel, item?.id, item?.modelLabel, item?.label]) {
-    const display = labelState.emotionDisplayAliases.get(intentAlias(value));
-    if (display) return display;
-  }
-  return String(item?.label || item?.rawLabel || "").trim();
-}
-function rankedEmotionScores(values) {
-  return rankedScores(values).map(({ item, ...rank }) => ({
-    ...rank, item: { ...item, label: displayEmotionLabel(item) },
-  }));
-}
-const ROUTINE_MESSAGE_TEXT = /^(?:收到(?:了)?|明白(?:了)?|知道(?:了)?|完成了|搞定(?:了|啦)?|同意|确认|状态报告|告知事实|分享|闲聊|一般交流|好(?:的|呀|啊|了)?|行(?:的|呀|啊|了)?|嗯+)(?:[。！!，,~～\s]*)$/u;
-function displayedEmotion(values, messageText) {
-  if (ROUTINE_MESSAGE_TEXT.test(String(messageText || "").trim())) return [];
-  const hidden = new Set(["自然", "随和", "坦诚"]);
-  const scores = rankedEmotionScores(values).filter(({ item }) => !hidden.has(String(item.label)));
-  const top = scores[0];
-  if (!top || top.probability < 0.30) return [];
-  const second = scores[1];
-  if (second && top.probability - second.probability < 0.15) return [];
-  return [top];
-}
-function hasIntentContent(messageText) {
-  // Punctuation-only messages can carry tone or intent (for example “？” or
-  // “。。”). Treat every non-whitespace message as analyzable; the model and
-  // the existing evidence rules decide whether a label is warranted.
-  return String(messageText || "").trim().length > 0;
-}
-function isIncompleteFragment(messageText) {
-  return /^(?:这|那|我|你|你这|这个|那个)(?:就)?是[，,。！!…\s]*$/u.test(String(messageText || "").trim());
-}
-// Plain acknowledgements / status reports display blank unless the text turns or asks for
-// something. This is an explicit short-text rule, not a global label blacklist: a normal
-// message keeps its candidates, and only pure acknowledgement labels stay hideable.
-const PLAIN_ACK_TEXT = /^(?:嗯+|哦+|好(?:的|呀|啊|了|吧)?|行(?:的|呀|啊|了|吧)?|可以(?:的|呀|啊|吧)?|收到(?:了)?|明白(?:了)?|知道(?:了)?|搞定(?:了|啦)?|没问题|ok|okay)(?:[。！!，,~～\s]*)$/iu;
-const PLAIN_STATUS_TEXT = /^(?:已经)?(?:完成|做好|处理完|弄好|弄完|上传|提交|发送|到了|搞定)(?:了)?(?:[。！!，,~～\s]*)$/u;
-const PLAIN_ACTION_LABELS = new Set(["确认", "同意", "状态报告", "一般交流"]);
-// These are useful internal candidates, but ordinary messages must not expose them
-// as if they carried a meaningful social decision. A salient cue keeps real sharing,
-// questions, requests and decisions visible.
-const LOW_SIGNAL_INTENT_LABELS = new Set(["闲聊", "一般交流", "确认", "同意", "状态报告", "告知事实", "分享", "表达感受"]);
-const SALIENT_INTENT_CUE = /[？?]|帮我|请|能不能|可不可以|麻烦|要不要|一起|改天|下次|不行|不了|拒绝|不想|不愿|建议|因为|所以|解释|澄清|计划|准备|打算|邀请|邀约|改期|发给我|给你看|喜欢|在乎|抱歉|谢谢|求助|安慰|陪我|检查|查看|看看|确认一下|\bcheck\b/iu;
-const PLAIN_TURN = /[？?]|但是|不过|可是|其实|然而|而且|顺便|另外|请你|帮我|能不能|可不可以|麻烦|建议|要不要|一起/u;
-function plainAcknowledgementOnly(messageText, candidates) {
-  const text = String(messageText || "").trim();
-  if (!text || PLAIN_TURN.test(text)) return false;
-  if (!PLAIN_ACK_TEXT.test(text) && !PLAIN_STATUS_TEXT.test(text)) return false;
-  return candidates.length > 0 &&
-    candidates.every(item => PLAIN_ACTION_LABELS.has(String(item.label)));
-}
-function lowSignalIntentOnly(messageText, candidates) {
-  const text = String(messageText || "").trim();
-  return !!text && !SALIENT_INTENT_CUE.test(text) && candidates.length > 0 &&
-    candidates.every(item => LOW_SIGNAL_INTENT_LABELS.has(String(item.label)));
-}
-function displayedIntent(result, messageText) {
-  if (!hasIntentContent(messageText) || isIncompleteFragment(messageText)) return [];
-  const ranked = Array.isArray(result.intent) ? result.intent
-    .filter(item => typeof item?.rawLabel === "string" &&
-      Object.prototype.hasOwnProperty.call(GENERIC_INTENT_LABELS, item.rawLabel) &&
-      typeof item.probability === "number" && Number.isFinite(item.probability) &&
-      item.probability >= 0 && item.probability <= 1)
-    .sort((left, right) => right.probability - left.probability) : [];
-  const modelCandidates = ranked.map(item => ({
-    label: GENERIC_INTENT_LABELS[item.rawLabel], probability: item.probability,
-  }));
-  const grounded = result.groundedIntent;
-  const shown = grounded && Object.prototype.hasOwnProperty.call(GROUNDED_EVIDENCE, grounded.label) &&
-      GROUNDED_EVIDENCE[grounded.label].includes(grounded.evidenceKind)
-    ? [{ label: GENERIC_INTENT_LABELS[grounded.label], probability: null }]
-    : modelCandidates.length && modelCandidates[0].probability >= 0.50
-      ? [modelCandidates[0]] : [];
-  return plainAcknowledgementOnly(messageText, shown) || lowSignalIntentOnly(messageText, shown) ? [] : shown;
-}
-labelState.messageLabels = null;
-function messageLabelsApi() {
-  if (!labelState.messageLabels) {
-    labelState.messageLabels = window.MessageLabels.create({
-      element,
-    });
-  }
-  return labelState.messageLabels;
-}
-function appendScoreLine(container, label, scores, messageId, emotion = false) {
-  return messageLabelsApi().appendScoreLine(container, label, scores, messageId, emotion);
-}
-function appendIntentLine(container, candidates) {
-  return messageLabelsApi().appendIntentLine(container, candidates);
-}
-function messageInsightView(result, text) {
-  const emotionPicker = typeof displayedEmotion === "function" ? displayedEmotion : rankedEmotionScores;
-  return window.MessageInsightAdapters.localView(result, text, {
-    rankedEmotionScores, displayedEmotion: emotionPicker, displayedIntent, hasIntentContent, isIncompleteFragment,
-    labelSchema: CURRENT_LABEL_SCHEMA,
-  });
-}
-function clearInlineIntentPending() {
-  labelState.inlineIntentPending.clear();
-  labelState.inlineIntentJobId = null;
-}
-function startInlineIntentPending(window) {
-  for (const message of uncoveredMessages(window)) {
-    const id = String(message.id);
-    labelState.inlineIntentPending.set(id, message.text);
-  }
-  labelState.inlineIntentJobId = null;
-  refreshLabels();
-}
-function settleInlineIntentPending(job) {
-  if (!labelState.inlineIntentPending.size) return;
-  let changed = false;
-  const visible = new Map(chatState.messages.map(message => [String(message.id), message]));
-  const recentFinished = !!labelState.inlineIntentJobId && job?.recent?.id === labelState.inlineIntentJobId &&
-    ["done", "error"].includes(job.recent.status);
-  const jobFailed = job?.status === "error" && !["queued", "running"].includes(job.recent?.status);
-  const terminal = recentFinished || jobFailed;
-  for (const [id, pendingText] of labelState.inlineIntentPending) {
-    const state = fineMessageResult(labelState.results[id]) ? labelState.results[id].state : null;
-    if (terminal || state === "skipped" ||
-        (state === "done" && labelState.results[id]?.labelSchema === CURRENT_LABEL_SCHEMA) ||
-        visible.get(id)?.text !== pendingText) {
-      labelState.inlineIntentPending.delete(id);
-      changed = true;
-    }
-  }
-  if (terminal || !labelState.inlineIntentPending.size) labelState.inlineIntentJobId = null;
-  if (changed) refreshLabels();
-}
-function updateLabel(message, node) {
-  const wrap = node.querySelector(".msg-content-wrap");
-  if (!settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode === "api") {
-    updateApiInsightLabel(message, node, wrap);
-    return;
-  }
-  const result = labelState.results[message.id];
-  const eligible = settingsState.settings.intent && message.side === "other" && message.kind === "text" &&
-    typeof message.text === "string" && !!message.text.trim() && !isIncompleteFragment(message.text);
-  const pendingText = labelState.inlineIntentPending.get(String(message.id));
-  const pending = eligible && !chatState.historyState && pendingText === message.text &&
-    !(fineMessageResult(result) && (result.state === "skipped" ||
-      result.state === "done" && result.labelSchema === CURRENT_LABEL_SCHEMA));
-  const signature = pending ? "local:pending" : eligible && fineMessageResult(result) && result.state === "done" ?
-    `local:${JSON.stringify([result.emotion, result.intentBroad, result.intent, result.groundedIntent,
-      result.labelSchema, labelState.catalogReady, labelState.catalogLabelRevision])}` : "";
-  if (node.dataset.analysisSignature === signature) return;
-  const revealing = signature !== "local:pending" && !!wrap.querySelector(".inline-intent-pending");
-  node.querySelector(".msg-avatar-column .msg-mood")?.remove();
-  wrap.querySelector(".inline-expression-row")?.remove();
-  wrap.querySelector(".inline-intent-row")?.remove();
-  wrap.querySelector(".inline-intent-pending")?.remove();
-  node.dataset.analysisSignature = signature;
-  if (!signature) return;
-  if (signature === "local:pending") {
-    wrap.appendChild(element("div", "inline-intent-pending", "分析中"));
-    return;
-  }
-  const row = messageLabelsApi().render(messageInsightView(result, message.text), message.id);
-  if (row.childNodes.length) {
-    if (revealing) row.classList.add("inline-intent-revealed");
-    wrap.appendChild(row);
-  }
-}
 function messageNode(message) {
   const session = chatState.sessions.get(chatState.currentUser);
   const item = element("div", `msg-item ${message.side === "self" ? "outgoing" : "incoming"}`);
@@ -1522,10 +1240,16 @@ function messageNode(message) {
   item.appendChild(avatarColumn);
   const wrap = element("div", "msg-content-wrap");
   if (session?.isGroup && message.side !== "self") wrap.appendChild(element("span", "msg-sender", message.senderName || message.senderId || "未知成员"));
-  wrap.appendChild(element("div", "msg-bubble", message.kind === "image" ? "[图片]" :
+  // Know Your Friends, 2026-10-10: local media bubbles keep full bytes behind a user gesture.
+  const media = window.ChatMedia?.render(message,
+    { account: chatState.currentAccount, user: chatState.currentUser, generation: chatState.generation },
+    scope => scope.account === chatState.currentAccount && scope.user === chatState.currentUser &&
+      scope.generation === chatState.generation);
+  wrap.appendChild(media || window.MessageLinks?.render(message) || element("div", "msg-bubble", message.kind === "image" ? "[图片]" :
     message.kind === "text" ? message.text || "" : message.text || "[不支持的消息]"));
   item.appendChild(wrap);
-  updateLabel(message, item);
+  window.MessageAnalysis?.attach(message, item);
+  window.MessageMenu?.attach(item, message);
   return item;
 }
 function renderMessages(next, restoreScroll = null, historyAnchor = null) {
@@ -1534,13 +1258,17 @@ function renderMessages(next, restoreScroll = null, historyAnchor = null) {
   const oldIds = chatState.messages.map(message => String(message.id));
   const nextIds = next.map(message => String(message.id));
   const appendOnly = oldIds.length && oldIds.length <= nextIds.length && oldIds.every((id, index) => id === nextIds[index] && JSON.stringify(chatState.messages[index]) === JSON.stringify(next[index])) && container.querySelectorAll(".msg-item").length === oldIds.length;
-  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80 && !window.MessageAnalysis?.isReading();
   chatState.followLatest = historyAnchor ? false : restoreScroll ? restoreScroll.followLatest : atBottom || !oldIds.length;
   const scroll = container.scrollTop;
   const anchor = !atBottom && !appendOnly ? [...container.querySelectorAll(".msg-item")].find(node => node.getBoundingClientRect().bottom >= container.getBoundingClientRect().top) : null;
   const anchorId = anchor?.dataset.messageId;
   const anchorOffset = anchor ? anchor.getBoundingClientRect().top - container.getBoundingClientRect().top : 0;
   const start = appendOnly ? oldIds.length : 0;
+  // Retain unchanged bubbles in place so polling cannot detach selection, focus or media.
+  const previousById = new Map(previousMessages.map(message => [String(message.id), message]));
+  const retained = new Map([...container.querySelectorAll(".msg-item")].map(node => [node.dataset.messageId, node]));
+  const desired = [];
   const fragment = document.createDocumentFragment();
   try {
     chatState.messages = next;
@@ -1550,19 +1278,26 @@ function renderMessages(next, restoreScroll = null, historyAnchor = null) {
       if (!previous || Number(message.time) - Number(previous.time) > 300000) {
         const row = element("div", "msg-time-row");
         row.appendChild(element("span", "msg-time", time(message.time)));
-        fragment.appendChild(row);
+        desired.push(row);
       }
-      fragment.appendChild(messageNode(message));
+      const existing = retained.get(String(message.id));
+      desired.push(existing && JSON.stringify(previousById.get(String(message.id))) === JSON.stringify(message)
+        ? existing : messageNode(message));
     }
   } catch (error) {
     chatState.messages = previousMessages;
     throw error;
   }
-  if (!byId("replyPrediction").hidden) clearReplyPrediction();
-  updatePredictReplyAvailability();
   if (!next.length) status(container, "暂无消息");
-  else if (appendOnly) container.appendChild(fragment);
-  else container.replaceChildren(fragment);
+  else if (appendOnly) { fragment.append(...desired); container.appendChild(fragment); }
+  else {
+    const keep = new Set(desired);
+    for (const child of [...container.children]) if (!keep.has(child)) child.remove();
+    for (let index = 0; index < desired.length; index++) {
+      if (container.children[index] !== desired[index]) container.insertBefore(desired[index], container.children[index] || null);
+    }
+  }
+  window.MessageAnalysis?.sync(next);
   if (next.length && historyAnchor) {
     const anchor = [...container.querySelectorAll(".msg-item")].find(node => node.dataset.messageId === historyAnchor.id);
     if (anchor) container.scrollTop += anchor.getBoundingClientRect().top - container.getBoundingClientRect().top - historyAnchor.top;
@@ -1572,7 +1307,7 @@ function renderMessages(next, restoreScroll = null, historyAnchor = null) {
     const user = chatState.currentUser;
     requestAnimationFrame(() => {
       if (token !== chatState.generation || user !== chatState.currentUser || chatState.view !== "chat") return;
-      container.scrollTop = restoreScroll.followLatest ? container.scrollHeight : restoreScroll.scrollTop;
+      container.scrollTop = restoreScroll.followLatest && !window.MessageAnalysis?.isReading() ? container.scrollHeight : restoreScroll.scrollTop;
       chatState.lastChatScrollTop = container.scrollTop;
     });
   } else if (next.length && (atBottom || !oldIds.length)) scrollToLatest();
@@ -1580,24 +1315,15 @@ function renderMessages(next, restoreScroll = null, historyAnchor = null) {
     const replacement = [...container.querySelectorAll(".msg-item")].find(node => node.dataset.messageId === anchorId);
     container.scrollTop = replacement ? scroll + replacement.getBoundingClientRect().top - container.getBoundingClientRect().top - anchorOffset : scroll;
   } else container.scrollTop = scroll;
-  renderMood();
+  chatState.lastChatScrollTop = container.scrollTop;
   updateHistoryNavigation();
-  ensureApiInsights();
 }
 function scrollToLatest() {
+  if (window.MessageAnalysis?.isReading()) return;
   chatState.followLatest = true;
   const token = chatState.generation;
   const user = chatState.currentUser;
-  requestAnimationFrame(() => { if (chatState.view === "chat" && token === chatState.generation && user === chatState.currentUser) { const container = byId("chatMessages"); container.scrollTop = container.scrollHeight; } });
-}
-function refreshLabels() {
-  const container = byId("chatMessages");
-  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
-  const nodes = new Map([...byId("chatMessages").querySelectorAll(".msg-item")].map(node => [node.dataset.messageId, node]));
-  for (const message of chatState.messages) if (nodes.has(String(message.id))) updateLabel(message, nodes.get(String(message.id)));
-  if (!byId("replyPrediction").hidden) placeReplyPrediction(false);
-  if (atBottom && !chatState.historyState) scrollToLatest();
-  renderMood();
+  requestAnimationFrame(() => { if (chatState.view === "chat" && token === chatState.generation && user === chatState.currentUser && !window.MessageAnalysis?.isReading()) { const container = byId("chatMessages"); container.scrollTop = container.scrollHeight; chatState.lastChatScrollTop = container.scrollTop; } });
 }
 function historyAnchor(fromEnd = false) {
   const container = byId("chatMessages");
@@ -1613,39 +1339,122 @@ function updateHistoryNavigation() {
   const firstCursor = chatState.messages[0]?.historyCursor;
   const state = chatState.historyState;
   const container = byId("chatMessages");
-  const atTop = container.scrollTop <= 80;
-  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 80;
-  byId("historyNavigation").hidden = !chatState.currentUser || !(firstCursor || state);
-  byId("btnHistoryEarlier").hidden = !firstCursor || state?.hasMoreBefore === false ||
-    (!state && chatState.currentHasMoreBefore === false);
-  byId("btnHistoryEarlier").disabled = !!chatState.historyController || !atTop;
-  byId("btnHistoryEarlier").title = atTop ? "" : "滚动到顶部后加载";
-  byId("btnHistoryNewer").hidden = !state?.hasMoreAfter;
-  byId("btnHistoryNewer").disabled = !!chatState.historyController || !atBottom;
-  byId("btnHistoryNewer").title = atBottom ? "" : "滚动到底部后加载";
+  const atTop = container.scrollTop <= historyLoadDistance;
+  const message = chatState.historyController ? "读取中…" : state?.error ||
+    (atTop && (state?.hasMoreBefore === false || (!state && firstCursor && chatState.currentHasMoreBefore === false)) ? "已到本机最早消息" : "");
+  byId("historyNavigation").hidden = !chatState.currentUser || !message;
+  byId("btnHistoryRetry").hidden = !state?.error;
+  byId("btnHistoryRetry").disabled = !!chatState.historyController;
+  byId("historyNavigation").classList.toggle("at-bottom", chatState.historyDirection === "newer");
   byId("btnReturnLatest").hidden = !state;
-  text("historyNavStatus", chatState.historyController ? "读取中…" : state?.error || state?.notice ||
-    (!state && firstCursor && chatState.currentHasMoreBefore === false ? "已到本机最早消息" : ""));
+  text("historyNavStatus", message);
+  if (!chatState.historyPrefetch && !chatState.historyPrefetchTimer && !chatState.historyController && !state?.error)
+    scheduleHistoryPrefetch();
 }
 function cancelHistoryRequest() {
   chatState.historyRequest++;
   chatState.historyController?.abort();
   chatState.historyController = null;
+  chatState.historyPrefetch?.controller.abort();
+  chatState.historyPrefetch = null;
+  clearTimeout(chatState.historyPrefetchTimer);
+  chatState.historyPrefetchTimer = null;
+  if (chatState.historyScrollFrame != null) cancelAnimationFrame(chatState.historyScrollFrame);
+  chatState.historyScrollFrame = null;
+  chatState.historyDirection = null;
+}
+function historyPageDescriptor(direction) {
+  if (!chatState.currentAccount || !chatState.currentUser || !chatState.messages.length) return null;
+  const state = chatState.historyState;
+  if (direction === "older" && (state?.hasMoreBefore === false || (!state && chatState.currentHasMoreBefore === false))) return null;
+  if (direction === "newer" && !state?.hasMoreAfter) return null;
+  const cursor = direction === "older" ? state?.beforeCursor || chatState.messages[0]?.historyCursor :
+    state?.afterCursor || chatState.messages.at(-1)?.historyCursor;
+  if (!cursor) return null;
+  const account = chatState.currentAccount, user = chatState.currentUser, generation = chatState.generation;
+  return { account, user, generation, direction, cursor, key: JSON.stringify([account, user, generation, direction, cursor]) };
+}
+function prefetchHistory(direction = "older") {
+  const page = historyPageDescriptor(direction);
+  if (!page) return null;
+  if (chatState.historyPrefetch?.key === page.key) return chatState.historyPrefetch;
+  if (chatState.historyController) return null;
+  chatState.historyPrefetch?.controller.abort();
+  const entry = { ...page, controller: new AbortController(), data: null, error: null };
+  chatState.historyPrefetch = entry;
+  entry.promise = (async () => {
+    let cursor = page.cursor, data;
+    // Skip bounded runs of non-displayable rows without monopolizing the source.
+    for (let skipped = 0; skipped < 4; skipped++) {
+      data = await api(historyUrl(page.account, page.user, direction === "older" ? "before" : "after", cursor), {}, entry.controller.signal);
+      if (entry.controller.signal.aborted) throw new DOMException("History cancelled", "AbortError");
+      historyResponseValid(data, page.account, page.user);
+      const more = direction === "older" ? data.hasMoreBefore : data.hasMoreAfter;
+      if (more && (!data.nextCursor || data.nextCursor === cursor)) throw new Error("History cursor did not advance");
+      if (data.messages.length || !more) break;
+      cursor = data.nextCursor;
+    }
+    entry.data = data;
+    return data;
+  })().catch(error => { entry.error = error; return null; });
+  return entry;
+}
+function scheduleHistoryPrefetch(direction = "older") {
+  clearTimeout(chatState.historyPrefetchTimer);
+  chatState.historyPrefetchTimer = setTimeout(() => {
+    chatState.historyPrefetchTimer = null;
+    if (chatState.view !== "chat" || document.hidden || chatState.historyController || chatState.historyState?.error) return;
+    prefetchHistory(direction);
+  }, 300);
+}
+function maybeLoadHistory(direction) {
+  if (chatState.view !== "chat" || chatState.historyController || chatState.historyState?.error) return;
+  const container = byId("chatMessages");
+  const distance = direction === "older" ? container.scrollTop : container.scrollHeight - container.scrollTop - container.clientHeight;
+  if (direction === "newer" && chatState.historyState && !chatState.historyState.hasMoreAfter && distance <= 2) {
+    returnToLatest();
+    return;
+  }
+  if (!historyPageDescriptor(direction)) return;
+  if (distance <= historyLoadDistance) void (direction === "older" ? loadOlderHistory() : loadNewerHistory());
+  else if (distance <= historyPrefetchDistance) scheduleHistoryPrefetch(direction);
+}
+function queueHistoryScroll(direction) {
+  if (chatState.historyScrollFrame != null) cancelAnimationFrame(chatState.historyScrollFrame);
+  chatState.historyScrollFrame = requestAnimationFrame(() => {
+    chatState.historyScrollFrame = null;
+    maybeLoadHistory(direction);
+  });
+}
+function retryHistory() {
+  const direction = chatState.historyState?.errorDirection || "older";
+  if (!chatState.historyState?.error || chatState.historyController) return;
+  chatState.historyPrefetch?.controller.abort();
+  chatState.historyPrefetch = null;
+  chatState.historyState.error = "";
+  void (direction === "older" ? loadOlderHistory() : loadNewerHistory());
 }
 function enterHistoryView() {
   if (chatState.historyState) return;
-  clearTimeout(labelState.selectedAnalysisTimer);
-  labelState.selectedAnalysisTimer = null;
   chatState.historyState = { beforeCursor: chatState.messages[0]?.historyCursor || null, hasMoreBefore: true, hasMoreAfter: false, error: "" };
   chatState.messageRequest++;
   chatState.messagePending = false;
   chatState.messageRefreshQueued = false;
-  portraitState.analysisGeneration++;
   chatState.followLatest = false;
-  clearInlineIntentPending();
-  refreshLabels();
   updateHistoryNavigation();
-  ensureApiInsights();
+}
+function preserveAnalysisReading(next) {
+  const target = window.MessageAnalysis?.openedMessageId?.();
+  if (!target || chatState.historyState || !chatState.messages.some(message => String(message.id) === target) ||
+      next.some(message => String(message.id) === target)) return false;
+  // A sliding latest-message window must not evict the result the user is reading.
+  const afterCursor = chatState.messages.at(-1)?.historyCursor || null;
+  enterHistoryView();
+  chatState.historyState.afterCursor = afterCursor;
+  chatState.historyState.hasMoreAfter = true;
+  chatState.historyState.notice = "新消息已到达，当前保留正在查看的消息";
+  updateHistoryNavigation();
+  return true;
 }
 function historyResponseValid(data, account, user) {
   if (data?.account !== account || data?.user !== user || !Array.isArray(data.messages)) throw new Error("Invalid history response");
@@ -1657,80 +1466,92 @@ function historyUrl(account, user, key, cursor) {
 }
 async function loadOlderHistory() {
   if (!chatState.currentAccount || !chatState.currentUser || chatState.historyController || chatState.historyState?.hasMoreBefore === false) return;
-  if (byId("chatMessages").scrollTop > 80) return;
+  if (byId("chatMessages").scrollTop > historyLoadDistance) return;
   const initialCursor = chatState.historyState?.beforeCursor || chatState.messages[0]?.historyCursor;
   if (!initialCursor) return;
+  const entry = prefetchHistory("older");
+  if (!entry) return;
   enterHistoryView();
   const account = chatState.currentAccount, user = chatState.currentUser, token = chatState.generation, request = ++chatState.historyRequest;
-  const controller = new AbortController();
+  const controller = entry.controller;
   chatState.historyController = controller;
+  chatState.historyDirection = "older";
   chatState.historyState.error = "";
   updateHistoryNavigation();
+  let movedAway = false;
   try {
-    let before = initialCursor, data;
-    for (;;) {
-      data = await api(historyUrl(account, user, "before", before), {}, controller.signal);
-      if (request !== chatState.historyRequest || token !== chatState.generation || account !== chatState.currentAccount || user !== chatState.currentUser) return;
-      historyResponseValid(data, account, user);
-      if (data.messages.length || !data.hasMoreBefore) break;
-      if (!data.nextCursor || data.nextCursor === before) throw new Error("History cursor did not advance");
-      before = data.nextCursor;
-    }
+    const data = await entry.promise;
+    if (request !== chatState.historyRequest || token !== chatState.generation || account !== chatState.currentAccount || user !== chatState.currentUser) return;
+    if (!data) throw entry.error;
+    // The reader may have moved away while this page was in flight; keep it prefetched.
+    if (byId("chatMessages").scrollTop > historyLoadDistance) { movedAway = true; return; }
     const existing = new Set(chatState.messages.map(message => String(message.id)));
     const older = data.messages.filter(message => !existing.has(String(message.id)));
     const combined = [...older, ...chatState.messages];
     const removedFromEnd = Math.max(0, combined.length - historyWindowLimit);
     const next = combined.slice(0, historyWindowLimit);
     const anchor = historyAnchor();
-    labelState.results = visibleResults({ ...labelState.results, ...(data.results || {}) }, next);
-    chatState.historyState.beforeCursor = data.nextCursor || older[0]?.historyCursor || before;
+    chatState.historyState.beforeCursor = data.nextCursor || older[0]?.historyCursor || initialCursor;
     chatState.historyState.hasMoreBefore = !!data.hasMoreBefore;
     chatState.historyState.hasMoreAfter ||= removedFromEnd > 0;
+    if (removedFromEnd) chatState.historyState.afterCursor = next.at(-1)?.historyCursor;
     chatState.historyState.notice = data.hasMoreBefore ? "" : "已到本机最早消息";
     if (older.length) renderMessages(next, null, anchor);
+    chatState.historyPrefetch = null;
   } catch (error) {
-    if (error.name !== "AbortError" && request === chatState.historyRequest && token === chatState.generation) chatState.historyState.error = "读取失败，请重试";
+    if (error.name !== "AbortError" && request === chatState.historyRequest && token === chatState.generation) {
+      chatState.historyState.error = "读取失败";
+      chatState.historyState.errorDirection = "older";
+    }
   } finally {
     if (request === chatState.historyRequest) {
       chatState.historyController = null;
       updateHistoryNavigation();
+      if (!chatState.historyState?.error) scheduleHistoryPrefetch("older");
+      // A user can reach the live edge while the older-page request is pending.
+      if (movedAway) maybeLoadHistory("newer");
     }
   }
 }
 async function loadNewerHistory() {
   if (!chatState.historyState?.hasMoreAfter || chatState.historyController || !chatState.messages.length) return;
   const container = byId("chatMessages");
-  if (container.scrollHeight - container.scrollTop - container.clientHeight > 80) return;
-  const marker = chatState.messages.at(-1)?.historyCursor;
-  if (!marker) return;
+  if (container.scrollHeight - container.scrollTop - container.clientHeight > historyLoadDistance) return;
+  const entry = prefetchHistory("newer");
+  if (!entry) return;
   const account = chatState.currentAccount, user = chatState.currentUser, token = chatState.generation, request = ++chatState.historyRequest;
-  const controller = new AbortController();
+  const controller = entry.controller;
   chatState.historyController = controller;
+  chatState.historyDirection = "newer";
   chatState.historyState.error = "";
   updateHistoryNavigation();
   try {
-    const data = await api(historyUrl(account, user, "around", marker), {}, controller.signal);
+    const data = await entry.promise;
     if (request !== chatState.historyRequest || token !== chatState.generation || account !== chatState.currentAccount || user !== chatState.currentUser) return;
-    historyResponseValid(data, account, user);
-    const position = data.messages.findIndex(message => message.historyCursor === marker);
-    if (position < 0) throw new Error("History anchor missing");
+    if (!data) throw entry.error;
+    if (container.scrollHeight - container.scrollTop - container.clientHeight > historyLoadDistance) return;
     const existing = new Set(chatState.messages.map(message => String(message.id)));
-    const newer = data.messages.slice(position + 1).filter(message => !existing.has(String(message.id)));
+    const newer = data.messages.filter(message => !existing.has(String(message.id)));
     const combined = [...chatState.messages, ...newer];
     const removedFromStart = Math.max(0, combined.length - historyWindowLimit);
     const next = combined.slice(removedFromStart);
     const anchor = historyAnchor(true);
-    labelState.results = visibleResults({ ...labelState.results, ...(data.results || {}) }, next);
     chatState.historyState.hasMoreBefore ||= removedFromStart > 0;
     chatState.historyState.beforeCursor = next[0]?.historyCursor || chatState.historyState.beforeCursor;
-    chatState.historyState.hasMoreAfter = !!data.hasMoreAfter && newer.length > 0;
+    chatState.historyState.afterCursor = data.nextCursor || next.at(-1)?.historyCursor;
+    chatState.historyState.hasMoreAfter = !!data.hasMoreAfter;
     if (newer.length) renderMessages(next, null, anchor);
+    chatState.historyPrefetch = null;
   } catch (error) {
-    if (error.name !== "AbortError" && request === chatState.historyRequest && token === chatState.generation) chatState.historyState.error = "读取失败，请重试";
+    if (error.name !== "AbortError" && request === chatState.historyRequest && token === chatState.generation) {
+      chatState.historyState.error = "读取失败";
+      chatState.historyState.errorDirection = "newer";
+    }
   } finally {
     if (request === chatState.historyRequest) {
       chatState.historyController = null;
       updateHistoryNavigation();
+      if (!chatState.historyState?.error) scheduleHistoryPrefetch("newer");
     }
   }
 }
@@ -1752,7 +1573,6 @@ async function jumpToHistory(cursor, messageId) {
     if (!target) throw new Error("History target missing");
     chatState.historyState = { beforeCursor: data.nextCursor || data.messages[0]?.historyCursor || null,
       hasMoreBefore: !!data.hasMoreBefore, hasMoreAfter: !!data.hasMoreAfter, error: "" };
-    labelState.results = visibleResults(data.results || {}, data.messages);
     renderMessages(data.messages, null, { id: String(messageId), top: byId("chatMessages").clientHeight / 2 });
     const hit = [...byId("chatMessages").querySelectorAll(".msg-item")].find(node => node.dataset.messageId === String(messageId));
     hit?.classList.add("history-hit");
@@ -1772,10 +1592,10 @@ async function jumpToHistory(cursor, messageId) {
 }
 function returnToLatest() {
   if (!chatState.historyState) return;
+  window.MessageAnalysis?.closeReading?.();
   cancelHistoryRequest();
   chatState.historyState = null;
   const cached = chatState.sessionCache.get(sessionCacheKey(chatState.currentAccount, chatState.currentUser));
-  labelState.results = visibleResults(cached?.results || {}, cached?.messages || []);
   chatState.conversationMood = cached?.mood || null;
   if (Array.isArray(cached?.messages)) renderMessages(cached.messages, { followLatest: true, scrollTop: 0 });
   else status(byId("chatMessages"), "正在读取消息…");
@@ -1783,354 +1603,49 @@ function returnToLatest() {
   updateHistoryNavigation();
   void loadMessages(chatState.generation, !Array.isArray(cached?.messages));
 }
-function cancelHistorySearch(showCancelled = false) {
-  chatState.historySearchRequest++;
-  chatState.historySearchController?.abort();
-  chatState.historySearchController = null;
-  chatState.historySearchPending = false;
-  byId("btnRunHistorySearch").disabled = false;
-  byId("btnCancelHistorySearch").hidden = true;
-  if (showCancelled) text("historySearchStatus", "已取消");
+let historyBrowser = null;
+let historyWindowRequest = 0;
+function cancelHistorySearch() {
+  historyBrowser?.cancel();
 }
 function closeHistorySearch() {
-  cancelHistorySearch();
-  byId("historySearchPanel").hidden = true;
+  historyWindowRequest++;
+  historyBrowser?.destroy();
+  historyBrowser = null;
+  const dialog = byId("historySearchPanel");
+  if (dialog?.open) dialog.close();
   byId("btnChatHistory").setAttribute("aria-expanded", "false");
 }
 function resetHistorySearch() {
   closeHistorySearch();
-  byId("historyKeyword").value = "";
-  byId("historyDate").value = "";
-  byId("historySearchResults").replaceChildren();
-  text("historySearchStatus", "");
-  byId("btnHistoryPrevResults").hidden = true;
-  byId("btnHistoryNextResults").hidden = true;
-  chatState.historySearchPage = 0;
-  chatState.historySearchPageStarts = [null];
-  chatState.historySearchQuery = { q: "", date: "" };
 }
-function openHistorySearch() {
+async function openHistorySearch() {
   if (!chatState.currentUser || !chatState.currentAccount) { toast("请先选择会话"); return; }
-  byId("historySearchPanel").hidden = false;
+  const session = chatState.sessions.get(chatState.currentUser);
+  const scope = { account: chatState.currentAccount, user: chatState.currentUser,
+    name: String(session?.name || chatState.currentUser).slice(0, 128), theme: settingsState.settings.theme };
+  if (typeof window.desktopHost?.openHistoryWindow === "function") {
+    const request = ++historyWindowRequest;
+    try {
+      const opened = await window.desktopHost.openHistoryWindow(scope);
+      if (request === historyWindowRequest && opened !== true) toast("聊天记录窗口未能打开");
+    } catch { if (request === historyWindowRequest) toast("聊天记录窗口未能打开"); }
+    return;
+  }
+  const dialog = byId("historySearchPanel");
+  if (dialog.open) { closeHistorySearch(); return; }
+  dialog.showModal();
   byId("btnChatHistory").setAttribute("aria-expanded", "true");
-  byId("historyKeyword").focus();
-}
-function renderHistorySearchResults(items, pageIndex, hasMore) {
-  const container = byId("historySearchResults");
-  container.replaceChildren();
-  for (const message of items) {
-    if (!message?.historyCursor) continue;
-    const button = element("button", "history-result");
-    button.type = "button";
-    const sender = message.side === "self" ? "我" : message.senderName || message.senderId || chatState.sessions.get(chatState.currentUser)?.name || "对方";
-    button.appendChild(element("span", "history-result-meta", `${sender} · ${time(message.time)}`));
-    button.appendChild(element("span", "history-result-text", message.text || "[非文字消息]"));
-    button.addEventListener("click", () => {
-      const cursor = message.historyCursor, id = message.id;
-      closeHistorySearch();
-      void jumpToHistory(cursor, id);
-    });
-    container.appendChild(button);
-  }
-  chatState.historySearchPage = pageIndex;
-  byId("btnHistoryPrevResults").hidden = pageIndex === 0;
-  byId("btnHistoryNextResults").hidden = !hasMore;
-  text("historySearchStatus", items.length ? `第 ${pageIndex + 1} 页` : "没有找到记录");
-  container.scrollTop = 0;
-}
-async function loadHistorySearchPage(pageIndex) {
-  const cursor = chatState.historySearchPageStarts[pageIndex];
-  if (pageIndex > 0 && !cursor || chatState.historySearchPending || !chatState.currentAccount || !chatState.currentUser) return;
-  cancelHistorySearch();
-  const account = chatState.currentAccount, user = chatState.currentUser, token = chatState.generation, request = ++chatState.historySearchRequest;
-  const controller = new AbortController();
-  chatState.historySearchController = controller;
-  chatState.historySearchPending = true;
-  byId("btnRunHistorySearch").disabled = true;
-  byId("btnCancelHistorySearch").hidden = false;
-  byId("btnHistoryPrevResults").hidden = true;
-  byId("btnHistoryNextResults").hidden = true;
-  text("historySearchStatus", "搜索中…");
-  try {
-    const found = [];
-    let before = cursor || null, hasMore = true;
-    while (!found.length && hasMore) {
-      const params = new URLSearchParams({ account, user, limit: String(50 - found.length) });
-      if (chatState.historySearchQuery.q) params.set("q", chatState.historySearchQuery.q);
-      if (chatState.historySearchQuery.date) params.set("date", chatState.historySearchQuery.date);
-      if (before) params.set("before", before);
-      const data = await api(`/api/history/search?${params}`, {}, controller.signal);
-      if (request !== chatState.historySearchRequest || token !== chatState.generation || account !== chatState.currentAccount || user !== chatState.currentUser) return;
-      if (data.account !== account || data.user !== user || !Array.isArray(data.messages)) throw new Error("Invalid search response");
-      found.push(...data.messages);
-      hasMore = !!data.hasMore;
-      if (hasMore && (!data.nextCursor || data.nextCursor === before)) throw new Error("Search cursor did not advance");
-      before = data.nextCursor || null;
-    }
-    chatState.historySearchPageStarts[pageIndex + 1] = before;
-    renderHistorySearchResults(found.slice(0, 50), pageIndex, hasMore);
-  } catch (error) {
-    if (error.name !== "AbortError" && request === chatState.historySearchRequest && token === chatState.generation) text("historySearchStatus", "搜索失败，请重试");
-  } finally {
-    if (request === chatState.historySearchRequest) {
-      chatState.historySearchController = null;
-      chatState.historySearchPending = false;
-      byId("btnRunHistorySearch").disabled = false;
-      byId("btnCancelHistorySearch").hidden = true;
-    }
-  }
-}
-function startHistorySearch() {
-  const q = byId("historyKeyword").value.trim();
-  const date = byId("historyDate").value;
-  if (!q && !date) { text("historySearchStatus", "输入关键词或选择日期"); return; }
-  cancelHistorySearch();
-  chatState.historySearchQuery = { q, date };
-  chatState.historySearchPageStarts = [null];
-  chatState.historySearchPage = 0;
-  byId("historySearchResults").replaceChildren();
-  void loadHistorySearchPage(0);
-}
-function renderJob(job, settlePending = true) {
-  if (!job) return;
-  portraitState.currentAnalysisJob = job;
-  if (job.recent) labelState.currentRecentJob = job.recent;
-  if (settlePending) settleInlineIntentPending(job);
-  if (job.status === "error" && job.requested?.mode !== "recent") portraitState.incrementalFailed = true;
-  if (!labelState.manualRecentAwaitingPost) {
-    if (job.recent?.status === "error") labelState.recentFailed = true;
-    else if ((job.recent?.status === "done" || !job.recent && job.status === "done") && !uncoveredMessages().length) labelState.recentFailed = false;
-  }
-  renderRecentAction(job);
-  const retry = portraitState.incrementalFailed || usingLocalFine() && labelState.recentFailed;
-  byId("btnRetryAnalysis").hidden = !retry;
-  byId("btnRetryProfile").hidden = !portraitState.incrementalFailed;
-  text("analysisStatus", "");
-  byId("analysisStatus").title = "";
-  renderApiInsightStatus();
-  if (retry && usingLocalFine()) text("analysisStatus", "会话分析未完成，可重试或重置");
-  updateProfileProgress();
-}
-function setIntentActionState(state) {
-  if (labelState.intentActionState === state && state !== "idle") return;
-  labelState.intentActionState = state;
-  clearTimeout(labelState.intentFeedbackTimer);
-  const button = byId("btnToggleIntent");
-  button.textContent = !settingsState.settings.intent ? "意图识别" : {
-    idle: "意图识别", submitting: "正在提交…", queued: "识别排队中",
-    running: "识别中…", done: "识别完成", error: "识别失败 · 重试"
-  }[state];
-  button.dataset.state = settingsState.settings.intent ? state : "idle";
-  if (settingsState.settings.intent && ["submitting", "queued", "running"].includes(state)) button.setAttribute("aria-busy", "true");
-  else button.removeAttribute("aria-busy");
-  if (state === "done") labelState.intentFeedbackTimer = setTimeout(() => {
-    if (labelState.intentActionState === "done") setIntentActionState("idle");
-  }, 2300);
-}
-function renderRecentAction(job) {
-  if (!usingLocalFine()) return;
-  if (!settingsState.settings.intent || labelState.intentActionState === "idle" || labelState.manualRecentAwaitingPost) return;
-  if (!job?.recent || labelState.manualRecentJobId && job.recent.id !== labelState.manualRecentJobId) return;
-  const status = job.recent.status;
-  if (["queued", "running", "done", "error"].includes(status)) setIntentActionState(status);
-}
-function submitManualRecent() {
-  if (settingsState.suppressedLocalAccounts.has(chatState.currentAccount) || !canAnalyzeLocal() || !settingsState.settings.intent || !chatState.currentUser || !chatState.controller || chatState.historyState || labelState.recentPending ||
-      ["queued", "running"].includes(labelState.currentRecentJob?.status)) return;
-  if (!portraitState.activeAnalysisScope) {
-    labelState.manualRecentDeferred = true;
-    return;
-  }
-  const window = fineWindow();
-  if (!uncoveredMessages(window).length) return;
-  labelState.recentFailed = false;
-  labelState.manualRecentAwaitingPost = true;
-  labelState.manualRecentJobId = null;
-  portraitState.analysisGeneration++;
-  setIntentActionState("submitting");
-  void analyzeRecent(chatState.currentUser, chatState.generation, chatState.controller.signal, fineWindowSignature(window), window.limit, window);
-}
-function fineWindow() {
-  if (!chatState.messages.length) return { limit: 0, candidates: [] };
-  const container = byId("chatMessages");
-  const bounds = container.getBoundingClientRect();
-  const positions = new Map(chatState.messages.map((message, index) => [String(message.id), index]));
-  let first = -1;
-  const pendingLatestScroll = chatState.followLatest && container.scrollHeight - container.scrollTop - container.clientHeight > 80;
-  if (bounds.height > 0 && !pendingLatestScroll) for (const node of container.querySelectorAll(".msg-item")) {
-    const rect = node.getBoundingClientRect();
-    if (rect.bottom <= bounds.top || rect.top >= bounds.bottom) continue;
-    const index = positions.get(node.dataset.messageId);
-    if (index !== undefined && (first < 0 || index < first)) first = index;
-  }
-  const limit = Math.min(80, first < 0 ? Math.min(12, chatState.messages.length) : chatState.messages.length - first);
-  const candidates = chatState.messages.slice(-Math.max(1, limit)).filter(message => message.side === "other" &&
-    message.kind === "text" && typeof message.text === "string" && message.text.trim());
-  return { limit: Math.max(1, limit), candidates };
-}
-function analyzableMessages(window = fineWindow()) {
-  return window.candidates;
-}
-function uncoveredMessages(window = fineWindow()) {
-  return analyzableMessages(window).filter(message => {
-    const result = fineMessageResult(labelState.results[message.id]) ? labelState.results[message.id] : null;
-    return result?.state !== "skipped" &&
-      !(result?.state === "done" && result.labelSchema === CURRENT_LABEL_SCHEMA);
-  });
-}
-function fineWindowSignature(window) {
-  return JSON.stringify([window.limit, analyzableMessages(window).map(message => [message.id, message.text])]);
-}
-function scheduleRecent(user, token, signal, changedOther) {
-  if (settingsState.suppressedLocalAccounts.has(chatState.currentAccount) || !canAnalyzeLocal() || !settingsState.settings.intent || chatState.view !== "chat" || document.hidden || startupActive || !changedOther ||
-      labelState.recentPending || labelState.recentFailed || !portraitState.activeAnalysisScope) return;
-  const window = fineWindow();
-  if (!uncoveredMessages(window).length) return;
-  const signature = fineWindowSignature(window);
-  if (!labelState.requestedRecentSignatures.has(signature)) void analyzeRecent(user, token, signal, signature, window.limit, window);
-}
-function incrementalState(key) {
-  let state = portraitState.autoIncrementalState.get(key);
-  if (!state) {
-    state = { requestedSignature: null, bootstrapRequested: false, pending: false, queued: false, failed: false, networkFailed: false };
-    portraitState.autoIncrementalState.set(key, state);
-  }
-  return state;
-}
-async function startIncremental(user, token, signal, key, state) {
-  const account = chatState.currentAccount;
-  if (!canAnalyzeLocal() || state.pending || !account || token !== chatState.generation || user !== chatState.currentUser ||
-      settingsState.suppressedLocalAccounts.has(account)) return;
-  state.pending = true;
-  let refresh = false;
-  try {
-    const data = await api("/api/analyze", { method: "POST", body: JSON.stringify({
-      account, user, mode: "incremental",
-    }) }, signal);
-    if (portraitState.autoIncrementalState.get(key) !== state || !canAnalyzeLocal()) return;
-    state.failed = data.job?.status === "error";
-    state.networkFailed = false;
-    if (token === chatState.generation && key === portraitState.activeAnalysisScope) {
-      portraitState.incrementalFailed = state.failed;
-      renderJob(data.job);
-      refresh = !state.failed;
-    }
-  } catch (error) {
-    if (portraitState.autoIncrementalState.get(key) !== state || !canAnalyzeLocal()) return;
-    if (error.name === "AbortError") {
-      state.requestedSignature = null;
-      state.bootstrapRequested = false;
-      return;
-    }
-    if (token === chatState.generation && key === portraitState.activeAnalysisScope && handleAccountBoundaryError(error)) return;
-    state.failed = true;
-    state.networkFailed = isNetworkFailure(error);
-    if (token === chatState.generation && key === portraitState.activeAnalysisScope) {
-      portraitState.incrementalFailed = true;
-      renderJob({ status: "error", error: error.message });
-    }
-  } finally {
-    state.pending = false;
-    if (refresh && token === chatState.generation && key === portraitState.activeAnalysisScope) void loadAnalysis(user, token, signal);
-  }
-}
-function scheduleIncremental(user, token, signal, data, changed, signature) {
-  if (!canAnalyzeLocal() || settingsState.suppressedLocalAccounts.has(chatState.currentAccount)) return;
-  const key = portraitState.activeAnalysisScope;
-  if (!key) return;
-  const state = incrementalState(key);
-  const job = data.job || { status: "idle", checkpointComplete: false };
-  if (job.status === "error") {
-    state.failed = true;
-    portraitState.incrementalFailed = true;
-    return;
-  }
-  if (state.failed) return;
-  if (state.pending || ["queued", "running"].includes(job.status)) {
-    if (changed && signature !== state.requestedSignature) state.queued = true;
-    return;
-  }
-  const checkpointNeeded = !state.bootstrapRequested || job.status === "idle";
-  const newWindow = changed && signature !== state.requestedSignature;
-  if (!checkpointNeeded && !newWindow && !state.queued) return;
-  state.queued = false;
-  state.bootstrapRequested = true;
-  state.requestedSignature = signature;
-  void startIncremental(user, token, signal, key, state);
-}
-async function loadAnalysis(user, token, signal) {
-  if (chatState.historyState || !canAnalyzeLocal()) return;
-  const request = ++portraitState.analysisGeneration;
-  try {
-    const data = await api(`/api/analysis?user=${encodeURIComponent(user)}`, {}, signal);
-    if (token !== chatState.generation || request !== portraitState.analysisGeneration || chatState.historyState || !canAnalyzeLocal()) return;
-    if (!acceptResponseAccount(data.account)) return;
-    portraitState.analysisNetworkFailed = false;
-    const key = JSON.stringify([chatState.currentAccount, user, data.analysisVersion || "current"]);
-    portraitState.activeAnalysisScope = key;
-    if (data.job?.status !== "error" && !portraitState.autoIncrementalState.get(key)?.failed) portraitState.incrementalFailed = false;
-    const incoming = visibleResults(data.results || {}, chatState.messages);
-    labelState.results = ["queued", "running"].includes(data.job?.status) ? { ...visibleResults(labelState.results, chatState.messages), ...incoming } : incoming;
-    chatState.conversationMood = data.mood || null;
-    cacheCurrentSession({ results: labelState.results, mood: chatState.conversationMood });
-    refreshLabels();
-    renderJob(data.job || { status: "idle", checkpointComplete: false });
-    if (labelState.manualRecentDeferred) {
-      labelState.manualRecentDeferred = false;
-      submitManualRecent();
-    } else scheduleRecent(user, token, signal, true);
-    if (chatState.view === "persona" && !portraitState.profilePending && (data.job?.status === "running" || data.job?.status === "done")) loadProfile(portraitState.activeMember);
-    return data;
-  } catch (error) {
-    if (error.name !== "AbortError" && token === chatState.generation && request === portraitState.analysisGeneration && canAnalyzeLocal()) {
-      if (handleAccountBoundaryError(error)) return;
-      portraitState.incrementalFailed = true;
-      portraitState.analysisNetworkFailed = isNetworkFailure(error);
-      renderJob({ status: "error", error: `读取失败：${error.message}` });
-      setStripStatus("分析读取失败，请重试");
-    }
-  }
-}
-async function analyzeRecent(user, token, signal, signature, limit, window) {
-  const account = chatState.currentAccount;
-  if (!canAnalyzeLocal() || labelState.recentPending || labelState.recentFailed || !account || token !== chatState.generation || user !== chatState.currentUser) return;
-  labelState.requestedRecentSignatures.add(signature);
-  while (labelState.requestedRecentSignatures.size > 64) labelState.requestedRecentSignatures.delete(labelState.requestedRecentSignatures.values().next().value);
-  labelState.recentPending = true;
-  startInlineIntentPending(window);
-  try {
-    const data = await api("/api/analyze", { method: "POST", body: JSON.stringify({
-      account, user, mode: "recent", limit,
-    }) }, signal);
-    if (token === chatState.generation && canAnalyzeLocal()) {
-      labelState.recentNetworkFailed = false;
-      if (labelState.manualRecentAwaitingPost) labelState.manualRecentJobId = data.job?.recent?.id || null;
-      labelState.manualRecentAwaitingPost = false;
-      labelState.inlineIntentJobId = data.job?.recent?.id || null;
-      renderJob(data.job, false);
-      await loadAnalysis(user, token, signal);
-    }
-  } catch (error) {
-    if (error.name !== "AbortError" && token === chatState.generation && canAnalyzeLocal()) {
-      labelState.manualRecentAwaitingPost = false;
-      if (handleAccountBoundaryError(error)) return;
-      labelState.recentFailed = true;
-      labelState.recentNetworkFailed = isNetworkFailure(error);
-      if (labelState.intentActionState !== "idle") setIntentActionState("error");
-      clearInlineIntentPending();
-      refreshLabels();
-      byId("btnRetryAnalysis").hidden = false;
-      updateProfileProgress();
-      toast("分析失败，可重试");
-    }
-  }
-  finally {
-    if (token === chatState.generation) {
-      labelState.recentPending = false;
-    }
-  }
+  historyBrowser = window.ChatHistory.create({ container: dialog, api,
+    scope: { ...scope, avatar: session?.isGroup ? null : session?.avatar,
+      avatarCandidates: session?.isGroup ? [] : session?.avatarCandidates, self: chatState.self },
+    onClose: closeHistorySearch,
+    onLocate: target => { closeHistorySearch(); void locateFromFriend(target); },
+    validateScope: async () => scope.account === chatState.currentAccount && scope.user === chatState.currentUser });
+  historyBrowser.focus();
 }
 async function loadMessages(token = chatState.generation, poll = false, refresh = false) {
+  if (window.desktopHost?.isSettingsWindow) return;
   if (!chatState.currentUser || token !== chatState.generation || chatState.historyState) return;
   if (chatState.messagePending) {
     if (refresh) chatState.messageRefreshQueued = true;
@@ -2150,29 +1665,23 @@ async function loadMessages(token = chatState.generation, poll = false, refresh 
     if (poll && !next.length && chatState.messages.length && ++chatState.emptyMessagePolls < 2) return;
     if (next.length) chatState.emptyMessagePolls = 0;
     if (typeof data.hasMoreBefore === "boolean") chatState.currentHasMoreBefore = data.hasMoreBefore;
-    const signature = JSON.stringify(next);
-    const changed = signature !== JSON.stringify(chatState.messages);
-    const previousOther = new Map(chatState.messages.filter(message => message.side === "other" && message.kind === "text")
-      .map(message => [String(message.id), message.text]));
-    const changedOther = next.some(message => message.side === "other" && message.kind === "text" &&
-      typeof message.text === "string" && message.text.trim() && previousOther.get(String(message.id)) !== message.text);
-    if (changed) labelState.results = unchangedMessageResults(chatState.messages, next, labelState.results);
-    if (!poll || changed) renderMessages(next);
-    cacheCurrentSession({ messages: next, results: visibleResults(labelState.results, next),
+    const changed = JSON.stringify(next) !== JSON.stringify(chatState.messages);
+    const snapshot = { messages: next,
       ...(typeof data.hasMoreBefore === "boolean" ? { hasMoreBefore: data.hasMoreBefore } : {}),
-      summarySignature: sessionSummarySignature(chatState.sessions.get(user)), windowSerial });
+      summarySignature: sessionSummarySignature(chatState.sessions.get(user)), windowSerial };
+    if (window.MessageAnalysis?.isReading()) {
+      cacheCurrentSession(snapshot);
+      if (preserveAnalysisReading(next)) return;
+    }
+    if (!poll || changed) renderMessages(next);
+    cacheCurrentSession(snapshot);
     markSessionAsRead(user);
     renderSessions();
-    const analysis = await loadAnalysis(user, token, signal);
-    if (token === chatState.generation && request === chatState.messageRequest && !chatState.historyState && analysis) {
-      scheduleIncremental(user, token, signal, analysis, changed, signature);
-      scheduleRecent(user, token, signal, changedOther);
-    }
   } catch (error) {
     if (error.name !== "AbortError" && token === chatState.generation && request === chatState.messageRequest) {
       if (handleAccountBoundaryError(error)) return;
       if (!poll) status(byId("chatMessages"), "消息读取失败，请重试", () => loadMessages(token));
-      else text("stripStatusText", "消息读取失败，请重试");
+      else notifyStatus("消息读取失败，请重试");
     }
   } finally {
     if (token === chatState.generation && request === chatState.messageRequest) {
@@ -2185,6 +1694,7 @@ async function loadMessages(token = chatState.generation, poll = false, refresh 
   }
 }
 function switchSession(user, force = false) {
+  if (window.desktopHost?.isSettingsWindow) return;
   if (!chatState.sessions.has(user)) return;
   if (!chatState.messageSourceReady) {
     text("chatTitle", chatState.sessions.get(user).name || user);
@@ -2197,1426 +1707,127 @@ function switchSession(user, force = false) {
     renderSessions();
     return;
   }
+  window.ChatMedia?.reset();
   cacheCurrentSession({ scrollTop: chatState.historyState ? 0 : byId("chatMessages").scrollTop, followLatest: chatState.historyState ? true : chatState.followLatest });
-  const cacheKey = sessionCacheKey(chatState.currentAccount, user);
-  const cached = chatState.sessionCache.get(cacheKey);
-  cancelApiInsightWork();
-  clearInlineIntentPending();
-  clearTimeout(labelState.selectedAnalysisTimer);
-  labelState.selectedAnalysisTimer = null;
+  const cached = chatState.sessionCache.get(sessionCacheKey(chatState.currentAccount, user));
   cancelHistoryRequest();
   chatState.historyState = null;
   resetHistorySearch();
-  clearReplyPrediction();
-  if (byId("btnPredictReply")) byId("btnPredictReply").disabled = true;
   chatState.controller?.abort();
   chatState.controller = new AbortController();
   chatState.advance("generation");
-  portraitState.advance("analysisGeneration");
-  portraitState.advance("profileGeneration");
-  portraitState.profilePending = false;
   chatState.messagePending = false;
   chatState.messageRefreshQueued = false;
   chatState.emptyMessagePolls = 0;
-  labelState.manualRecentAwaitingPost = false;
-  labelState.manualRecentJobId = null;
-  labelState.manualRecentDeferred = false;
-  setIntentActionState("idle");
-  labelState.recentPending = false;
-  portraitState.incrementalFailed = false;
-  labelState.recentFailed = false;
-  portraitState.analysisNetworkFailed = false;
-  labelState.recentNetworkFailed = false;
-  labelState.requestedRecentSignatures.clear();
-  portraitState.activeMember = chatState.sessions.get(user)?.isGroup ? portraitState.storedProfileSelections.get(sessionCacheKey(chatState.currentAccount, user)) || "" : "";
-  portraitState.groupMembers = [];
-  portraitState.renderedProfileKey = null;
-  portraitState.renderedProfileSignature = null;
-  portraitState.memberRenderedScope = null;
-  portraitState.reset("activeAnalysisScope", "currentAnalysisJob");
-  labelState.currentRecentJob = null;
   chatState.currentUser = user;
-  byId("btnResetConversationAnalysis").disabled = !settingsState.modelSourceResolved || !chatState.selectedConversations?.has(user);
-  byId("btnResetPortrait").disabled = byId("btnResetConversationAnalysis").disabled;
+  window.ChatComposer?.setScope(chatState.currentAccount, user, {
+    available: chatState.messageSourceReady, isGroup: chatState.sessions.get(user)?.isGroup === true, force });
+  window.MessageAnalysis?.setScope(chatState.currentAccount, user, chatState.sessions.get(user)?.isGroup === true);
   byId("btnChatHistory").disabled = false;
+  updateFriendButton(user);
   chatState.currentHasMoreBefore = typeof cached?.hasMoreBefore === "boolean" ? cached.hasMoreBefore : null;
   chatState.messages = [];
-  labelState.results = visibleResults(cached?.results || {}, cached?.messages || []);
-  chatState.conversationMood = cached?.mood || null;
   chatState.followLatest = cached?.followLatest ?? true;
   chatState.lastChatScrollTop = cached?.scrollTop || 0;
-  byId("chatStatusPill").style.display = "none";
-  byId("btnRetryAnalysis").hidden = true;
-  byId("btnRetryProfile").hidden = true;
-  text("analysisStatus", "");
   text("chatTitle", chatState.sessions.get(user).name || user);
   if (Array.isArray(cached?.messages)) renderMessages(cached.messages, cached);
   else status(byId("chatMessages"), "正在读取消息…");
   updateHistoryNavigation();
-  const snapshotSourceId = settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" ? settingsState.modelSourceSnapshot.sourceId : undefined;
-  let profileKey = profileCacheKey(chatState.currentAccount, user, portraitState.activeMember, snapshotSourceId);
-  let cachedProfile = cachedProfileFor(chatState.currentAccount, user, portraitState.activeMember, snapshotSourceId);
-  if (!cachedProfile && portraitState.activeMember) {
-    portraitState.activeMember = "";
-    profileKey = profileCacheKey(chatState.currentAccount, user, "", snapshotSourceId);
-    cachedProfile = cachedProfileFor(chatState.currentAccount, user, "", snapshotSourceId);
-  }
-  if (cachedProfile && usingLocalFine()) {
-    renderProfile(cachedProfile);
-    portraitState.renderedProfileKey = profileKey;
-    portraitState.renderedProfileSignature = JSON.stringify(cachedProfile);
-  } else if (settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api") {
-    // Reuse the Laya snapshot store for the API portrait of this source; the persona
-    // refresh below replaces it once the same-scope response arrives.
-    if (!renderCachedApiProfile(chatState.currentAccount, user, portraitState.activeMember, settingsState.modelSourceSnapshot.sourceId))
-      clearProfileView(chatState.sessions.get(user).name || user);
-  } else clearProfileView(chatState.sessions.get(user).name || user);
-  if (chatState.view === "persona") loadProfile(portraitState.activeMember);
   renderSessions();
-  if (typeof window !== "undefined" && window.Advisor) window.Advisor.onSessionChanged(chatState.currentAccount, user);
-  const token = chatState.generation, account = chatState.currentAccount, signal = chatState.controller.signal;
-  if (canAnalyzeLocal() && sessionWindowReady(account, chatState.sessions.get(user))) {
-    labelState.selectedAnalysisTimer = setTimeout(async () => {
-      labelState.selectedAnalysisTimer = null;
-      if (token !== chatState.generation || account !== chatState.currentAccount || user !== chatState.currentUser || chatState.historyState) return;
-      const analysis = await loadAnalysis(user, token, signal);
-      if (analysis && token === chatState.generation && !chatState.historyState) scheduleIncremental(user, token, signal, analysis, false, JSON.stringify(chatState.messages));
-    }, 120);
-  } else void loadMessages(token, !!cached);
+  window.PluginSlots?.onSessionChanged(chatState.currentAccount, user, pluginFriendName(user));
+  window.ExternalImportHost?.onSessionChanged(chatState.currentAccount, user, pluginFriendName(user));
+  window.ModelTraces?.setScope(chatState.currentAccount, user, chatState.view);
+  void loadMessages(chatState.generation, !!cached);
+}
+let friendWindowRequest = 0;
+// Modified by Know Your Friends, 2026-10-10: “知己分析” opens a fixed window per contact
+// instead of the docked portrait. Group chats do not offer it in this release.
+function updateFriendButton(user = chatState.currentUser) {
+  const group = !!chatState.sessions.get(user)?.isGroup;
+  for (const button of document.querySelectorAll(".plugin-header-btn")) {
+    button.hidden = group;
+    button.disabled = group || !chatState.messageSourceReady || !user;
+    button.title = typeof window.desktopHost?.openFriendWindow === "function" ?
+      `打开当前联系人的${button.textContent}` : `${button.textContent}需要在桌面客户端中打开`;
+  }
+}
+async function openFriendWindow(plugin, id) {
+  if (!window.PluginSlots?.hasFriendEntry(plugin, id)) return;
+  if (!chatState.messageSourceReady || !chatState.currentUser) { toast("请先选择已就绪的会话"); return; }
+  const session = chatState.sessions.get(chatState.currentUser);
+  if (session?.isGroup) return;
+  if (typeof window.desktopHost?.openFriendWindow !== "function") {
+    toast("知己分析需要在桌面客户端中打开");
+    return;
+  }
+  const request = ++friendWindowRequest;
+  try {
+    const avatar = typeof session?.avatar === "string" && session.avatar.length <= 512 &&
+      /^https?:\/\/[^\s"'<>]+$/i.test(session.avatar) ? session.avatar : undefined;
+    const opened = await window.desktopHost.openFriendWindow({ account: chatState.currentAccount,
+      user: chatState.currentUser, name: String(session?.name || chatState.currentUser).slice(0, 128),
+      ...(avatar ? { avatar } : {}) });
+    if (request === friendWindowRequest && opened !== true) toast("知己分析窗口未能打开");
+  } catch {
+    if (request === friendWindowRequest) toast("知己分析窗口未能打开");
+  }
+}
+// 知己分析 windows mask themselves when their account is no longer current or was cleared.
+function announceFriendAccount(type, value) {
+  try {
+    if (typeof BroadcastChannel !== "function") return;
+    announceFriendAccount.channel ||= new BroadcastChannel("kyf-friend-analysis");
+    announceFriendAccount.channel.postMessage({ type, value: value ?? null });
+  } catch { }
+}
+// A 知己分析 window asks to show a verified original message. Only the current
+// account is accepted; the composer keeps each contact's unsent draft separately.
+async function locateFromFriend(target) {
+  if (!target || target.account !== chatState.currentAccount || !chatState.messageSourceReady) {
+    toast("微信账号已变化，无法定位这条消息");
+    return;
+  }
+  if (!chatState.sessions.has(target.user)) {
+    toast("聊天列表中没有这位联系人，请先添加该会话");
+    return;
+  }
+  if (chatState.view !== "chat") switchView("chat");
+  if (target.user !== chatState.currentUser) switchSession(target.user);
+  if (chatState.currentUser !== target.user || chatState.currentAccount !== target.account) return;
+  await jumpToHistory(target.cursor, target.messageId);
 }
 function switchView(target) {
-  if (target === "persona" && (!chatState.messageSourceReady || !chatState.currentUser)) return;
-  if (target !== "chat") clearReplyPrediction();
-  if (target !== "persona") cancelApiPortraitPoll();
+  const chatVisible = target === "chat";
+  friendWindowRequest++;
+  updateFriendButton();
   chatState.view = target;
-  byId("chatView").classList.toggle("active", target === "chat");
-  byId("personaView").classList.toggle("active", target === "persona");
-  const advisorRepoView = byId("advisorRepoView");
-  if (advisorRepoView) advisorRepoView.classList.toggle("active", target === "advisor");
-  byId("navChat").classList.toggle("active", target === "chat");
-  byId("navPersona").classList.toggle("active", target === "persona");
-  const navAdvisor = byId("navAdvisor");
-  if (navAdvisor) navAdvisor.classList.toggle("active", target === "advisor");
-  if (target === "persona") loadProfile(portraitState.activeMember);
-  else if (target === "chat" && !chatState.historyState) scrollToLatest();
-  if (typeof window !== "undefined" && window.Advisor) {
-    window.Advisor.onViewChanged(target);
-    if (target === "advisor") window.Advisor.openRepository();
-  }
+  window.ChatComposer?.setScope(chatState.currentAccount, chatState.currentUser, {
+    available: chatVisible && chatState.messageSourceReady, isGroup: chatState.sessions.get(chatState.currentUser)?.isGroup === true, force: true });
+  byId("chatView").classList.toggle("active", chatVisible);
+  if (chatVisible) window.ComposerResize?.refresh();
+  byId("navChat").classList.toggle("active", chatVisible);
+  if (chatVisible && !chatState.historyState) scrollToLatest();
+  // Modified 2026-10-13: "plugin:<plugin>/<nav>" shows a plugin's nav page (plugin-slots.js).
+  window.PluginSlots?.onViewChanged(target);
+  window.ExternalImportHost?.onViewChanged(target);
+  window.ModelTraces?.setScope(chatState.currentAccount, chatState.currentUser, target);
 }
-portraitState.activeMember = "";
-portraitState.profilePending = false;
-portraitState.groupMembers = [];
-portraitState.renderedProfileKey = null;
-portraitState.renderedProfileSignature = null;
-portraitState.memberRenderedScope = null;
-function profileCacheKey(account, user, member, sourceId) {
-  // Local Laya keeps its legacy 3-part key; an API source appends its id so local and
-  // different API models never share a snapshot entry.
-  return sourceId ? JSON.stringify([account, user, member, sourceId])
-    : JSON.stringify([account, user, member]);
-}
-const profileSnapshotStorageKey = "real-ui-profile-snapshots-v1";
-const profileSelectionStorageKey = "real-ui-profile-selection-v1";
-const profileSnapshotLimit = 128;
-const profileSelectionLimit = 64;
-const profileSnapshotMaxBytes = 1000000;
-const profileSnapshotEncoder = new TextEncoder();
-function storedArray(key) {
-  try { const value = JSON.parse(localStorage.getItem(key) || "[]"); return Array.isArray(value) ? value : []; }
-  catch { return []; }
-}
-portraitState.storedProfileSnapshots = new Map();
-for (const entry of storedArray(profileSnapshotStorageKey).slice(0, profileSnapshotLimit)) {
-  try {
-    const scope = JSON.parse(entry.key);
-    const [account, user, member, sourceId] = scope;
-    if (typeof account === "string" && account && typeof user === "string" && user &&
-        typeof member === "string" && entry.profile?.account === account &&
-        entry.profile.username === (member || user) &&
-        (scope.length === 3 || scope.length === 4 && typeof sourceId === "string" && sourceId) &&
-        (entry.profile.apiSource === true) === (scope.length === 4) &&
-        (scope.length === 3 || entry.profile.apiSourceId === sourceId) &&
-        Number.isFinite(entry.at)) {
-      portraitState.storedProfileSnapshots.set(entry.key, entry);
-    }
-  } catch { }
-}
-portraitState.storedProfileSelections = new Map();
-for (const entry of storedArray(profileSelectionStorageKey).slice(0, profileSelectionLimit)) {
-  try {
-    const [account, user] = JSON.parse(entry.key);
-    if (typeof account === "string" && account && typeof user === "string" && user &&
-        typeof entry.member === "string") portraitState.storedProfileSelections.set(entry.key, entry.member);
-  } catch { }
-}
-function saveStoredProfiles() {
-  const entries = [...portraitState.storedProfileSnapshots.values()].sort((a, b) => b.at - a.at).slice(0, profileSnapshotLimit);
-  while (entries.length && profileSnapshotEncoder.encode(JSON.stringify(entries)).byteLength > profileSnapshotMaxBytes) entries.pop();
-  portraitState.storedProfileSnapshots.clear();
-  for (const entry of entries) portraitState.storedProfileSnapshots.set(entry.key, entry);
-  try { localStorage.setItem(profileSnapshotStorageKey, JSON.stringify(entries)); } catch { }
-}
-function saveStoredSelections() {
-  const entries = [...portraitState.storedProfileSelections].slice(-profileSelectionLimit).map(([key, member]) => ({ key, member }));
-  try { localStorage.setItem(profileSelectionStorageKey, JSON.stringify(entries)); } catch { }
-}
-function rememberProfileMember(account, user, member) {
-  if (!account || !user) return;
-  const key = sessionCacheKey(account, user);
-  if (portraitState.storedProfileSelections.get(key) === member) return;
-  portraitState.storedProfileSelections.delete(key);
-  portraitState.storedProfileSelections.set(key, member);
-  while (portraitState.storedProfileSelections.size > profileSelectionLimit) portraitState.storedProfileSelections.delete(portraitState.storedProfileSelections.keys().next().value);
-  saveStoredSelections();
-}
-function profileSnapshot(profile) {
-  const stats = profile.stats || {};
-  const count = value => Math.max(0, Math.floor(Number(value) || 0));
-  const avatarUrl = value => typeof value === "string" && value.length <= 512 && /^https?:\/\//i.test(value) ? value : "";
-  const score = value => Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
-  const phrases = (value, max) => Array.isArray(value) ?
-    value.filter(entry => typeof entry === "string" && entry).slice(0, 6).map(entry => entry.slice(0, max)) : [];
-  const inference = profile.mbtiInference;
-  const apiSource = profile.apiSource === true;
-  const apiPortrait = apiSource ? profile.apiPortrait : null;
-  const apiAxes = apiPortrait?.mbtiAxes || {};
-  const apiTraits = apiPortrait?.traits || {};
-  return {
-    account: profile.account, username: profile.username,
-    name: String(profile.name || profile.username || "").slice(0, 128), isGroup: !!profile.isGroup,
-    avatar: avatarUrl(profile.avatar), avatarCandidates: Array.isArray(profile.avatarCandidates) ?
-      profile.avatarCandidates.map(avatarUrl).filter(Boolean).slice(0, 2) : [],
-    stats: { messageCount: apiSource && stats.messageCount === null ? null : count(stats.messageCount), textCount: count(stats.textCount),
-      analyzedCount: count(stats.analyzedCount), participantCount: count(stats.participantCount) },
-    affinity: Number.isFinite(profile.affinity) ? profile.affinity : null,
-    traits: Array.isArray(profile.traits) ? profile.traits.slice(0, 6).map(item => ({
-      key: String(item.key || ""), label: String(item.label || "").slice(0, 24),
-      val: Number(item.val), sampleCount: count(item.sampleCount) })) : [],
-    keywords: Array.isArray(profile.keywords) ? profile.keywords.slice(0, 6).map(item => ({
-      word: String(item.word || "").slice(0, 24), count: count(item.count) })) : [],
-    summary: String(profile.summary || "").slice(0, 600),
-    mbtiInference: inference && typeof inference === "object" ? {
-      eligibleMessages: count(inference.eligibleMessages), minMessages: count(inference.minMessages) || 100,
-      ...(Number.isFinite(inference.minAxisMargin) ? { minAxisMargin: inference.minAxisMargin } : {}),
-      ...(profile.apiNativeProfile && Object.hasOwn(inference, "type") ?
-        { type: typeof inference.type === "string" ? inference.type.slice(0, 4) : null } : {}),
-      axes: inference.axes && typeof inference.axes === "object" ? Object.fromEntries(
-        ["EI", "SN", "TF", "JP"].map(axis => [axis, inference.axes[axis] || {}])) : {}
-    } : null,
-    members: profile.isGroup && Array.isArray(profile.members) ? profile.members.slice(0, 64).map(item => ({
-      id: String(item.id || "").slice(0, 256), name: String(item.name || item.id || "").slice(0, 64) })) : [],
-    dataStatus: profile.dataStatus, analysisUnit: profile.analysisUnit,
-    job: { status: "idle" },
-    // API display state (only meaningful when apiSource). Bounded and derived from the
-    // already-validated backend portrait; no key, raw chat, or raw provider response.
-    apiSource,
-    apiNativeProfile: apiSource && profile.apiNativeProfile === true,
-    apiSourceId: apiSource && typeof profile.apiSourceId === "string" ? profile.apiSourceId.slice(0, 64) : "",
-    apiTargetTexts: count(profile.apiTargetTexts),
-    apiProgressProcessed: count(profile.apiProgressProcessed),
-    apiProgressTotal: count(profile.apiProgressTotal),
-    apiComplete: profile.apiComplete === true,
-    apiRunning: profile.apiRunning === true,
-    apiMbtiAxes: apiPortrait ? { EI: score(apiAxes.EI), SN: score(apiAxes.SN),
-      TF: score(apiAxes.TF), JP: score(apiAxes.JP) } : null,
-    apiMbtiBasis: apiSource ? mbtiBasisSnapshot(profile.apiMbtiBasis) : null,
-    apiPortrait: apiPortrait ? {
-      summary: String(apiPortrait.summary || "").slice(0, 240),
-      communication: String(apiPortrait.communication || "").slice(0, 120),
-      emotionExpression: String(apiPortrait.emotionExpression || "").slice(0, 120),
-      interactionPreferences: String(apiPortrait.interactionPreferences || "").slice(0, 120),
-      topics: phrases(apiPortrait.topics, 30), patterns: phrases(apiPortrait.patterns, 80),
-      boundaries: phrases(apiPortrait.boundaries, 80), uncertain: phrases(apiPortrait.uncertain, 80),
-      affinity: score(apiPortrait.affinity),
-      mbtiAxes: { EI: score(apiAxes.EI), SN: score(apiAxes.SN), TF: score(apiAxes.TF), JP: score(apiAxes.JP) },
-      traits: { socialEnergy: score(apiTraits.socialEnergy), humor: score(apiTraits.humor),
-        composure: score(apiTraits.composure), initiative: score(apiTraits.initiative),
-        care: score(apiTraits.care), affection: score(apiTraits.affection) } } : null,
-  };
-}
-function cachedProfileFor(account, user, member, sourceId) {
-  const key = profileCacheKey(account, user, member, sourceId);
-  if (!sourceId && portraitState.profileSnapshotsRequireRefresh.has(key)) return null;
-  const stored = portraitState.storedProfileSnapshots.get(key);
-  const cached = portraitState.profileCache.get(key) || stored?.profile;
-  if (!cached || cached.account !== account || cached.username !== (member || user) ||
-      !!cached.isGroup !== !!chatState.sessions.get(user)?.isGroup || !cached.stats ||
-      !Array.isArray(cached.traits) || !Array.isArray(cached.keywords) ||
-      !Array.isArray(cached.members) || (cached.apiSource === true) !== !!sourceId ||
-      sourceId && cached.apiSourceId !== sourceId) return null;
-  portraitState.profileCache.set(key, cached);
-  if (stored && Date.now() - stored.at > 5 * 60 * 1000) {
-    portraitState.storedProfileSnapshots.delete(key);
-    portraitState.storedProfileSnapshots.set(key, { ...stored, at: Date.now() });
-    saveStoredProfiles();
-  }
-  return cached;
-}
-function renderCachedApiProfile(account, user, member, sourceId) {
-  const cached = cachedProfileFor(account, user, member, sourceId);
-  if (!cached) return false;
-  renderProfile(cached);
-  portraitState.renderedProfileKey = profileCacheKey(account, user, member, sourceId);
-  portraitState.renderedProfileSignature = JSON.stringify(cached);
-  return true;
-}
-function rememberProfile(profile, account, user, member, sourceId) {
-  if (profile.account !== account || profile.username !== (member || user)) return;
-  const key = profileCacheKey(account, user, member, sourceId);
-  // Re-entry reads memory before disk. Keep both on the same revision, including
-  // the transition from an initial empty portrait to its completed result.
-  portraitState.profileCache.set(key, profile);
-  const snapshot = profileSnapshot(profile);
-  const previous = portraitState.storedProfileSnapshots.get(key);
-  if (previous && Date.now() - previous.at < 24 * 60 * 60 * 1000 &&
-      JSON.stringify(previous.profile) === JSON.stringify(snapshot)) return;
-  portraitState.storedProfileSnapshots.delete(key);
-  portraitState.storedProfileSnapshots.set(key, { key, at: Date.now(), profile: snapshot });
-  saveStoredProfiles();
-}
-function pruneStoredProfiles(account, nextSessions) {
-  let changedProfiles = false, changedSelections = false;
-  for (const key of portraitState.storedProfileSnapshots.keys()) {
-    const [cachedAccount, user] = JSON.parse(key);
-    if (cachedAccount === account && !nextSessions.has(user)) { portraitState.storedProfileSnapshots.delete(key); changedProfiles = true; }
-  }
-  for (const key of portraitState.storedProfileSelections.keys()) {
-    const [cachedAccount, user] = JSON.parse(key);
-    if (cachedAccount === account && !nextSessions.has(user)) { portraitState.storedProfileSelections.delete(key); changedSelections = true; }
-  }
-  if (changedProfiles) saveStoredProfiles();
-  if (changedSelections) saveStoredSelections();
-}
-async function clearStoredProfilesForAccount(accountId) {
-  const maps = [portraitState.storedProfileSnapshots, portraitState.storedProfileSelections, portraitState.profileCache,
-    portraitState.profileRateSamples, chatState.sessionCache, portraitState.autoIncrementalState, labelState.apiInsightCache];
-  const storages = [localStorage];
-  if (typeof sessionStorage !== "undefined") storages.push(sessionStorage);
-  const accounts = new Set();
-  if (typeof chatState.currentAccount === "string" && chatState.currentAccount) accounts.add(chatState.currentAccount);
-  for (const map of maps) for (const key of map.keys()) {
-    try {
-      const [account] = JSON.parse(key);
-      if (typeof account === "string" && account) accounts.add(account);
-    } catch { }
-  }
-  for (const storage of storages) try {
-    for (let index = 0; index < storage.length; index++) {
-      const key = storage.key(index);
-      if (key?.startsWith("read-watermark:")) accounts.add(key.slice("read-watermark:".length));
-      else if (key?.startsWith("last-conversation:")) accounts.add(key.slice("last-conversation:".length));
-      else if (key?.startsWith("mbti-unlocked:")) accounts.add(key.slice("mbti-unlocked:".length).split(":", 1)[0]);
-    }
-  } catch { }
-  const matching = new Set();
-  for (const account of accounts) {
-    const digest = await crypto.subtle.digest("SHA-256", profileSnapshotEncoder.encode(account));
-    const id = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-    if (id === accountId) matching.add(account);
-  }
-  for (const map of maps) for (const key of map.keys()) {
-    try { if (matching.has(JSON.parse(key)[0])) map.delete(key); } catch { }
-  }
-  for (const account of matching) for (const storage of storages) try {
-    storage.removeItem(`read-watermark:${account}`);
-    storage.removeItem(`last-conversation:${account}`);
-    for (let index = storage.length - 1; index >= 0; index--) {
-      const key = storage.key(index);
-      if (key?.startsWith(`mbti-unlocked:${account}:`)) storage.removeItem(key);
-    }
-  } catch { }
-  saveStoredProfiles();
-  saveStoredSelections();
-  return matching;
-}
-portraitState.profileRateSamples = new Map();
-function observeProfileRate(profile, key) {
-  const count = Number(profile.stats?.analyzedCount);
-  if (!Number.isFinite(count) || count < 0) return;
-  const now = performance.now();
-  let samples = portraitState.profileRateSamples.get(key) || [];
-  if (samples.length && (count < samples[samples.length - 1].count ||
-      now - samples[samples.length - 1].at > 30000)) samples = [];
-  samples.push({ at: now, count });
-  // Retain the observation just before the window so a long model batch is not
-  // mistaken for an instantaneous burst when its completed texts arrive together.
-  while (samples.length > 2 && samples[1].at < now - 30000) samples.shift();
-  portraitState.profileRateSamples.delete(key);
-  portraitState.profileRateSamples.set(key, samples);
-  while (portraitState.profileRateSamples.size > 64) portraitState.profileRateSamples.delete(portraitState.profileRateSamples.keys().next().value);
-}
-function profileRateText() {
-  const samples = portraitState.profileRateSamples.get(profileCacheKey(chatState.currentAccount, chatState.currentUser, portraitState.activeMember));
-  if (!samples || samples.length < 2) return "— 条/秒";
-  const first = samples[0], last = samples[samples.length - 1];
-  const elapsed = (last.at - first.at) / 1000;
-  return elapsed > 0 ? `${((last.count - first.count) / elapsed).toFixed(1)} 条/秒` : "— 条/秒";
-}
-function updateProfileProgress(profile = portraitState.profileCache.get(profileCacheKey(chatState.currentAccount, chatState.currentUser, portraitState.activeMember))) {
-  if (profile?.apiSource) {
-    const analyzed = profile.apiProgressProcessed;
-    const total = profile.apiProgressTotal;
-    text("stripConfidence", `${analyzed} / ${total} 条文本`);
-    byId("stripConfidenceItem").style.display = profile.isGroup ? "none" : "";
-    byId("btnRetryProfile").hidden = true;
-    setStripStatus(profile.apiComplete ? "已完成" : profile.apiRunning ? "API 分析中" : "待继续");
-    return;
-  }
-  if (settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api") return;
-  const ownJob = profile?.job;
-  const job = ownJob || (portraitState.activeMember ? null : portraitState.currentAnalysisJob);
-  const profileFailed = ownJob ? ownJob.status === "error" :
-    !portraitState.activeMember && (portraitState.incrementalFailed || job?.status === "error" && job.requested?.mode !== "recent");
-  if (profile) {
-    const analyzed = Number(profile.stats?.analyzedCount) || 0;
-    const total = Number(profile.stats?.textCount) || 0;
-    const partial = (profile.dataStatus && profile.dataStatus !== "analyzed") || analyzed < total || job?.checkpointComplete === false;
-    text("stripConfidence", `${analyzed} / ${total} 条文本`);
-    byId("stripConfidenceItem").style.display = profile.isGroup ? "none" : "";
-    text("summaryBadge", analyzed ? partial ? "阶段性结果" : "基于聊天汇总" : "暂无分析结果");
-  }
-  byId("btnRetryProfile").hidden = !profileFailed;
-  const active = status => status === "queued" || status === "running";
-  let state = "";
-  if (job?.status === "missing-model") state = "未安装 Laya 模型，请在设置下载模型";
-  else if (profileFailed) state = "画像分析未完成，可重试或重置画像";
-  else if (active(job?.status)) state = profileRateText();
-  else if (job?.checkpointComplete === false) state = "待继续";
-  else if (profile && job?.checkpointComplete) state = "已完成";
-  setStripStatus(state);
-  if (state.endsWith("条/秒")) byId("stripStatusText").title = "最近30秒新增已分析文本的实际速率";
-}
-function clearProfileView(name = "正在读取画像…") {
-  text("personaHeaderTitle", name);
-  text("heroName", name);
-  text("heroRelationBadge", "待分析");
-  byId("heroAvatar").replaceChildren();
-  byId("heroMbtiRow").hidden = true;
-  text("heroArchetype", "");
-  byId("heroArchetype").style.display = "none";
-  byId("heroMetricBox").replaceChildren();
-  text("heroMbti", "");
-  byId("mbtiCard").hidden = true;
-  text("mbtiScaleBadge", "正在读取");
-  byId("mbtiScalesList").replaceChildren();
-  byId("mbtiSources").replaceChildren();
-  byId("radarContainer").replaceChildren();
-  byId("tagCloud").replaceChildren();
-  text("botSummaryText", "");
-  byId("apiPortraitDetails").replaceChildren();
-  byId("apiPortraitDetails").hidden = true;
-  text("stripDbPath", "正在读取");
-  text("stripMsgCount", "正在读取");
-  text("stripMessageLabel", "消息：");
-  text("stripTextLabel", "文本：");
-  text("stripConfidence", "");
-  byId("stripConfidenceItem").style.display = "none";
-  text("summaryBadge", "基于聊天汇总");
-  setStripStatus("读取画像中");
-  byId("groupMemberTabs").replaceChildren();
-  byId("groupMemberTabs").style.display = "none";
-  portraitState.memberRenderedScope = null;
-  portraitState.renderedProfileKey = null;
-  portraitState.renderedProfileSignature = null;
-  // The API portrait shares this DOM, so its render memo must be invalidated too;
-  // otherwise a same-scope re-entry skips re-rendering and the strip stays blank.
-  portraitState.renderedApiProfileScope = null;
-  portraitState.renderedApiProfileSignature = null;
-  portraitState.apiPortraitProgressNode = null;
-}
-const preferenceAxes = [
-  { key: "EI", left: "E", right: "I", meaning: "注意力与能量：外向互动 / 内向反思" },
-  { key: "SN", left: "S", right: "N", meaning: "信息偏好：具体经验事实 / 模式与可能性" },
-  { key: "TF", left: "T", right: "F", meaning: "决策偏好：客观逻辑原则 / 价值与对人的影响" },
-  { key: "JP", left: "J", right: "P", meaning: "对外界的方式：结构收敛 / 保留选项、灵活探索" }
-];
-const officialSources = [
-  "https://www.myersbriggs.org/my-mbti-personality-type/the-mbti-preferences/",
-  "https://www.themyersbriggs.com/en-US/Products-and-Services/Myers-Briggs"
-];
-function renderMbti(profile) {
-  const container = byId("mbtiScalesList");
-  const sources = byId("mbtiSources");
-  container.replaceChildren();
-  sources.replaceChildren();
-  const groupOverall = profile.isGroup && !portraitState.activeMember;
-  byId("mbtiCard").hidden = groupOverall;
-  byId("heroMbtiRow").hidden = groupOverall;
-  if (groupOverall) {
-    text("heroMbti", "");
-    return;
-  }
-
-  if (profile.apiSource && !profile.apiNativeProfile) {
-    // API portrait reuses the Laya card: same threshold, lock panel and evidence
-    // section. Axis shares arrive as 0-100 favoring the left letter.
-    const eligible = Number(profile.apiTargetTexts) || 0;
-    const minMessages = 100;
-    const axes = {};
-    for (const axis of preferenceAxes) {
-      const share = apiScore(profile.apiMbtiAxes?.[axis.key]);
-      axes[axis.key] = share === null ? null :
-        { leftShare: share / 100, rightShare: (100 - share) / 100, evidenceCount: 1 };
-    }
-    profile = { ...profile, mbtiInference: { eligibleMessages: eligible, minMessages,
-      axes, sources: officialSources } };
-  }
-
-  const inference = profile.mbtiInference;
-  const eligible = Number(inference?.eligibleMessages) || 0;
-  const minMessages = Number(inference?.minMessages) || 100;
-  const axes = inference?.axes || {};
-  const validAxis = evidence => Number(evidence?.evidenceCount) > 0 &&
-    Number.isFinite(evidence?.leftShare) && Number.isFinite(evidence?.rightShare) &&
-    evidence.leftShare >= 0 && evidence.leftShare <= 1 &&
-    evidence.rightShare >= 0 && evidence.rightShare <= 1;
-  const validAxisCount = preferenceAxes.filter(axis => validAxis(axes[axis.key])).length;
-  // Preserve the local portrait's existing preference margin for both sources.
-  // A weak majority is still shown as a percentage, but is not a personality type.
-  const minAxisMargin = Number.isFinite(inference?.minAxisMargin) &&
-    inference.minAxisMargin >= 0 && inference.minAxisMargin <= 1 ? inference.minAxisMargin : 0.2;
-  const preferredPole = axis => {
-    const evidence = axes[axis.key];
-    if (!validAxis(evidence)) return "?";
-    const difference = evidence.leftShare - evidence.rightShare;
-    if (profile.apiNativeProfile) {
-      if (Object.hasOwn(evidence, "preference"))
-        return evidence.preference === axis.left || evidence.preference === axis.right ? evidence.preference : "?";
-      if (typeof inference?.type === "string" && /^[EI][SN][TF][JP]$/.test(inference.type))
-        return inference.type[preferenceAxes.indexOf(axis)];
-      // Native API results use the backend's exact comparison, including the
-      // representable 60/40 boundary. Leave local and legacy display unchanged.
-      if (difference === 0 || Math.abs(difference) < minAxisMargin) return "?";
-      return difference > 0 ? axis.left : axis.right;
-    }
-    // 60/40 reaches a 0.2 margin despite floating-point subtraction rounding.
-    if (difference === 0 || Math.abs(difference) + Number.EPSILON * 4 < minAxisMargin) return "?";
-    if (Object.hasOwn(evidence, "preference"))
-      return evidence.preference === axis.left || evidence.preference === axis.right ? evidence.preference : "?";
-    return difference > 0 ? axis.left : axis.right;
-  };
-
-  if (eligible < minMessages) {
-    text("heroMbti", `${Math.max(0, eligible)}/${minMessages} 条`);
-    text("mbtiScaleBadge", "未解锁");
-    const lockPanel = element("div", "mbti-lock-panel");
-    const iconWrap = element("div", "mbti-lock-icon-wrap");
-    iconWrap.appendChild(svgIcon("M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z", "mbti-lock-icon"));
-    lockPanel.appendChild(iconWrap);
-    lockPanel.appendChild(element("div", "mbti-lock-title", "人格推测未解锁"));
-    lockPanel.appendChild(element("div", "mbti-lock-desc", `需积累 ${minMessages} 条该人物有效文本以进行四维偏好推测`));
-    const progWrap = element("div", "mbti-lock-progress-wrap");
-    const progBar = element("div", "mbti-lock-progress-bar");
-    const fill = element("div", "mbti-lock-progress-fill");
-    fill.style.width = `${Math.min(100, Math.round(eligible / minMessages * 100))}%`;
-    progBar.appendChild(fill);
-    progWrap.appendChild(progBar);
-    progWrap.appendChild(element("div", "mbti-lock-progress-text", `目标人物文本 ${eligible} / ${minMessages} 条`));
-    lockPanel.appendChild(progWrap);
-    const btn = element("button", "mbti-unlock-btn disabled", `积累 ${minMessages} 条后解锁`);
-    btn.disabled = true;
-    lockPanel.appendChild(btn);
-    container.appendChild(lockPanel);
-  } else {
-    const inclination = preferenceAxes.map(preferredPole).join("");
-    text("heroMbti", validAxisCount ? inclination : "待判断");
-    text("mbtiScaleBadge", inclination.includes("?") ? validAxisCount ? "部分维度待定" : "偏好证据待积累" : `${inclination} · 聊天倾向`);
-    for (const axis of preferenceAxes) {
-      const evidence = axes[axis.key];
-      const row = element("div", "mbti-scale-row");
-      row.appendChild(element("div", "mbti-scale-meta", axis.key));
-      const leftShare = evidence?.leftShare;
-      const rightShare = evidence?.rightShare;
-      if (validAxis(evidence)) {
-        row.appendChild(element("div", "mbti-axis-values", `${axis.left} ${Math.round(leftShare * 100)}% · ${axis.right} ${Math.round(rightShare * 100)}%`));
-        const track = element("div", "mbti-track-wrap");
-        const fill = element("div", "mbti-track-fill");
-        fill.style.width = `${leftShare * 100}%`;
-        track.appendChild(fill);
-        row.appendChild(track);
-      } else {
-        const note = profile.apiSource && !profile.apiNativeProfile && profile.apiMbtiBasis?.[axis.key]?.status === "unverified" ?
-          "模型依据未通过校验" : "尚无足够证据";
-        row.appendChild(element("div", "mbti-axis-empty", `${axis.left}/${axis.right} · ${note}`));
-      }
-      container.appendChild(row);
-    }
-  }
-
-  const provided = Array.isArray(inference?.sources) ? inference.sources : [];
-  const urls = provided.filter(value => officialSources.includes(value));
-  const details = element("details", "mbti-details");
-  details.appendChild(element("summary", "", "依据与说明"));
-  details.appendChild(element("div", "mbti-sample", `${eligible} 条目标文本 · ${minMessages} 条展示门槛`));
-  if (profile.apiSource && !profile.apiNativeProfile) {
-    for (const axis of preferenceAxes) {
-      const basis = profile.apiMbtiBasis?.[axis.key];
-      if (basis?.reason) details.appendChild(element("div", "mbti-sample", `${axis.key}：${basis.reason}`));
-    }
-  }
-  for (const [index, url] of (urls.length ? urls : officialSources).entries()) {
-    const link = element("a", "mbti-source", index ? "Myers & Briggs 官方资料" : "MBTI 官方偏好理论");
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    details.appendChild(link);
-  }
-  details.appendChild(element("span", "mbti-source-note", "聊天证据推测，非标准量表。"));
-  sources.appendChild(details);
-}
-function renderRadar(traits, apiSource = false) {
-  const container = byId("radarContainer");
-  container.replaceChildren();
-  const keys = ["socialEnergy", "humor", "composure", "initiative", "care", "affection"];
-  const values = keys.map(key => Array.isArray(traits) ? traits.find(item => item?.key === key) : null);
-  if (values.some(item => !item || !Number.isFinite(item.val) || item.val < 0 || item.val > 100)) {
-    if (apiSource) {
-      const legend = element("div", "radar-values");
-      values.forEach((item, index) => {
-        const row = element("div", "radar-value");
-        row.append(element("span", "", item?.label || apiTraitLabels[keys[index]]),
-          element("strong", "", apiScore(item?.val) ?? "待判断"));
-        legend.appendChild(row);
-      });
-      container.appendChild(legend);
-    } else container.appendChild(element("div", "radar-empty", "暂无互动风格证据"));
-    return;
-  }
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 360 280");
-  svg.setAttribute("class", "radar-chart");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "六维互动风格雷达");
-  const point = (index, radius) => {
-    const angle = -Math.PI / 2 + index * Math.PI / 3;
-    return `${(180 + Math.cos(angle) * radius).toFixed(1)},${(140 + Math.sin(angle) * radius).toFixed(1)}`;
-  };
-  const shape = (tag, className, points) => {
-    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    node.setAttribute("class", className);
-    node.setAttribute("points", points);
-    svg.appendChild(node);
-  };
-  for (const radius of [25, 50, 75, 100]) shape("polygon", "radar-ring", keys.map((_, index) => point(index, radius)).join(" "));
-  for (let index = 0; index < keys.length; index++) shape("polyline", "radar-axis", `180,140 ${point(index, 100)}`);
-  shape("polygon", "radar-area", values.map((item, index) => point(index, item.val)).join(" "));
-  values.forEach((item, index) => {
-    const [x, y] = point(index, 100).split(",").map(Number);
-    const side = index === 1 || index === 2 ? 1 : index === 4 || index === 5 ? -1 : 0;
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("class", "radar-label");
-    label.setAttribute("x", String(x + side * 14));
-    label.setAttribute("y", String(y + (index === 0 ? -18 : index === 3 ? 20 : 0)));
-    label.setAttribute("text-anchor", side > 0 ? "start" : side < 0 ? "end" : "middle");
-    label.setAttribute("dominant-baseline", "middle");
-    label.textContent = item.label;
-    svg.appendChild(label);
-  });
-  const legend = element("div", "radar-values");
-  for (const item of values) {
-    const row = element("div", "radar-value");
-    row.append(element("span", "", item.label), element("strong", "", `${Math.round(item.val)}`));
-    legend.appendChild(row);
-  }
-  container.append(svg, legend);
-}
-function renderMembers(profile) {
-  const members = byId("groupMemberTabs");
-  const scope = `${chatState.currentUser}\u0000${portraitState.activeMember}`;
-  const previousSearch = members.querySelector(".member-search");
-  const previousPicker = members.querySelector(".member-picker");
-  const previous = scope === portraitState.memberRenderedScope && previousSearch ? {
-    open: previousPicker?.classList.contains("open"), query: previousSearch.value,
-    start: previousSearch.selectionStart, end: previousSearch.selectionEnd,
-    focused: document.activeElement === previousSearch,
-    page: Number(previousPicker?.dataset.page) || 0
-  } : null;
-  members.replaceChildren();
-  portraitState.memberRenderedScope = profile.isGroup ? scope : null;
-  members.style.display = profile.isGroup ? "flex" : "none";
-  if (!profile.isGroup) return;
-  if (Array.isArray(profile.members) && profile.members.length) portraitState.groupMembers = profile.members;
-  const overall = element("button", `member-chip${portraitState.activeMember ? "" : " active"}`, "群整体");
-  overall.type = "button";
-  overall.addEventListener("click", () => { closeMemberPicker(); if (portraitState.activeMember) void loadProfile(""); });
-  members.appendChild(overall);
-  if (portraitState.activeMember) members.appendChild(element("span", "member-current", portraitState.groupMembers.find(item => item.id === portraitState.activeMember)?.name || profile.name || portraitState.activeMember));
-  const picker = element("div", "member-picker");
-  const trigger = element("button", "member-picker-trigger", "选择成员");
-  trigger.type = "button";
-  trigger.setAttribute("aria-expanded", "false");
-  const panel = element("div", "member-picker-panel");
-  const search = element("input", "member-search");
-  search.type = "search";
-  search.placeholder = "搜索成员";
-  search.setAttribute("aria-label", "搜索群成员");
-  const list = element("div", "member-options");
-  const pager = element("div", "member-pager");
-  const previousPage = element("button", "member-page-btn", "上一页");
-  const pageText = element("span", "member-page-text");
-  const nextPage = element("button", "member-page-btn", "下一页");
-  previousPage.type = nextPage.type = "button";
-  pager.append(previousPage, pageText, nextPage);
-  let page = previous?.page ?? Math.max(0, Math.floor(portraitState.groupMembers.findIndex(item => item.id === portraitState.activeMember) / 6));
-  function renderPage() {
-    const query = search.value.trim().toLowerCase();
-    const filtered = portraitState.groupMembers.filter(member => `${member.name || ""} ${member.id || ""}`.toLowerCase().includes(query));
-    const pageCount = Math.max(1, Math.ceil(filtered.length / 6));
-    page = Math.min(Math.max(0, page), pageCount - 1);
-    picker.dataset.page = String(page);
-    list.replaceChildren();
-    for (const member of filtered.slice(page * 6, page * 6 + 6)) {
-      const option = element("button", `member-option${member.id === portraitState.activeMember ? " active" : ""}`, member.name || member.id);
-      option.type = "button";
-      option.addEventListener("click", () => { closeMemberPicker(); void loadProfile(member.id); });
-      list.appendChild(option);
-    }
-    if (!filtered.length) list.appendChild(element("div", "member-empty", "没有匹配成员"));
-    pager.hidden = pageCount <= 1;
-    pageText.textContent = `${page + 1} / ${pageCount}`;
-    previousPage.disabled = page === 0;
-    nextPage.disabled = page >= pageCount - 1;
-    list.scrollTop = 0;
-  }
-  search.addEventListener("input", () => { page = 0; renderPage(); });
-  previousPage.addEventListener("click", () => { page--; renderPage(); });
-  nextPage.addEventListener("click", () => { page++; renderPage(); });
-  trigger.addEventListener("click", () => { const open = picker.classList.toggle("open"); trigger.setAttribute("aria-expanded", String(open)); if (open) search.focus(); });
-  panel.append(search, list, pager);
-  picker.append(trigger, panel);
-  members.appendChild(picker);
-  if (previous) {
-    search.value = previous.query;
-    picker.classList.toggle("open", !!previous.open);
-    trigger.setAttribute("aria-expanded", String(!!previous.open));
-    if (previous.focused && previous.open) {
-      search.focus();
-      search.setSelectionRange(previous.start, previous.end);
-    }
-  }
-  renderPage();
-}
-function renderProfile(profile) {
-  const group = !!profile.isGroup;
-  const legacyApi = profile.apiSource && !profile.apiNativeProfile;
-  portraitState.apiPortraitProgressNode = null;
-  text("personaHeaderTitle", profile.name || profile.username || "人物画像");
-  text("heroName", profile.name || profile.username || "未知");
-  setAvatar("heroAvatar", profile.avatar, profile.avatarCandidates, profile.name || profile.username, group && !portraitState.activeMember);
-  renderMbti(profile);
-  byId("heroArchetype").style.display = "none";
-  text("heroRelationBadge", group ? portraitState.activeMember ? "群成员画像" : "群画像" : profile.affinity == null ?
-    legacyApi ? "好感待判断" : "好感待分析" : `好感 ${profile.affinity}`);
-  const stats = profile.stats || {};
-  text("stripMessageLabel", group ? portraitState.activeMember ? "成员消息：" : "群消息：" :
-    profile.apiSource && !profile.apiNativeProfile ? "会话消息：" : "对方消息：");
-  text("stripTextLabel", group ? portraitState.activeMember ? "成员文本：" : "群文本：" : "对方文本：");
-  text("stripAnalysisLabel", "已分析：");
-  const messageCount = profile.apiSource && stats.messageCount === null ? "—" : Number(stats.messageCount) || 0;
-  text("stripDbPath", group && !portraitState.activeMember ?
-    `${messageCount} 条 · ${Number(stats.participantCount) || 0} 人参与` :
-    `${messageCount} 条`);
-  text("stripMsgCount", `${Number(stats.textCount) || 0} 条`);
-  updateProfileProgress(profile);
-  const metric = byId("heroMetricBox");
-  metric.replaceChildren();
-  if (group) {
-    const grid = element("div", "group-activity-grid");
-    for (const [label, value] of [["参与人数", stats.participantCount], ["消息数", messageCount], ["文本消息", stats.textCount],
-      ["已分析文本", `${Number(stats.analyzedCount) || 0} / ${Number(stats.textCount) || 0}`]]) {
-      const card = element("div", "group-stat-card");
-      const valueNode = element("span", "group-stat-val", value);
-      if (profile.apiSource && label === "已分析文本") portraitState.apiPortraitProgressNode = valueNode;
-      card.append(element("span", "group-stat-label", label), valueNode);
-      grid.appendChild(card);
-    }
-    metric.appendChild(grid);
-  } else {
-    const score = profile.affinity;
-    const header = element("div", "game-favor-header");
-    header.append(element("div", "game-favor-title-wrap", "♥ 好感度等级"), element("div", "game-favor-score",
-      score == null ? legacyApi ? "待判断" : "待分析" : String(score)));
-    metric.appendChild(header);
-    if (typeof score === "number" && score >= 0 && score <= 100) {
-      const names = ["素昧平生", "泛泛之交", "初识相知", "友善默契", "亲密无间"];
-      const level = Math.min(5, Math.floor(score / 20) + 1);
-      const track = element("div", "favor-heart-track");
-      names.forEach((name, index) => {
-        const stage = index + 1;
-        const node = element("div", `heart-stage-node${stage <= level ? " unlocked" : ""}${stage === level ? " current" : ""}`);
-        node.append(element("div", "heart-icon-wrap", stage === level ? "❤️" : stage < level ? "💖" : "🤍"), element("span", "heart-stage-name", name));
-        track.appendChild(node);
-      });
-      const progress = element("div", "game-favor-progress-wrap");
-      const bar = element("div", "game-favor-progress-bar");
-      const fill = element("div", "game-favor-progress-fill");
-      fill.style.width = `${score}%`;
-      bar.appendChild(fill);
-      progress.appendChild(bar);
-      metric.append(track, progress);
-    }
-  }
-  renderRadar(profile.traits, !!legacyApi);
-  text("tagCardTitle", legacyApi ? "常见话题" : "高频词");
-  text("tagCardBadge", legacyApi ? "API 画像" : "词频统计 Top 6");
-  const tags = byId("tagCloud");
-  tags.replaceChildren();
-  for (const keyword of (profile.keywords || []).map((value, index) => ({ value, index })).sort((left, right) => (Number(right.value.count) || 0) - (Number(left.value.count) || 0) || left.index - right.index).slice(0, 6).map(item => item.value)) {
-    const tag = element("span", "keyword-tag", keyword.word);
-    if (!legacyApi) tag.appendChild(element("span", "tag-count", ` ${keyword.count}`));
-    tags.appendChild(tag);
-  }
-  if (!tags.childNodes.length) tags.textContent = legacyApi ? "待判断" : "暂无关键词";
-  renderPortraitSummary(profile);
-  renderApiPortraitDetails(null);
-  renderMembers(profile);
-}
-portraitState.apiPortraitRequest = 0;
-const API_PORTRAIT_MIN_CONTEXT = 12288;
-const API_PORTRAIT_CONTEXT_HINT = "画像分析需要至少 12288 tokens 上下文，请在设置中调整";
-function apiPortraitContextReady() {
-  const tokens = settingsState.modelSourceSnapshot.api?.contextTokens;
-  return Number.isSafeInteger(tokens) && tokens >= API_PORTRAIT_MIN_CONTEXT;
-}
-portraitState.apiPortraitPollTimer = null;
-portraitState.apiPortraitSnapshot = null;
-portraitState.apiPortraitBusy = false;
-portraitState.renderedApiPortraitKey = null;
-portraitState.apiPortraitLoadingKey = null;
-portraitState.apiPortraitSubmitErrors = new Map();
-function rememberApiPortraitSubmitError(key, message) {
-  portraitState.apiPortraitSubmitErrors.delete(key);
-  portraitState.apiPortraitSubmitErrors.set(key, message);
-  while (portraitState.apiPortraitSubmitErrors.size > 64)
-    portraitState.apiPortraitSubmitErrors.delete(portraitState.apiPortraitSubmitErrors.keys().next().value);
-}
-portraitState.apiPortraitReadFailures = 0;
-portraitState.renderedApiPortraitScopeKey = null;
-portraitState.renderedApiProfileScope = null;
-portraitState.renderedApiProfileSignature = null;
-portraitState.apiPortraitProgressNode = null;
-function renderPortraitSummary(localProfile) {
-  text("botSummaryText", localProfile?.summary || (localProfile?.apiSource && !localProfile.apiNativeProfile ?
-    localProfile.apiPortrait ? "待判断" : "待分析" : "暂无摘要"));
-  text("summaryBadge", localProfile?.apiSource ? `API · ${settingsState.modelSourceSnapshot.api?.model || "模型"}` : "本地 Laya");
-}
-const apiTraitLabels = {
-  socialEnergy: "表达活力", humor: "幽默表达", composure: "情绪平和",
-  initiative: "话题主动", care: "关怀支持", affection: "亲近表达",
-};
-function apiScore(value) {
-  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
-}
-function mbtiBasisSnapshot(value) {
-  if (!value || typeof value !== "object") return null;
-  return Object.fromEntries(["EI", "SN", "TF", "JP"].map(axis => {
-    const item = value[axis] || {};
-    return [axis, {
-      status: ["supported", "insufficient", "unverified"].includes(item.status) ? item.status : "unverified",
-      kind: ["pattern", "self-report", "unspecified"].includes(item.kind) ? item.kind : "unspecified",
-      reason: typeof item.reason === "string" ? item.reason.slice(0, 160) : "",
-      evidenceCount: Number.isSafeInteger(item.evidenceCount) && item.evidenceCount >= 0 ? Math.min(item.evidenceCount, 100000) : 0,
-    }];
-  }));
-}
-function apiPortraitHasContent(portrait) {
-  if (!portrait || typeof portrait !== "object") return false;
-  return ["summary", "communication", "emotionExpression", "interactionPreferences"]
-    .some(key => typeof portrait[key] === "string" && portrait[key].trim()) ||
-    ["topics", "patterns", "boundaries", "uncertain"]
-      .some(key => Array.isArray(portrait[key]) && portrait[key].length) ||
-    apiScore(portrait.affinity) !== null ||
-    Object.values(portrait.mbtiAxes || {}).some(value => apiScore(value) !== null) ||
-    Object.values(portrait.traits || {}).some(value => apiScore(value) !== null);
-}
-function renderApiPortraitDetails(portrait) {
-  const container = byId("apiPortraitDetails");
-  container.replaceChildren();
-  container.hidden = !portrait;
-  if (!portrait) return;
-  for (const [label, value] of [["交流方式", portrait.communication], ["情绪表达", portrait.emotionExpression],
-    ["互动偏好", portrait.interactionPreferences], ["交流模式", portrait.patterns],
-    ["明确边界", portrait.boundaries], ["证据不足", portrait.uncertain]]) {
-    const content = Array.isArray(value) ? value.join("、") : value;
-    const row = element("div", "api-portrait-detail");
-    row.append(element("strong", "", label), element("span", "", content || "待判断"));
-    container.appendChild(row);
-  }
-}
-function apiProcessedTargets(available, progress, fallback = 0) {
-  const target = Number(available?.targetTextCount) || 0;
-  if (Number.isSafeInteger(progress?.processedTargetTexts) && progress.processedTargetTexts >= 0)
-    return Math.min(target || fallback, progress.processedTargetTexts);
-  const total = Number(progress?.total) || 0;
-  const processed = Number(progress?.processed) || 0;
-  if (progress?.complete === true || total <= 0) return target || fallback;
-  // Only the processed share of target texts counts as MBTI evidence, so an
-  // unfinished portrait cannot unlock from messages it has not analyzed yet.
-  return Math.min(target, Math.floor(target * Math.max(0, Math.min(1, processed / total))));
-}
-function validNativeApiProfile(profile, data) {
-  return !!profile && typeof profile === "object" && profile.account === data.account &&
-    profile.username === data.subject && profile.isGroup === data.identity?.isGroup &&
-    !!profile.stats && typeof profile.stats === "object" && Array.isArray(profile.members) &&
-    Array.isArray(profile.traits) && Array.isArray(profile.keywords);
-}
-function renderApiProfile(data) {
-  const identity = data.identity;
-  const available = data.available || {};
-  const progress = data.progress || {};
-  const portrait = data.portrait;
-  const group = identity.isGroup;
-  const groupOverall = group && !portraitState.activeMember;
-  const analyzedTargets = apiProcessedTargets(available, progress);
-  const analyzed = groupOverall ? Number(progress.processed) || 0 : analyzedTargets;
-  const analysisTotal = groupOverall ? Number(progress.total) || Number(available.textCount) || 0 :
-    Number(progress.totalTargetTexts) || Number(available.targetTextCount) || 0;
-  const messageCount = group ? identity.messageCount : available.messageCount;
-  const cached = cachedProfileFor(data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
-  const stats = {
-    messageCount: Number.isSafeInteger(messageCount) && messageCount >= 0 ? messageCount :
-      cached?.stats?.messageCount ?? null,
-    textCount: group ? Number(identity.textCount) || 0 : Number(available.targetTextCount) || 0,
-    analyzedCount: analyzed,
-    participantCount: group ? identity.members.length : 1,
-  };
-  const profile = data.nativeProfile ? {
-    ...data.nativeProfile,
-    apiSource: true, apiSourceId: data.sourceId, apiNativeProfile: true,
-    apiPortrait: null, apiMbtiAxes: null, apiMbtiBasis: null,
-    apiTargetTexts: Number(data.nativeProfile.mbtiInference?.eligibleMessages) || 0,
-    apiProgressProcessed: analyzed, apiProgressTotal: analysisTotal,
-    apiComplete: progress.complete === true,
-    apiRunning: ["queued", "running"].includes(data.job?.status),
-  } : {
-    account: data.account, ...identity, isGroup: group, members: identity.members, stats,
-    apiSource: true, apiSourceId: data.sourceId, apiPortrait: portrait,
-    apiMbtiAxes: portrait?.mbtiAxes || null,
-    apiMbtiBasis: mbtiBasisSnapshot(data.mbtiBasis),
-    apiTargetTexts: analyzedTargets,
-    apiProgressProcessed: analyzed,
-    apiProgressTotal: analysisTotal,
-    apiComplete: progress.complete === true,
-    apiRunning: ["queued", "running"].includes(data.job?.status),
-    affinity: group ? null : apiScore(portrait?.affinity),
-    traits: Object.entries(apiTraitLabels).map(([key, label]) =>
-      ({ key, label, val: apiScore(portrait?.traits?.[key]) })),
-    keywords: Array.isArray(portrait?.topics) ? portrait.topics.map(word => ({ word })) : [],
-    summary: portrait?.summary || "",
-  };
-  portraitState.renderedProfileKey = null;
-  portraitState.renderedProfileSignature = null;
-  renderProfile(profile);
-  // Persist the same bounded display snapshot the local Laya path uses, keyed by the
-  // active source id so a cold start or A->B->A renders before the slow GET.
-  rememberProfile(profile, data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
-}
-function updateApiProfileProgress(data) {
-  const progress = data.progress || {};
-  const groupOverall = !!data.identity.isGroup && !portraitState.activeMember;
-  const processed = groupOverall ? Number(progress.processed) || 0 :
-    apiProcessedTargets(data.available, progress);
-  const total = groupOverall ? Number(progress.total) || 0 :
-    Number(progress.totalTargetTexts) || Number(data.available?.targetTextCount) || 0;
-  const progressFields = {
-    apiSource: true, isGroup: !!data.identity.isGroup,
-    apiProgressProcessed: processed, apiProgressTotal: total,
-    apiComplete: progress.complete === true,
-    apiRunning: ["queued", "running"].includes(data.job?.status),
-  };
-  const cached = cachedProfileFor(data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
-  if (cached) rememberProfile({
-    ...cached, ...progressFields,
-    apiTargetTexts: cached.apiNativeProfile ? cached.apiTargetTexts : apiProcessedTargets(data.available, progress),
-    stats: cached.apiNativeProfile ? cached.stats : { ...cached.stats, analyzedCount: processed },
-  }, data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
-  updateProfileProgress(progressFields);
-  if (portraitState.apiPortraitProgressNode) portraitState.apiPortraitProgressNode.textContent = `${processed} / ${total}`;
-}
-function clearApiPortraitView() {
-  portraitState.apiPortraitSnapshot = null;
-  portraitState.renderedApiProfileScope = null;
-  portraitState.renderedApiProfileSignature = null;
-  portraitState.apiPortraitProgressNode = null;
-  clearProfileView(chatState.sessions.get(chatState.currentUser)?.name || chatState.currentUser || "正在读取画像…");
-  text("tagCardTitle", "常见话题");
-  text("tagCardBadge", "API 画像");
-  byId("apiPortraitStatus").hidden = false;
-  byId("btnRetryApiPortrait").hidden = true;
-  text("apiPortraitStatus", "正在读取会话消息");
-}
-function cancelApiPortraitPoll() {
-  ++portraitState.apiPortraitRequest;
-  clearTimeout(portraitState.apiPortraitPollTimer);
-  portraitState.apiPortraitPollTimer = null;
-  portraitState.apiPortraitLoadingKey = null;
-}
-function syncPortraitMode() {
-  const apiMode = settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api";
-  byId("personaDashboard").hidden = false;
-  byId("apiPortraitStatus").hidden = !apiMode;
-  if (!apiMode) byId("btnRetryApiPortrait").hidden = true;
-  text("portraitSourceBadge", apiMode ? `API ${settingsState.modelSourceSnapshot.api?.model || "模型"}` : "本地 Laya");
-  if (!apiMode) cancelApiPortraitPoll();
-  return apiMode;
-}
-function renderApiPortrait(data) {
-  const scope = JSON.stringify([data.account, chatState.currentUser, data.sourceId, data.subject]);
-  const previous = portraitState.apiPortraitSnapshot;
-  const cached = cachedProfileFor(data.account, chatState.currentUser, portraitState.activeMember, data.sourceId);
-  const portrait = data.portrait == null && portraitState.renderedApiProfileScope === scope &&
-    apiPortraitHasContent(previous?.portrait) ? previous.portrait :
-    data.portrait == null && apiPortraitHasContent(cached?.apiPortrait) ? cached.apiPortrait : data.portrait;
-  const nativeProfile = data.nativeProfile ||
-    (previous?._scope === scope ? previous.nativeProfile : null) ||
-    (cached?.apiNativeProfile ? cached : null);
-  const displayData = { ...data, portrait, nativeProfile };
-  // A task status/timer change must not rebuild the portrait cards. Native
-  // scores and evidence are already derived by the shared backend rules.
-  const nativeContent = nativeProfile && [nativeProfile.stats, nativeProfile.affinity,
-    nativeProfile.traits, nativeProfile.keywords, nativeProfile.summary, nativeProfile.mbtiInference];
-  const signature = JSON.stringify([scope, displayData.identity,
-    displayData.available?.messageCount, displayData.available?.targetTextCount,
-    nativeContent || displayData.portrait, nativeContent ? null : displayData.mbtiBasis]);
-  portraitState.apiPortraitSnapshot = { ...displayData, _scope: scope };
-  if ((!cached || data.inventoryReady && data.available) &&
-      (scope !== portraitState.renderedApiProfileScope || signature !== portraitState.renderedApiProfileSignature)) {
-    renderApiProfile(displayData);
-    portraitState.renderedApiProfileScope = scope;
-    portraitState.renderedApiProfileSignature = signature;
-  } else if (!cached || data.inventoryReady && data.available) updateApiProfileProgress(displayData);
-  const available = data.available;
-  const progress = data.progress || {};
-  const job = data.job || {};
-  const ready = data.inventoryReady === true && !!available;
-  const targetTexts = Number(available?.targetTextCount) || 0;
-  const total = Number(available?.textCount) || Number(progress.total) || 0;
-  const running = ["queued", "running"].includes(job.status);
-  const upToDate = ready && progress.complete === true && Number(progress.processed) >= total;
-  const contextReady = apiPortraitContextReady();
-  const portraitErrors = {
-    "context-too-long": contextReady ? "模型不支持当前请求上下文，请按模型实际支持容量调整设置" : API_PORTRAIT_CONTEXT_HINT,
-    "invalid-output": "模型返回格式不正确", "invalid-portrait": "模型画像结果不完整",
-    "portrait-state-invalid": "画像进度校验失败，请清除当前模型的分析缓存后重试",
-    "timeout": "模型响应超时", "rate-limit": "接口请求受限",
-    "empty-response": "模型未返回内容", "response-too-large": "模型返回内容过长",
-    "output-truncated": "模型输出达到长度上限被截断",
-    "auth": "API Key 无效", "network": "网络连接失败",
-    "provider-error": "模型服务返回错误",
-  };
-  let state = "";
-  if (data.suspended) state = "API 画像缓存已暂停";
-  else if (!contextReady && !running) state = API_PORTRAIT_CONTEXT_HINT;
-  else if (job.status === "error") state = portraitErrors[job.error] || "API 画像分析失败";
-  else if (running && job.phase === "preparing") state = "正在准备待分析文本";
-  else if (running && job.phase === "classifying") state = "正在分析聊天";
-  else if (running && job.phase === "observing") state = "正在提取聊天观察";
-  else if (running && job.phase === "synthesizing") state = "正在整理人物画像";
-  else if (!ready) state = data.inventoryStatus === "error" ? "会话读取失败，正在重试" : "正在读取会话消息";
-  else if (targetTexts < 1) state = "暂无目标文本，等待更多消息";
-  else if (running) state = "API 分析中";
-  else if (data.needsRebuild) state = "画像算法已更新，可重新分析";
-  else if (upToDate) state = "API 画像已更新";
-  else state = "正在准备 API 画像";
-  const autoKey = portraitState.renderedApiPortraitKey + ":" + total + ":" + (Number(available?.totalChars) || 0);
-  const submitError = portraitState.apiPortraitSubmitErrors.get(autoKey);
-  if (contextReady && submitError && !running && job.status !== "error") state = "API 画像提交失败（" + submitError + "）";
-  if (job.retry && running) {
-    const remaining = Math.max(0, Math.ceil((Number(job.retry.nextAtMs) - Date.now()) / 1000));
-    const reason = portraitErrors[job.retry.reason] || "模型响应失败";
-    state = `${reason}，${remaining} 秒后自动重试 ${job.retry.attempt}/${job.retry.max}`;
-    setStripStatus(`自动重试 ${job.retry.attempt}/${job.retry.max} · ${remaining} 秒`);
-  } else if (running && job.phase === "preparing") {
-    setStripStatus("正在准备待分析文本");
-  } else if (running && job.phase === "synthesizing") {
-    setStripStatus("观察已保存 · 正在整理画像");
-  } else if (running) {
-    const elapsed = Math.max(0, Math.floor((Date.now() - Number(job.batchStartedAtMs || job.startedAtMs || Date.now())) / 1000));
-    const rate = Number(job.rateTextsPerSecond);
-    const speed = Number.isFinite(rate) && rate > 0 ? `上批 ${rate.toFixed(1)} 条/秒` : "等待首批结果";
-    setStripStatus(`API 分析中 · ${elapsed} 秒 · ${speed}`);
-  } else if (job.status === "error" || submitError) {
-    setStripStatus("分析失败，请重试");
-  }
-  if (data.rebuilding) {
-    state = !contextReady || data.suspended || job.status === "error" || submitError || job.retry ?
-      `${state} · 暂显示旧画像` : "正在按新规则分析，暂显示旧画像";
-  }
-  byId("apiPortraitStatus").hidden = false;
-  text("apiPortraitStatus", state);
-  // Like local Laya, entering/switching back to a conversation automatically continues
-  // the saved incremental analysis. The backend resumes from the persisted cursor and
-  // sends only new/unprocessed text, and dedupes an in-flight job. A terminal error stops
-  // the loop and keeps the prior portrait with an actionable Manual retry.
-  const canContinue = ready && targetTexts >= 1 && contextReady && !data.suspended && !running &&
-    !data.needsRebuild && !upToDate && job.status !== "error" && !submitError;
-  const action = byId("btnRetryApiPortrait");
-  action.disabled = !contextReady;
-  const canReassess = upToDate && contextReady && !running && !data.suspended &&
-    !(data.identity?.isGroup && !portraitState.activeMember) &&
-    apiPortraitHasContent(portrait) && apiCanReassessMbti();
-  action.hidden = !(job.status === "error" && ready || submitError || data.needsRebuild && !running && ready || canReassess);
-  action.textContent = data.needsRebuild && job.status !== "error" ? "更新画像" :
-    canReassess && job.status !== "error" ? "重新评估 MBTI" : "重试分析";
-  if (canContinue && !portraitState.apiPortraitBusy) {
-    void startApiPortrait(autoKey);
-  }
-}
-async function loadApiPortrait(member = "") {
-  if (!chatState.currentUser || !chatState.currentAccount || !settingsState.modelSourceResolved ||
-      settingsState.modelSourceSnapshot.mode !== "api" || member !== portraitState.activeMember) return;
-  const account = chatState.currentAccount, user = chatState.currentUser, sourceId = settingsState.modelSourceSnapshot.sourceId;
-  const subject = member || user;
-  const scopeKey = JSON.stringify([account, user, sourceId, subject]);
-  const cacheKey = profileCacheKey(account, user, member, sourceId);
-  const portraitKey = JSON.stringify([account, user, sourceId, subject, settingsState.modelSourceSnapshot.api?.contextTokens]);
-  if (portraitState.apiPortraitLoadingKey === portraitKey) return;
-  clearTimeout(portraitState.apiPortraitPollTimer);
-  const token = ++portraitState.apiPortraitRequest;
-  portraitState.apiPortraitLoadingKey = portraitKey;
-  if (portraitKey !== portraitState.renderedApiPortraitKey) {
-    byId("btnRetryApiPortrait").hidden = true;
-    portraitState.renderedApiPortraitKey = portraitKey;
-    portraitState.apiPortraitReadFailures = 0;
-    if (scopeKey !== portraitState.renderedApiPortraitScopeKey) {
-      portraitState.renderedApiPortraitScopeKey = scopeKey;
-      // Reuse the Laya snapshot store: render this account/conversation/source's saved
-      // portrait immediately; only a first visit with no snapshot shows the loading state.
-      if (!renderCachedApiProfile(account, user, member, sourceId)) clearApiPortraitView();
-    }
-  }
-  if (portraitState.renderedApiProfileScope !== scopeKey && portraitState.renderedProfileKey !== cacheKey)
-    renderCachedApiProfile(account, user, member, sourceId);
-  const params = new URLSearchParams({ user });
-  if (member) params.set("member", member);
-  try {
-    const data = await api("/api/model-portrait?" + params, {}, chatState.controller?.signal);
-    if (token !== portraitState.apiPortraitRequest || account !== chatState.currentAccount || user !== chatState.currentUser ||
-        sourceId !== settingsState.modelSourceSnapshot.sourceId || member !== portraitState.activeMember || chatState.view !== "persona") return;
-    if (data?.account !== account || data.sourceId !== sourceId || data.subject !== subject ||
-        !data.identity || data.identity.username !== subject ||
-        typeof data.identity.isGroup !== "boolean" || !Array.isArray(data.identity.members) ||
-        typeof data.inventoryReady !== "boolean" ||
-        (data.nativeProfile != null && !validNativeApiProfile(data.nativeProfile, data)) ||
-        (data.inventoryReady && (!data.available ||
-          !(data.available.totalChars === null || Number.isSafeInteger(data.available.totalChars) && data.available.totalChars >= 0) ||
-          !Number.isSafeInteger(data.available.textCount) || data.available.textCount < 0)))
-      throw new Error("画像数据无效");
-    renderApiPortrait(data);
-    if (data.inventoryReady) portraitState.profileSnapshotsRequireRefresh.delete(cacheKey);
-    portraitState.apiPortraitReadFailures = 0;
-    if (!data.inventoryReady || ["queued", "running"].includes(data.job?.status))
-      portraitState.apiPortraitPollTimer = setTimeout(() => { void loadApiPortrait(member); }, 2200);
-  } catch (error) {
-    if (token === portraitState.apiPortraitRequest && error?.name !== "AbortError") {
-      text("apiPortraitStatus", "画像读取失败，请稍后重试");
-      portraitState.apiPortraitReadFailures++;
-      if (portraitState.apiPortraitReadFailures <= 3)
-        portraitState.apiPortraitPollTimer = setTimeout(() => { void loadApiPortrait(member); },
-          Math.min(5000, 1500 * portraitState.apiPortraitReadFailures));
-      else byId("btnRetryApiPortrait").hidden = false;
-    }
-  } finally {
-    if (token === portraitState.apiPortraitRequest && portraitState.apiPortraitLoadingKey === portraitKey)
-      portraitState.apiPortraitLoadingKey = null;
-  }
-}
-async function startApiPortrait(autoKey, force = false, refreshAxes = false) {
-  const account = chatState.currentAccount, user = chatState.currentUser, sourceId = settingsState.modelSourceSnapshot.sourceId;
-  const member = portraitState.activeMember;
-  if (!account || !user || settingsState.modelSourceSnapshot.mode !== "api" || portraitState.apiPortraitBusy ||
-      portraitState.apiPortraitSubmitErrors.has(autoKey) && !force) return;
-  if (!apiPortraitContextReady()) {
-    text("apiPortraitStatus", API_PORTRAIT_CONTEXT_HINT);
-    byId("btnRetryApiPortrait").disabled = true;
-    return;
-  }
-  if (force) portraitState.apiPortraitSubmitErrors.delete(autoKey);
-  portraitState.apiPortraitBusy = true;
-  byId("btnRetryApiPortrait").hidden = true;
-  setStripStatus("API 分析中");
-  text("apiPortraitStatus", refreshAxes ? "正在根据已保存画像重新评估 MBTI" : "正在提交 API 画像");
-  try {
-    const body = { account, user, ...(member ? { member } : {}),
-      ...(refreshAxes ? { refreshAxes: true } : {}) };
-    const data = await api("/api/model-portrait", { method: "POST", body: JSON.stringify(body) });
-    if (account !== chatState.currentAccount || user !== chatState.currentUser ||
-        sourceId !== settingsState.modelSourceSnapshot.sourceId || member !== portraitState.activeMember) return;
-    if (data?.account !== account || data.sourceId !== sourceId) throw new Error("画像任务不匹配");
-    portraitState.apiPortraitSubmitErrors.delete(autoKey);
-    void loadApiPortrait(member);
-  } catch (error) {
-    if (account !== chatState.currentAccount || user !== chatState.currentUser ||
-        sourceId !== settingsState.modelSourceSnapshot.sourceId || member !== portraitState.activeMember) return;
-    const reason = modelSourceRequestError(error);
-    rememberApiPortraitSubmitError(autoKey, reason);
-    setStripStatus("分析失败，请重试");
-    text("apiPortraitStatus", "API 画像提交失败（" + reason + "）");
-    byId("btnRetryApiPortrait").hidden = false;
-  } finally {
-    portraitState.apiPortraitBusy = false;
-    if (account === chatState.currentAccount && user === chatState.currentUser && member !== portraitState.activeMember &&
-        chatState.view === "persona" && settingsState.modelSourceSnapshot.mode === "api") void loadApiPortrait(portraitState.activeMember);
-  }
-}
-function apiPortraitSnapshotCurrent() {
-  const snapshot = portraitState.apiPortraitSnapshot;
-  const subject = portraitState.activeMember || chatState.currentUser;
-  const sourceId = settingsState.modelSourceSnapshot.sourceId;
-  return settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" &&
-    snapshot?.account === chatState.currentAccount && snapshot.sourceId === sourceId && snapshot.subject === subject &&
-    snapshot._scope === JSON.stringify([chatState.currentAccount, chatState.currentUser, sourceId, subject]);
-}
-function apiCanReassessMbti() {
-  const snapshot = portraitState.apiPortraitSnapshot;
-  if (snapshot?.nativeProfile) return false;
-  const axes = snapshot?.portrait?.mbtiAxes;
-  if (!apiPortraitSnapshotCurrent() || !axes || snapshot?.progress?.complete !== true || snapshot.needsRebuild ||
-      snapshot.identity?.isGroup && !portraitState.activeMember) return false;
-  return (Number(snapshot.available?.targetTextCount) || 0) >= 100;
-}
-byId("btnRetryApiPortrait").addEventListener("click", () => {
-  const available = portraitState.apiPortraitSnapshot?.available;
-  if (!available || !portraitState.renderedApiPortraitKey || !apiPortraitSnapshotCurrent()) {
-    portraitState.apiPortraitReadFailures = 0;
-    byId("btnRetryApiPortrait").hidden = true;
-    void loadApiPortrait(portraitState.activeMember);
-    return;
-  }
-  const autoKey = portraitState.renderedApiPortraitKey + ":" +
-    (Number(available.textCount) || 0) + ":" + (Number(available.totalChars) || 0);
-  // Explicit reassessment uses saved observations, including after a prior partial
-  // or complete estimate. Unfinished work keeps the normal resume behavior.
-  void startApiPortrait(autoKey, true, apiCanReassessMbti());
-});
-async function loadProfile(member = "", retry = false) {
-  if (!chatState.currentUser || !settingsState.modelSourceResolved) return;
-  byId("btnResetPortrait").disabled = !chatState.currentAccount || !chatState.selectedConversations?.has(chatState.currentUser);
-  const apiMode = syncPortraitMode();
-  const token = ++portraitState.profileGeneration;
-  const account = chatState.currentAccount;
-  const user = chatState.currentUser;
-  const key = profileCacheKey(account, user, member);
-  const previousMember = portraitState.activeMember;
-  portraitState.activeMember = member;
-  if (chatState.sessions.get(user)?.isGroup) rememberProfileMember(account, user, member);
-  if (apiMode) {
-    portraitState.profilePending = false;
-    void loadApiPortrait(member);
-    return;
-  }
-  if (key !== portraitState.renderedProfileKey) {
-    const cached = cachedProfileFor(account, user, member);
-    if (cached) {
-      renderProfile(cached);
-      portraitState.renderedProfileKey = key;
-      portraitState.renderedProfileSignature = JSON.stringify(cached);
-    } else {
-      const members = previousMember !== member ? portraitState.groupMembers : null;
-      clearProfileView(chatState.sessions.get(user)?.name || user);
-      if (members) portraitState.groupMembers = members;
-    }
-  }
-  portraitState.profilePending = true;
-  setStripStatus(key === portraitState.renderedProfileKey ? "刷新画像中" : "读取画像中");
-  try {
-    const data = await api(`/api/profile?user=${encodeURIComponent(user)}${member ? `&member=${encodeURIComponent(member)}` : ""}${retry ? "&retry=1" : ""}`, {}, chatState.controller.signal);
-    if (token === portraitState.profileGeneration && account === chatState.currentAccount && user === chatState.currentUser && member === portraitState.activeMember) {
-      if (!acceptResponseAccount(data.account)) return;
-      observeProfileRate(data, key);
-      const signature = JSON.stringify(data);
-      if (key !== portraitState.renderedProfileKey || signature !== portraitState.renderedProfileSignature) {
-        const previous = portraitState.profileCache.get(key);
-        try { renderProfile(data); }
-        catch (error) {
-          if (previous && portraitState.renderedProfileKey === key) {
-            try { renderProfile(previous); } catch { }
-          }
-          console.error("画像显示失败", error);
-          setStripStatus("画像显示失败");
-          return;
-        }
-        portraitState.renderedProfileKey = key;
-        portraitState.renderedProfileSignature = signature;
-      }
-      portraitState.profileCache.set(key, data);
-      rememberProfile(data, account, user, member);
-      portraitState.profileSnapshotsRequireRefresh.delete(key);
-      updateProfileProgress(data);
-      if (portraitState.currentAnalysisJob) renderJob(portraitState.currentAnalysisJob);
-    }
-  } catch (error) {
-    if (error.name !== "AbortError" && token === portraitState.profileGeneration) {
-      if (handleAccountBoundaryError(error)) return;
-      const hasVisibleProfile = portraitState.renderedProfileKey === key && portraitState.profileCache.has(key);
-      setStripStatus(hasVisibleProfile ? "画像刷新失败" : "画像读取失败，请重试");
-      if (!hasVisibleProfile) status(byId("heroMetricBox"), "画像读取失败", () => loadProfile(member));
-    }
-  } finally { if (token === portraitState.profileGeneration) portraitState.profilePending = false; }
+// The friend's display name in the context handed to plugin pages.
+function pluginFriendName(user) {
+  return user ? String(chatState.sessions.get(user)?.name || user).slice(0, 128) : "";
 }
 function applySettings() {
   document.body.classList.toggle("theme-light", settingsState.settings.theme === "light");
   document.documentElement.classList.toggle("desktop-host", !!window.desktopHost);
   document.documentElement.style.zoom = settingsState.settings.zoom;
   document.documentElement.style.setProperty("--zoom-inverse", String(1 / Number(settingsState.settings.zoom)));
+  window.SessionResize?.refresh();
+  window.ComposerResize?.refresh();
   window.desktopHost?.setTheme?.(settingsState.settings.theme);
+  window.ExternalImportHost?.theme(settingsState.settings.theme);
   byId("selectThemeMode").value = settingsState.settings.theme;
   byId("selectZoomLevel").value = settingsState.settings.zoom;
-  byId("btnToggleIntent").classList.toggle("active", settingsState.settings.intent);
-  byId("btnToggleIntent").setAttribute("aria-pressed", String(settingsState.settings.intent));
-  byId("btnToggleBackgroundAnalyze").classList.toggle("active", settingsState.settings.backgroundAnalyze);
-  byId("btnToggleBackgroundAnalyze").setAttribute("aria-pressed", String(settingsState.settings.backgroundAnalyze));
-  byId("btnToggleBackgroundAnalyze").textContent = settingsState.settings.backgroundAnalyze ? "已开启" : "已关闭";
-  if (settingsState.analysisOverviewSnapshot) renderAnalysisOverview(settingsState.analysisOverviewSnapshot);
-  refreshLabels();
 }
-settingsState.runtimeSnapshot = null;
-settingsState.runtimeRequest = 0;
-settingsState.runtimeBusy = false;
-settingsState.runtimePollTimer = null;
-function validRuntime(data) {
-  return data && ["cpu", "gpu"].includes(data.requestedProvider) &&
-    [null, "cpu", "webgpu"].includes(data.modelProvider) &&
-    ["ready", "loading", "idle", "missing", "error"].includes(data.status) &&
-    (data.status !== "ready" || data.modelProvider !== null);
-}
-function showRuntime(data) {
-  settingsState.runtimeSnapshot = data;
-  byId("selectRuntimeProvider").value = data.requestedProvider;
-  const actual = data.modelProvider === "webgpu" ? "GPU" : data.modelProvider === "cpu" ? "CPU" : "";
-  text("runtimeStatus", data.status === "ready" ? `当前 ${actual}` :
-    data.status === "loading" ? "正在加载…" : data.status === "missing" ? "未安装模型" :
-    data.status === "error" ? "加载失败" : "待加载");
-  clearTimeout(settingsState.runtimePollTimer);
-  if (["loading", "idle"].includes(data.status) && byId("settingsModal").classList.contains("show") &&
-      byId("selectModelSource").value === "local")
-    settingsState.runtimePollTimer = setTimeout(() => { void loadRuntime(true); }, 1200);
-}
-async function loadRuntime(silent = false) {
-  if (settingsState.runtimeBusy) return;
-  const request = ++settingsState.runtimeRequest;
-  const select = byId("selectRuntimeProvider");
-  if (!silent) {
-    select.disabled = true;
-    text("runtimeStatus", "读取中…");
-  }
-  try {
-    const data = await api("/api/runtime");
-    if (request !== settingsState.runtimeRequest) return;
-    if (!validRuntime(data)) throw new Error("运行状态无效");
-    showRuntime(data);
-  } catch {
-    if (request === settingsState.runtimeRequest) text("runtimeStatus", "读取失败");
-  } finally {
-    if (request === settingsState.runtimeRequest) syncRuntimeControl();
-  }
-}
-async function changeRuntime(provider) {
-  const select = byId("selectRuntimeProvider");
-  const previous = settingsState.runtimeSnapshot?.requestedProvider;
-  if (!previous || settingsState.runtimeBusy || settingsState.modelSourceSnapshot.mode !== "local" ||
-      byId("selectModelSource").value !== "local" || !["cpu", "gpu"].includes(provider)) {
-    if (previous) select.value = previous;
-    return;
-  }
-  settingsState.runtimeBusy = true;
-  const request = ++settingsState.runtimeRequest;
-  clearTimeout(settingsState.runtimePollTimer);
-  select.disabled = true;
-  text("runtimeStatus", "正在切换…");
-  try {
-    const data = await api("/api/runtime", { method: "POST", body: JSON.stringify({ provider }) });
-    if (request !== settingsState.runtimeRequest) return;
-    if (!validRuntime(data) || data.requestedProvider !== provider || data.status === "error") throw new Error("切换失败");
-    showRuntime(data);
-  } catch {
-    if (request === settingsState.runtimeRequest) {
-      select.value = previous;
-      text("runtimeStatus", "切换失败");
-    }
-  } finally {
-    settingsState.runtimeBusy = false;
-    if (request === settingsState.runtimeRequest) syncRuntimeControl();
-  }
-}
-settingsState.localModelRequest = 0;
-settingsState.localModelDownloadBusy = false;
-settingsState.localModelReady = false;
-settingsState.localModelResolved = false;
-function showLocalModel(data) {
-  const becameReady = !settingsState.localModelResolved || !settingsState.localModelReady;
-  settingsState.localModelResolved = true;
-  settingsState.localModelReady = data.state === "ready";
-  const labels = { bundled: "内置模型已就绪", downloaded: "本机模型已就绪", custom: "自选模型已就绪" };
-  text("localModelStatus", data.state === "ready" ? labels[data.source] || "已就绪" :
-    data.source === "custom" ? "所选目录不可用" : "未安装");
-  byId("localModelStatus").title = data.path || "";
-  byId("btnChooseLocalModelDir").title = data.path ? `当前目录：${data.path}` : "选择 Laya 模型目录";
-  byId("btnDownloadLocalModel").hidden = settingsState.localModelReady;
-  byId("btnDownloadLocalModel").disabled = settingsState.localModelDownloadBusy || settingsState.localModelReady;
-  if (usingLocalFine()) {
-    renderApiInsightStatus();
-    if (becameReady && settingsState.localModelReady) {
-      resumeLocalAnalysis();
-      if (chatState.view === "persona" && chatState.currentUser) void loadProfile(portraitState.activeMember);
-    }
-  }
-}
-async function loadLocalModel() {
-  const request = ++settingsState.localModelRequest;
-  try {
-    const data = await api("/api/local-model");
-    if (request !== settingsState.localModelRequest) return;
-    if (!data || !["ready", "missing"].includes(data.state) ||
-        !["bundled", "downloaded", "custom", "none"].includes(data.source) ||
-        typeof data.path !== "string") throw new Error("模型状态无效");
-    showLocalModel(data);
-  } catch {
-    if (request === settingsState.localModelRequest) {
-      settingsState.localModelResolved = false;
-      text("localModelStatus", "读取失败");
-    }
-  }
-}
-async function selectLocalModel(value) {
-  text("localModelStatus", "正在校验模型…");
-  try {
-    const data = await api("/api/local-model", { method: "POST", body: JSON.stringify({ path: value }) });
-    if (data.state !== "ready") throw new Error("模型未就绪");
-    showLocalModel(data);
-    void loadRuntime();
-  } catch {
-    text("localModelStatus", "目录不包含完整的 Laya 模型");
-  }
-}
-function showLocalModelDownload(state) {
-  if (!state || typeof state !== "object") return;
-  const progress = byId("localModelDownloadProgress");
-  settingsState.localModelDownloadBusy = state.phase === "downloading" || state.phase === "installing";
-  byId("btnDownloadLocalModel").disabled = settingsState.localModelDownloadBusy || settingsState.localModelReady;
-  progress.hidden = !settingsState.localModelDownloadBusy && state.phase !== "failed";
-  text("localModelDownloadProgress", state.phase === "downloading" ?
-    `正在下载模型 ${Math.round(100 * (state.received || 0) / (state.total || 1))}%` :
-    state.phase === "installing" ? "正在校验并安装模型…" :
-    state.phase === "failed" ?
-      (state.stage === "installing" ? "模型安装失败，请重试" : "模型下载失败，请重试") : "");
-}
-window.addEventListener("wechatvibe-model-download-state", event => showLocalModelDownload(event.detail));
-byId("btnDownloadLocalModel").addEventListener("click", async () => {
-  if (typeof window.desktopHost?.downloadLayaModel !== "function") return;
-  showLocalModelDownload({ phase: "downloading", received: 0, total: 1 });
-  try {
-    const result = await window.desktopHost.downloadLayaModel();
-    showLocalModelDownload(result);
-    if (result?.phase === "ready") await selectLocalModel("downloaded");
-  } catch { showLocalModelDownload({ phase: "failed" }); }
-});
-byId("btnChooseLocalModelDir").addEventListener("click", async () => {
-  if (typeof window.desktopHost?.chooseModelDirectory !== "function") return;
-  const directory = await window.desktopHost.chooseModelDirectory();
-  if (directory) await selectLocalModel(directory);
-});
 function dataRootControlsBusy(busy) {
   settingsState.dataRootBusy = busy;
   for (const id of ["inputDataRoot", "btnBrowseDataRoot", "btnSaveDataRoot", "btnClearDataRoot"])
@@ -3694,7 +1905,7 @@ byId("inputDataRoot").addEventListener("keydown", event => {
   if (event.key === "Enter") { event.preventDefault(); void changeDataRoot(); }
 });
 const MODEL_SOURCE_PROTOCOLS = new Set(["anthropic", "responses", "chat_completions", "gemini", "ollama"]);
-settingsState.modelSourceSnapshot = { mode: "local", api: null, sourceId: "local", status: "idle" };
+settingsState.modelSourceSnapshot = { mode: "none", api: null, sourceId: "local:laya", status: "idle" };
 settingsState.modelSourceResolved = false;
 settingsState.modelSourceReadRequest = 0;
 settingsState.modelSourceLoadController = null;
@@ -3703,118 +1914,53 @@ settingsState.modelListRequest = 0;
 settingsState.modelListController = null;
 settingsState.modelTestRequest = 0;
 settingsState.modelTestController = null;
+settingsState.apiKeyRevealRequest = 0;
+settingsState.apiKeyRevealController = null;
+settingsState.apiKeyRevealedSaved = false;
 settingsState.modelSourceLoading = false;
 settingsState.modelSourceBusy = false;
 settingsState.modelListBusy = false;
 settingsState.modelTestBusy = false;
 settingsState.modelSourceDraftDirty = false;
+settingsState.modelDetailId = null;
+settingsState.localJudgePoll = null;
+settingsState.localJudgeError = "";
 function validModelSource(data) {
-  return !!data && ["local", "api"].includes(data.mode) &&
+  return !!data && ["none", "api"].includes(data.mode) &&
     typeof data.sourceId === "string" && !!data.sourceId &&
     (data.mode !== "api" || !!data.api) &&
     (data.api === null || (!!data.api && MODEL_SOURCE_PROTOCOLS.has(data.api.protocol) &&
       typeof data.api.baseUrl === "string" && typeof data.api.model === "string" &&
       (data.api.contextTokens == null || Number.isSafeInteger(data.api.contextTokens) &&
         data.api.contextTokens >= 4096 && data.api.contextTokens <= 1000000) &&
+      (data.api.timeoutMs === undefined || Number.isSafeInteger(data.api.timeoutMs) &&
+        data.api.timeoutMs >= 60_000 && data.api.timeoutMs <= 10_800_000) &&
       typeof data.api.hasKey === "boolean"));
 }
-function usingLocalFine() {
-  return settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "local";
-}
-function canAnalyzeLocal() {
-  return usingLocalFine() && settingsState.localModelResolved && settingsState.localModelReady;
-}
-function resumeLocalAnalysis() {
-  if (!canAnalyzeLocal() || !chatState.currentUser || !chatState.controller || !chatState.messageSourceReady || chatState.historyState) return;
-  const user = chatState.currentUser, token = chatState.generation, signal = chatState.controller.signal;
-  void loadAnalysis(user, token, signal).then(analysis => {
-    if (analysis && token === chatState.generation && !chatState.historyState)
-      scheduleIncremental(user, token, signal, analysis, false, JSON.stringify(chatState.messages));
-  });
-}
+// The saved generation model every plugin reaches through Core's model routing.
 function applyActiveModelSource(data) {
-  const changed = !settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode !== data.mode ||
-    settingsState.modelSourceSnapshot.sourceId !== data.sourceId;
-  const portraitSourceChanged = settingsState.modelSourceSnapshot.mode !== data.mode ||
-    settingsState.modelSourceSnapshot.sourceId !== data.sourceId;
-  const portraitBudgetChanged = settingsState.modelSourceResolved && !changed && data.mode === "api" &&
-    settingsState.modelSourceSnapshot.api?.contextTokens !== data.api?.contextTokens;
   settingsState.modelSourceSnapshot = data;
   settingsState.modelSourceResolved = true;
-  byId("btnResetConversationAnalysis").disabled = !chatState.currentAccount || !chatState.selectedConversations?.has(chatState.currentUser);
-  byId("btnResetPortrait").disabled = byId("btnResetConversationAnalysis").disabled;
-  syncPortraitMode();
-  if (changed) {
-    cancelApiPortraitPoll();
-    if (portraitSourceChanged) {
-      // A source switch only swaps the visible source; each source keeps its own
-      // persisted snapshot (the key includes the source id), so none is erased here.
-      clearApiPortraitView();
-      if (data.mode !== "api") byId("apiPortraitStatus").hidden = true;
-    }
-    cancelApiInsightWork();
-    clearInlineIntentPending();
-    setIntentActionState("idle");
-    refreshLabels();
-    if (data.mode === "api") {
-      portraitState.incrementalFailed = false;
-      portraitState.analysisNetworkFailed = false;
-      portraitState.currentAnalysisJob = null;
-      ensureApiInsights();
-    } else {
-      submitManualRecent();
-      resumeLocalAnalysis();
-    }
-    if (chatState.view === "persona" && chatState.currentUser) void loadProfile(portraitState.activeMember);
-  } else if (portraitBudgetChanged) {
-    cancelApiPortraitPoll();
-    portraitState.apiPortraitSubmitErrors.clear();
-    if (chatState.view === "persona" && chatState.currentUser) void loadProfile(portraitState.activeMember);
-  }
-  renderApiInsightStatus();
 }
 function beginUnknownModelSource() {
-  const key = activeApiInsightKey();
-  if (key && labelState.apiInsightCache.has(key)) {
-    const entry = labelState.apiInsightCache.get(key);
-    entry.requestedSignature = null;
-    entry.job = null;
-    entry.error = "";
-  }
+  hideApiKey();
   settingsState.modelSourceResolved = false;
-  if (!(settingsState.modelSourceSnapshot.mode === "api" && portraitState.apiPortraitSnapshot && chatState.currentUser))
-    clearProfileView("正在读取模型来源…");
-  cancelApiInsightWork();
-  clearInlineIntentPending();
-  refreshLabels();
-  renderApiInsightStatus();
   updateModelSourceControls();
 }
-function syncRuntimeControl() {
-  byId("selectRuntimeProvider").disabled = !settingsState.runtimeSnapshot || settingsState.runtimeBusy || settingsState.modelSourceLoading ||
-    settingsState.modelSourceBusy || !settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode !== "local" ||
-    byId("selectModelSource").value !== "local";
-}
 function updateModelSourceControls() {
-  byId("selectModelSource").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy;
   byId("btnReloadModelSource").hidden = settingsState.modelSourceResolved || settingsState.modelSourceLoading;
-  byId("localModelActions").hidden = !settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode !== "api" ||
-    byId("selectModelSource").value !== "local";
-  byId("btnActivateLocal").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelSourceSnapshot.mode === "local";
-  for (const id of ["selectApiProtocol", "inputApiBaseUrl", "inputApiKey", "selectApiModel", "inputApiModelId", "inputApiContextTokens"])
+  for (const id of ["selectApiProtocol", "inputApiBaseUrl", "inputApiKey", "selectApiModel", "inputApiModelId",
+    "inputApiContextTokens", "inputApiTimeoutMinutes", "inputApiConcurrency"])
     byId(id).disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy ||
       (id === "selectApiModel" && byId(id).options.length < 2);
   byId("btnFetchApiModels").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelListBusy;
   byId("btnTestApiModel").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelTestBusy;
-  byId("btnActivateApi").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelTestBusy;
-  byId("btnClearApiKey").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy;
-  syncRuntimeControl();
-}
-function showModelSourceMode() {
-  const isApi = byId("selectModelSource").value === "api";
-  byId("localModelSettings").hidden = isApi;
-  byId("apiModelSettings").hidden = !isApi;
-  updateModelSourceControls();
+  byId("btnSaveApiModel").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelTestBusy;
+  byId("btnDeleteApiModel").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy;
+  for (const id of ["selectRoleMain", "selectRoleJudge", "selectRoleImage"])
+    byId(id).disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy || !settingsState.modelSourceResolved;
+  byId("btnAddModel").disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy || !settingsState.modelSourceResolved;
+  syncApiKeyVisibility();
 }
 function clearModelList() {
   const select = byId("selectApiModel");
@@ -3825,6 +1971,55 @@ function clearModelList() {
   select.appendChild(option);
   select.value = "";
   select.disabled = true;
+  text("btnFetchApiModels", "获取模型列表");
+}
+function matchesApiConnection(profile) {
+  return !!profile && profile.protocol === byId("selectApiProtocol").value &&
+    profile.baseUrl.replace(/\/+$/, "") === byId("inputApiBaseUrl").value.trim().replace(/\/+$/, "");
+}
+function selectSavedApiModel() {
+  const select = byId("selectApiModel");
+  const model = byId("inputApiModelId").value.trim();
+  const saved = modelDetailEntry();
+  if (model && saved?.model === model && matchesApiConnection(saved) &&
+      !Array.from(select.options).some(option => option.value === model)) {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = `${model}（已保存）`;
+    select.appendChild(option);
+  }
+  select.value = Array.from(select.options).some(option => option.value === model) ? model : "";
+}
+function renderModelList(result, { restore = false } = {}) {
+  clearModelList();
+  const select = byId("selectApiModel");
+  const known = new Set();
+  for (const item of result.supported ? result.models : []) {
+    if (!item || typeof item.id !== "string" || !item.id.trim() || known.has(item.id)) continue;
+    known.add(item.id);
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = typeof item.name === "string" && item.name ? item.name : item.id;
+    if (Number.isSafeInteger(item.contextTokens) && item.contextTokens >= 4096 && item.contextTokens <= 1000000)
+      option.dataset.contextTokens = String(item.contextTokens);
+    select.appendChild(option);
+  }
+  selectSavedApiModel();
+  if (!restore) {
+    const selected = Array.from(select.options).find(option => option.value === select.value);
+    if (selected?.dataset.contextTokens) byId("inputApiContextTokens").value = selected.dataset.contextTokens;
+  }
+  text("apiModelCount", result.supported ? `${restore ? "已保存的列表 · " : ""}${known.size} 个模型${restore ? "" : "可用"}` :
+    "此接口不提供模型列表，可手动填写模型 ID");
+  text("btnFetchApiModels", "刷新模型列表");
+}
+function restoreModelList() {
+  const cached = settingsState.modelSourceSnapshot.modelList;
+  if (cached && typeof cached.baseUrl === "string" && matchesApiConnection(cached) &&
+      typeof cached.supported === "boolean" && Array.isArray(cached.models))
+    renderModelList(cached, { restore: true });
+  else selectSavedApiModel();
+  updateModelSourceControls();
 }
 function invalidateModelDiscovery() {
   settingsState.modelListController?.abort();
@@ -3852,29 +2047,100 @@ function invalidateModelTest() {
   text("modelSourceStatus", "");
   updateModelSourceControls();
 }
+function modelDetailEntry() {
+  return (settingsState.modelSourceSnapshot.models || []).find(item => item.id === settingsState.modelDetailId);
+}
+function canReuseSavedApiKey() {
+  const saved = modelDetailEntry();
+  return !!saved?.hasKey && matchesApiConnection(saved);
+}
+function syncApiKeyVisibility() {
+  const button = byId("btnToggleApiKeyVisibility");
+  const visible = byId("inputApiKey").type === "text";
+  const label = visible ? "隐藏 API Key" : "显示 API Key";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-pressed", String(visible));
+  button.disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy ||
+    !!settingsState.apiKeyRevealController || (!byId("inputApiKey").value &&
+      (!settingsState.modelSourceResolved || !canReuseSavedApiKey()));
+}
 function syncSavedApiKeyHint() {
-  const saved = settingsState.modelSourceSnapshot.api;
-  const reusable = !!saved?.hasKey && saved.protocol === byId("selectApiProtocol").value &&
-    saved.baseUrl.replace(/\/+$/, "") === byId("inputApiBaseUrl").value.trim().replace(/\/+$/, "");
+  const reusable = canReuseSavedApiKey();
+  const input = byId("inputApiKey");
   byId("apiKeySaved").hidden = !reusable;
-  byId("btnClearApiKey").hidden = !saved?.hasKey;
-  byId("inputApiKey").placeholder = reusable ? "留空沿用已保存密钥" : "按服务要求填写 API Key";
+  text("apiKeySaved", reusable && input.value && !settingsState.apiKeyRevealedSaved ? "已保存 · 新密钥待保存" : "已保存");
+  input.placeholder = reusable ? "••••••••••••••••" : "按服务要求填写 API Key";
+  input.dataset.saved = String(reusable && !input.value);
+  syncApiKeyVisibility();
+}
+function hideApiKey() {
+  settingsState.apiKeyRevealController?.abort();
+  settingsState.apiKeyRevealController = null;
+  ++settingsState.apiKeyRevealRequest;
+  if (settingsState.apiKeyRevealedSaved) byId("inputApiKey").value = "";
+  settingsState.apiKeyRevealedSaved = false;
+  byId("inputApiKey").type = "password";
+  text("apiKeyStatus", "");
+  syncSavedApiKeyHint();
+}
+async function toggleApiKeyVisibility() {
+  const input = byId("inputApiKey");
+  if (input.type === "text") { hideApiKey(); return; }
+  if (settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.apiKeyRevealController) return;
+  if (input.value) { input.type = "text"; syncApiKeyVisibility(); return; }
+  if (!settingsState.modelSourceResolved || !canReuseSavedApiKey()) return;
+  const request = ++settingsState.apiKeyRevealRequest;
+  const protocol = byId("selectApiProtocol").value;
+  const baseUrl = byId("inputApiBaseUrl").value.trim().replace(/\/+$/, "");
+  const controller = new AbortController();
+  settingsState.apiKeyRevealController = controller;
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+  text("apiKeyStatus", "正在读取已保存密钥…");
+  syncApiKeyVisibility();
+  try {
+    const result = await api("/api/model-source/reveal-key", {
+      method: "POST", body: JSON.stringify({ id: settingsState.modelDetailId, protocol, baseUrl }),
+    }, controller.signal);
+    if (request !== settingsState.apiKeyRevealRequest || !matchesApiConnection({ protocol, baseUrl }) || input.value) return;
+    if (!result || typeof result.apiKey !== "string" || !result.apiKey) throw new Error("key unavailable");
+    input.value = result.apiKey;
+    settingsState.apiKeyRevealedSaved = true;
+    input.type = "text";
+    text("apiKeyStatus", "");
+  } catch {
+    if (request === settingsState.apiKeyRevealRequest) text("apiKeyStatus", "无法读取已保存密钥，请重试");
+  } finally {
+    clearTimeout(timeoutId);
+    if (settingsState.apiKeyRevealController === controller) settingsState.apiKeyRevealController = null;
+    syncSavedApiKeyHint();
+  }
+}
+function apiKeyInputChanged() {
+  const visible = byId("inputApiKey").type === "text";
+  settingsState.apiKeyRevealedSaved = false;
+  hideApiKey();
+  byId("inputApiKey").type = visible ? "text" : "password";
+  syncApiKeyVisibility();
+  settingsState.modelSourceDraftDirty = true;
+  invalidateModelDiscovery();
+}
+function apiConnectionChanged() {
+  hideApiKey();
+  settingsState.modelSourceDraftDirty = true;
+  invalidateModelDiscovery();
+  restoreModelList();
 }
 function showModelSource(data) {
+  hideApiKey();
   applyActiveModelSource(data);
   settingsState.modelSourceDraftDirty = false;
-  text("modelSourceActive", data.mode === "api" ? "当前 API" : "当前本地");
-  byId("selectModelSource").value = data.mode;
-  byId("selectApiProtocol").value = data.api?.protocol || "responses";
-  byId("inputApiBaseUrl").value = data.api?.baseUrl || "";
-  byId("inputApiModelId").value = data.api?.model || "";
-  byId("inputApiContextTokens").value = data.api?.contextTokens || "";
-  byId("inputApiKey").value = "";
-  syncSavedApiKeyHint();
   invalidateModelDiscovery();
-  showModelSourceMode();
+  renderModelHome();
+  if (!byId("modelDetailView").hidden) openModelDetail(settingsState.modelDetailId);
 }
 async function loadModelSource(preserveDraft = false) {
+  hideApiKey();
   settingsState.modelSourceLoadController?.abort();
   const request = ++settingsState.modelSourceReadRequest;
   const abortController = new AbortController();
@@ -3887,15 +2153,16 @@ async function loadModelSource(preserveDraft = false) {
     const data = await api("/api/model-source", {}, abortController.signal);
     if (request !== settingsState.modelSourceReadRequest) return;
     if (!validModelSource(data)) throw new Error("invalid model source");
+    settingsState.localJudgeError = "";
     if (settingsState.modelSourceDraftDirty) {
       applyActiveModelSource(data);
-      text("modelSourceActive", data.mode === "api" ? "当前 API" : "当前本地");
+      renderModelHome();
       syncSavedApiKeyHint();
     } else showModelSource(data);
     text("modelSourceStatus", "");
   } catch {
     if (request === settingsState.modelSourceReadRequest)
-      text("modelSourceStatus", abortController.signal.aborted ? "模型来源读取超时" : "模型来源读取失败");
+      text("modelSourceStatus", abortController.signal.aborted ? "模型设置读取超时" : "模型设置读取失败");
   } finally {
     clearTimeout(timeoutId);
     if (settingsState.modelSourceLoadController === abortController) settingsState.modelSourceLoadController = null;
@@ -3917,7 +2184,7 @@ function modelSourceRequestError(error) {
   if (typeof error?.code === "string" && reasons[error.code]) return reasons[error.code];
   return Number.isInteger(error?.status) ? `HTTP ${error.status}` : "网络或服务错误";
 }
-function apiModelDraft(requireModel, requireContext = false) {
+function apiModelDraft(requireModel) {
   const protocol = byId("selectApiProtocol").value;
   const baseUrl = byId("inputApiBaseUrl").value.trim();
   const model = byId("inputApiModelId").value.trim();
@@ -3930,14 +2197,19 @@ function apiModelDraft(requireModel, requireContext = false) {
   if (requireModel && !model) throw new Error("请输入模型 ID");
   const rawContext = byId("inputApiContextTokens").value.trim();
   const contextTokens = rawContext ? Number(rawContext) : null;
-  if (requireContext && contextTokens === null) throw new Error("请填写模型上下文大小");
   if (contextTokens !== null && (!Number.isSafeInteger(contextTokens) ||
       contextTokens < 4096 || contextTokens > 1000000)) throw new Error("上下文大小须为 4096～1000000 tokens");
-  const draft = { protocol, baseUrl };
+  const draft = { protocol, baseUrl: baseUrl.replace(/\/+$/, ""),
+    ...(settingsState.modelDetailId ? { id: settingsState.modelDetailId } : {}) };
   const apiKey = byId("inputApiKey").value.trim();
-  if (apiKey) draft.apiKey = apiKey;
+  if (apiKey && !settingsState.apiKeyRevealedSaved) draft.apiKey = apiKey;
   if (requireModel) {
+    const rawTimeout = String(byId("inputApiTimeoutMinutes").value).trim();
+    const minutes = rawTimeout === "" ? 60 : Number(rawTimeout);
+    if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 180)
+      throw new Error("生成超时须为 1～180 分钟的整数");
     draft.model = model;
+    draft.timeoutMs = minutes * 60_000;
     if (contextTokens !== null) draft.contextTokens = contextTokens;
   }
   return draft;
@@ -3952,7 +2224,6 @@ async function fetchApiModels() {
   settingsState.modelListController = abortController;
   const timeoutId = setTimeout(() => abortController.abort(), 20_000);
   settingsState.modelListBusy = true;
-  clearModelList();
   text("apiModelCount", "正在获取…");
   text("apiModelTestStatus", "");
   updateModelSourceControls();
@@ -3962,28 +2233,9 @@ async function fetchApiModels() {
     if (request !== settingsState.modelListRequest || revision !== settingsState.modelSourceRevision) return;
     if (!result || typeof result.supported !== "boolean" || !Array.isArray(result.models))
       throw new Error("invalid model list");
-    clearModelList();
-    if (!result.supported) {
-      text("apiModelCount", "此接口不提供模型列表，可手动填写模型 ID");
-      return;
-    }
-    const select = byId("selectApiModel");
-    const known = new Set();
-    for (const item of result.models) {
-      if (!item || typeof item.id !== "string" || !item.id.trim() || known.has(item.id)) continue;
-      known.add(item.id);
-      const option = document.createElement("option");
-      option.value = item.id;
-      option.textContent = typeof item.name === "string" && item.name ? item.name : item.id;
-      if (Number.isSafeInteger(item.contextTokens) && item.contextTokens >= 4096 &&
-          item.contextTokens <= 1000000) option.dataset.contextTokens = String(item.contextTokens);
-      select.appendChild(option);
-    }
-    const model = byId("inputApiModelId").value.trim();
-    select.value = known.has(model) ? model : "";
-    const selected = Array.from(select.options).find(option => option.value === model);
-    if (selected?.dataset.contextTokens) byId("inputApiContextTokens").value = selected.dataset.contextTokens;
-    text("apiModelCount", `${known.size} 个模型可用`);
+    settingsState.modelSourceSnapshot = { ...settingsState.modelSourceSnapshot,
+      modelList: { protocol: draft.protocol, baseUrl: draft.baseUrl, supported: result.supported, models: result.models } };
+    renderModelList(result);
   } catch (error) {
     if (request === settingsState.modelListRequest && revision === settingsState.modelSourceRevision)
       text("apiModelCount", abortController.signal.aborted
@@ -4031,479 +2283,232 @@ async function testApiModel() {
     }
   }
 }
-async function activateModelSource(mode) {
-  if (settingsState.modelSourceBusy || settingsState.modelTestBusy || !["local", "api"].includes(mode)) return;
-  let payload = { mode };
-  if (mode === "api") {
-    try { payload = { ...payload, ...apiModelDraft(true, true) }; }
-    catch (error) { text("modelSourceStatus", error.message); return; }
+// Modified 2026-11-01: the model home lists saved models, assigns purposes and
+// opens one detail page per model; /activate stays the main-model save for MCP.
+function showModelView(view) {
+  byId("modelHomeView").hidden = view !== "home";
+  byId("modelDetailView").hidden = view !== "detail";
+  byId("searchSettingsView").hidden = view !== "search";
+  byId("developerSettingsView").hidden = view !== "developer";
+  byId("localJudgeView").hidden = view !== "local";
+}
+const LOCAL_JUDGE_BUSY = new Set(["checking", "downloading", "verifying", "selftest"]);
+function renderLocalJudge() {
+  const local = settingsState.modelSourceSnapshot.localJudge;
+  const active = LOCAL_JUDGE_BUSY.has(local?.state);
+  const labels = {missing: "尚未下载", checking: "检查电脑…", downloading: "下载中", verifying: "校验中…",
+    selftest: "自测中…", ready: "已下载 · 用于影子评估", slow: "电脑较慢", error: "准备失败"};
+  let label = labels[local?.state] || "暂不可用";
+  if (local?.state === "downloading" && local.totalBytes > 0)
+    label += ` ${Math.min(100, Math.floor(100 * local.downloadedBytes / local.totalBytes))}%`;
+  if (local?.state === "ready" && Number.isFinite(local.latencyMs)) label += ` · 约 ${(local.latencyMs / 1000).toFixed(2)} 秒/次`;
+  if (local?.error) label += `（${typeof local.error === "string" ? local.error : "请重试"}）`;
+  if (settingsState.localJudgeError) label = settingsState.localJudgeError;
+  text("localJudgeStatus", label);
+  const progress = byId("localJudgeProgress");
+  progress.hidden = !active;
+  if (local?.state === "downloading" && local.totalBytes > 0) {
+    progress.max = local.totalBytes;
+    progress.value = Math.min(local.totalBytes, local.downloadedBytes || 0);
+  } else progress.removeAttribute?.("value");
+  byId("btnPrepareLocalJudge").hidden = active || local?.ready === true;
+  byId("btnPrepareLocalJudge").disabled = settingsState.modelSourceBusy || local?.supported === false;
+  text("btnPrepareLocalJudge", local?.downloadedBytes ? "继续准备" : "下载（168 MB）");
+  byId("btnCancelLocalJudge").hidden = !active;
+  byId("btnDeleteLocalJudge").hidden = active || !(local?.ready || local?.downloadedBytes > 0);
+  for (const id of ["btnCancelLocalJudge", "btnDeleteLocalJudge"]) byId(id).disabled = settingsState.modelSourceBusy;
+  clearTimeout(settingsState.localJudgePoll);
+  settingsState.localJudgePoll = null;
+  if (active && byId("settingsModal").classList.contains("show"))
+    settingsState.localJudgePoll = setTimeout(() => { settingsState.localJudgePoll = null; void loadModelSource(true); }, 1000);
+}
+async function localJudgeAction(action) {
+  if (settingsState.modelSourceBusy) return;
+  settingsState.modelSourceBusy = true;
+  settingsState.localJudgeError = "";
+  updateModelSourceControls();
+  renderLocalJudge();
+  showModelView("local");
+  try {
+    const data = await api(`/api/model-source/local-judge/${action}`, {method: "POST", body: "{}"});
+    if (!validModelSource(data)) throw new Error("invalid model source");
+    showModelSource(data);
+  } catch (error) { settingsState.localJudgeError = `操作失败（${modelSourceRequestError(error)}）`; }
+  finally {
+    settingsState.modelSourceBusy = false;
+    updateModelSourceControls();
+    renderLocalJudge();
   }
+}
+function protocolLabel(protocol) {
+  return {anthropic: "Anthropic", responses: "Responses", chat_completions: "Completions",
+    gemini: "Gemini", ollama: "Ollama", systemone: "本地"}[protocol] || protocol;
+}
+function modelEntryLabel(item) {
+  return item.name || item.model;
+}
+function renderModelHome() {
+  const data = settingsState.modelSourceSnapshot;
+  if (!data) return;
+  const models = Array.isArray(data.models) ? data.models : [];
+  const roles = data.roles || {main: null, judge: null, image: null};
+  const busy = settingsState.modelSourceLoading || settingsState.modelSourceBusy || !settingsState.modelSourceResolved;
+  const fill = (id, value, followAllowed) => {
+    const select = byId(id);
+    select.replaceChildren();
+    if (followAllowed) {
+      const follow = document.createElement("option");
+      follow.value = "";
+      follow.textContent = "跟随主模型";
+      select.appendChild(follow);
+    }
+    for (const item of models) {
+      if (item.builtin && id !== "selectRoleJudge") continue;
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = modelEntryLabel(item) + (item.id === roles.main ? "（主模型）" : "");
+      select.appendChild(option);
+    }
+    select.value = value || "";
+    if (select.selectedIndex < 0) select.value = followAllowed ? "" : String(roles.main || "");
+    select.disabled = busy;
+  };
+  fill("selectRoleMain", roles.main, false);
+  fill("selectRoleJudge", roles.judge, true);
+  fill("selectRoleImage", roles.image, true);
+  if (data.localJudge?.supported && !models.some(item => item.builtin)) {
+    const download = document.createElement("option");
+    download.value = "download-local";
+    download.textContent = "下载本地模型（168 MB）";
+    byId("selectRoleJudge").appendChild(download);
+  }
+  const rows = byId("modelListRows");
+  rows.replaceChildren();
+  for (const item of models) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "settings-row model-list-row";
+    const name = document.createElement("span");
+    name.textContent = modelEntryLabel(item);
+    const sub = document.createElement("span");
+    sub.className = "model-source-status";
+    sub.textContent = item.builtin ? "本地" : protocolLabel(item.protocol);
+    row.appendChild(name);
+    row.appendChild(sub);
+    row.addEventListener("click", () => openModelDetail(item.id));
+    rows.appendChild(row);
+  }
+  byId("btnAddModel").disabled = busy;
+  text("btnOpenSearchSettings", window.CoreModelSettings?.searchSource?.() === "searxng" ? "SearXNG" : "关闭");
+  updateModelSourceControls();
+  renderLocalJudge();
+}
+function openModelDetail(entryId) {
+  const data = settingsState.modelSourceSnapshot;
+  const entry = entryId ? (data.models || []).find(item => item.id === entryId) : null;
+  if (entryId && !entry) return;
+  if (entry?.builtin) { hideApiKey(); showModelView("local"); renderLocalJudge(); return; }
+  hideApiKey();
+  settingsState.modelDetailId = entryId || null;
+  byId("apiModelAdvanced").open = false;
+  text("modelDetailTitle", entry ? "编辑模型" : "添加模型");
+  byId("selectApiProtocol").value = entry?.protocol || data.modelList?.protocol || "responses";
+  byId("inputApiBaseUrl").value = entry?.baseUrl || data.modelList?.baseUrl || "";
+  byId("inputApiModelId").value = entry?.model || "";
+  byId("inputApiContextTokens").value = String(entry?.contextTokens ?? "");
+  byId("inputApiTimeoutMinutes").value = String((entry?.timeoutMs ?? 3_600_000) / 60_000);
+  byId("inputApiConcurrency").value = String(entry?.concurrency || 4);
+  byId("inputApiKey").value = "";
+  syncSavedApiKeyHint();
+  byId("btnDeleteApiModel").hidden = !entry || entry.id === data.roles?.main;
+  invalidateModelDiscovery();
+  restoreModelList();
+  text("modelSourceStatus", "");
+  text("apiModelTestStatus", "");
+  showModelView("detail");
+}
+function mainIdentityWillChange(entryId, payload) {
+  if (!entryId || entryId !== settingsState.modelSourceSnapshot.roles?.main) return false;
+  const entry = (settingsState.modelSourceSnapshot.models || []).find(item => item.id === entryId);
+  return !!entry && (payload.apiKey !== undefined ||
+    (payload.contextTokens !== undefined && payload.contextTokens !== entry.contextTokens) ||
+    [entry.protocol, entry.baseUrl, entry.model].join("\u0000") !==
+    [payload.protocol, payload.baseUrl, payload.model].join("\u0000"));
+}
+async function saveApiModel() {
+  if (settingsState.modelSourceBusy || settingsState.modelTestBusy) return;
+  const entryId = settingsState.modelDetailId;
+  let payload;
+  try {
+    payload = {...(entryId ? {id: entryId} : {}), ...apiModelDraft(true)};
+    const concurrency = Number(byId("inputApiConcurrency").value);
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8)
+      throw new Error("同时请求数须为 1～8 的整数");
+    payload.concurrency = concurrency;
+  } catch (error) { text("modelSourceStatus", error.message); return; }
+  if (mainIdentityWillChange(entryId, payload) && !window.confirm("修改主模型会停止运行中的任务，继续吗？")) return;
+  hideApiKey();
   settingsState.modelSourceBusy = true;
   const abortController = new AbortController();
-  const timeoutId = setTimeout(() => abortController.abort(), mode === "local" ? 15_000 : 30_000);
-  text("modelSourceStatus", "正在启用…");
+  const timeoutId = setTimeout(() => abortController.abort(), 60_000);
+  text("modelSourceStatus", "正在保存…");
   updateModelSourceControls();
   try {
-    const data = await api("/api/model-source/activate", { method: "POST", body: JSON.stringify(payload) },
+    const data = await api("/api/model-source/models/save", { method: "POST", body: JSON.stringify(payload) },
       abortController.signal);
-    if (!validModelSource(data) || data.mode !== mode) throw new Error("activation failed");
+    if (!validModelSource(data)) throw new Error("invalid model source");
     showModelSource(data);
-    text("modelSourceStatus", mode === "api" ? "API 模型已启用" : "本地模型已启用");
+    showModelView("home");
+    text("modelSourceStatus", "已保存");
   } catch (error) {
-    if (!Number.isInteger(error?.status)) {
-      beginUnknownModelSource();
-      settingsState.modelSourceDraftDirty = true;
-      void loadModelSource(true);
-    }
-    text("modelSourceStatus", settingsState.modelSourceResolved ?
-      `启用失败（${abortController.signal.aborted ? "连接超时" : modelSourceRequestError(error)}），当前仍为${settingsState.modelSourceSnapshot.mode === "api" ? " API" : "本地"}` :
-      "启用状态待读取");
+    text("modelSourceStatus", `保存失败（${abortController.signal.aborted ? "连接超时" : modelSourceRequestError(error)}）`);
   } finally {
     clearTimeout(timeoutId);
     settingsState.modelSourceBusy = false;
     updateModelSourceControls();
   }
 }
-async function clearStoredApiKey() {
-  if (settingsState.modelSourceBusy || !settingsState.modelSourceSnapshot.api?.hasKey) return;
+async function deleteApiModel() {
+  const entryId = settingsState.modelDetailId;
+  if (!entryId || settingsState.modelSourceBusy) return;
   settingsState.modelSourceBusy = true;
-  text("modelSourceStatus", "正在清除密钥…");
+  text("modelSourceStatus", "正在删除…");
   updateModelSourceControls();
-  let cleared = false;
   try {
-    await api("/api/model-source/clear-key", { method: "POST", body: "{}" });
-    cleared = true;
-    byId("inputApiKey").value = "";
-    const data = await api("/api/model-source");
+    const data = await api("/api/model-source/models/delete", { method: "POST", body: JSON.stringify({id: entryId}) });
     if (!validModelSource(data)) throw new Error("invalid model source");
     showModelSource(data);
-    text("modelSourceStatus", "密钥已清除");
+    showModelView("home");
+    text("modelSourceStatus", "已删除");
   } catch (error) {
-    if (cleared) {
-      settingsState.modelSourceSnapshot = { ...settingsState.modelSourceSnapshot, api: settingsState.modelSourceSnapshot.api ?
-        { ...settingsState.modelSourceSnapshot.api, hasKey: false } : null };
-      beginUnknownModelSource();
-      byId("apiKeySaved").hidden = true;
-      byId("btnClearApiKey").hidden = true;
-      text("modelSourceActive", "状态待读取");
-      text("modelSourceStatus", "密钥已清除，状态读取失败");
-    } else text("modelSourceStatus", `清除失败（${modelSourceRequestError(error)}）`);
+    text("modelSourceStatus", `删除失败（${modelSourceRequestError(error)}）`);
   } finally {
     settingsState.modelSourceBusy = false;
     updateModelSourceControls();
   }
 }
-labelState.apiInsightCache = new Map();
-settingsState.suppressedApiSources = new Set();
-settingsState.suppressedLocalAccounts = new Set();
-labelState.apiInsightWork = null;
-labelState.apiInsightViewportTimer = null;
-labelState.apiInsightStatusRendered = false;
-function apiInsightKey(account, user, sourceId) {
-  return JSON.stringify([account, user, sourceId]);
-}
-function activeApiInsightKey() {
-  return settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" && chatState.currentAccount && chatState.currentUser ?
-    apiInsightKey(chatState.currentAccount, chatState.currentUser, settingsState.modelSourceSnapshot.sourceId) : null;
-}
-function activeApiInsightEntry() {
-  const key = activeApiInsightKey();
-  return key ? labelState.apiInsightCache.get(key) : null;
-}
-const API_INSIGHT_LABEL = /^\p{Script=Han}{1,8}$/u;
-const API_AFFECT_KEYS = ["tone", "feeling", "interaction"];
-function validApiInsightLabel(value) {
-  return typeof value === "string" && API_INSIGHT_LABEL.test(value);
-}
-// Accepts the S1 affect/intents shape, the legacy scalar {emotion,intent} shape, and the
-// routine/uncertain/insufficient success terminal states. It never coerces a failure.
-function validApiInsight(value, id) {
-  if (!value || String(value.id) !== id) return false;
-  if (value.status === "insufficient" || value.status === "routine" || value.status === "uncertain") return true;
-  if (value.status !== "ok") return false;
-  if (typeof value.emotion === "string" || typeof value.intent === "string") {
-    return validApiInsightLabel(value.emotion) && validApiInsightLabel(value.intent);
-  }
-  const affect = value.affect;
-  const seen = new Set();
-  if (affect !== undefined && affect !== null) {
-    if (typeof affect !== "object" || Array.isArray(affect)) return false;
-    for (const key of Object.keys(affect)) {
-      if (!API_AFFECT_KEYS.includes(key)) return false;
-      const label = affect[key];
-      if (label === undefined || label === null) continue;
-      if (!validApiInsightLabel(label) || seen.has(label)) return false;
-      seen.add(label);
-    }
-  }
-  if (value.intents === undefined || value.intents === null) return true;
-  if (!Array.isArray(value.intents) || value.intents.length > 3) return false;
-  const seenIntents = new Set();
-  for (const label of value.intents) {
-    if (!validApiInsightLabel(label) || seenIntents.has(label) || seen.has(label)) return false;
-    seenIntents.add(label);
-  }
-  return true;
-}
-// Parse only completed emotion/intent pairs from the text received so far. A
-// label is previewed after its line (or the next label marker) is complete;
-// half a streamed word never reaches the message row. The provider may add
-// JSON, Markdown, thoughts, or a trailing summary, so the parser deliberately
-// ignores everything except the two requested markers and uses target order.
-function parseApiPartialLabels(raw, ids) {
-  const targetIds = Array.isArray(ids) ? ids.map(id => String(id)) : [];
-  if (!targetIds.length || typeof raw !== "string" || !raw) return {};
-  const idMarkers = [...raw.matchAll(/(?:^|\n)\s*(?:编号|id)\s*[:：]\s*([^\r\n]+)/giu)];
-  if (idMarkers.length) {
-    const results = {};
-    for (let index = 0; index < idMarkers.length; index++) {
-      const current = idMarkers[index];
-      const id = current[1].trim();
-      if (!targetIds.includes(id) || Object.hasOwn(results, id)) continue;
-      const next = idMarkers[index + 1];
-      const block = raw.slice(current.index + current[0].length, next?.index) + (next ? "\n" : "");
-      Object.assign(results, parseApiPartialLabels(block, [id]));
-    }
-    return results;
-  }
-  const summary = raw.search(/(?:^|\n)\s*(?:整体|总体)?总结\s*[:：]?/u);
-  const body = (summary >= 0 ? `${raw.slice(0, summary)}\n` : raw).replace(/\r/g, "");
-  const marker = /(?:情感|情绪|emotion|意图|intent)\s*[:：]\s*/giu;
-  const matches = [...body.matchAll(marker)];
-  const emotions = [];
-  const intents = [];
-  for (let index = 0; index < matches.length; index++) {
-    const current = matches[index];
-    const start = (current.index ?? 0) + current[0].length;
-    const next = matches[index + 1];
-    const end = next?.index ?? body.length;
-    const value = body.slice(start, end);
-    const trimmed = value.trim();
-    // When there is no next marker, require a visible line/JSON/punctuation
-    // boundary so a currently streamed prefix such as “关” stays pending.
-    const complete = !!next || /\n/u.test(value) ||
-      /[}\]，,。！？!?；;:"'”」』]\s*$/u.test(trimmed);
-    if (!complete) continue;
-    const absent = /^(?:无|暂无|没有|不明确|未知|不确定|无明显情绪|无明确意图|none|null|n\/a|[-—–])(?:\s|$|[。；;])/iu.test(trimmed);
-    const label = absent ? "" : trimmed.match(/\p{Script=Han}{1,4}/u)?.[0];
-    if (label === undefined) continue;
-    const kind = current[0].match(/^(?:情感|情绪|emotion)/iu) ? "emotion" : "intent";
-    (kind === "emotion" ? emotions : intents).push(label);
-  }
-  const count = Math.min(targetIds.length, emotions.length, intents.length);
-  const result = {};
-  for (let index = 0; index < count; index++) {
-    const id = targetIds[index];
-    const emotion = emotions[index];
-    const intent = intents[index];
-    result[id] = { id, status: "ok", ...(emotion ? { affect: { feeling: emotion } } : {}), intents: intent ? [intent] : [] };
-  }
-  return result;
-}
-function apiInsightCandidates() {
-  if (!chatState.messages.length) return [];
-  const eligible = message => message.side === "other" && message.kind === "text" &&
-    typeof message.text === "string" && !!message.text.trim() &&
-    hasIntentContent(message.text) && !isIncompleteFragment(message.text) &&
-    (!chatState.historyState || typeof message.historyCursor === "string");
-  // Analyze the entire message window already loaded for this conversation.
-  // Clicking “load more” is the explicit boundary for expanding that window.
-  return chatState.messages.filter(eligible).slice(-500);
-}
-function apiInsightSignature(candidates) {
-  return JSON.stringify(candidates.map(message => [String(message.id), message.text]));
-}
-function apiInsightWorkCurrent(work) {
-  return labelState.apiInsightWork === work && settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" &&
-    settingsState.settings.intent && chatState.currentAccount === work.account && chatState.currentUser === work.user &&
-    settingsState.modelSourceSnapshot.sourceId === work.sourceId && chatState.generation === work.generation;
-}
-function cancelApiInsightWork() {
-  clearTimeout(labelState.apiInsightViewportTimer);
-  labelState.apiInsightViewportTimer = null;
-  if (!labelState.apiInsightWork) return;
-  clearTimeout(labelState.apiInsightWork.timer);
-  labelState.apiInsightWork.controller.abort();
-  labelState.apiInsightWork = null;
-}
-function renderApiInsightStatus() {
-  const node = byId("analysisStatus");
-  const retry = byId("btnRetryAnalysis");
-  retry.textContent = "分析失败 · 重试";
-  if (!settingsState.modelSourceResolved || settingsState.modelSourceSnapshot.mode !== "api" || !settingsState.settings.intent || !chatState.currentUser) {
-    if (labelState.apiInsightStatusRendered) node.textContent = "";
-    labelState.apiInsightStatusRendered = false;
-    retry.hidden = !(portraitState.incrementalFailed || usingLocalFine() && labelState.recentFailed);
-    if (usingLocalFine() && settingsState.localModelResolved && !settingsState.localModelReady) {
-      node.textContent = "未安装 Laya 模型，请在设置下载模型";
-      retry.hidden = true;
-    }
-    if (settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api") setIntentActionState("idle");
-    return;
-  }
-  labelState.apiInsightStatusRendered = true;
-  const entry = activeApiInsightEntry();
-  if (entry?.error) {
-    node.textContent = entry.error;
-    retry.hidden = false;
-    setIntentActionState("error");
-  } else if (["queued", "running"].includes(entry?.job?.status) || labelState.apiInsightWork?.postPending) {
-    const total = Number(entry?.job?.total) || 0;
-    const processed = Number(entry?.job?.processed) || 0;
-    const retry = entry?.job?.retry;
-    if (retry) {
-      const remaining = Math.max(0, Math.ceil((Number(retry.nextAtMs) - Date.now()) / 1000));
-      const reason = ({ "invalid-output": "模型返回格式不正确", timeout: "模型响应超时",
-        "invalid-insights": "模型结果不完整", network: "网络连接失败",
-        "rate-limit": "接口请求受限" })[retry.reason] || "模型响应失败";
-      node.textContent = `${reason}，${remaining} 秒后自动重试 ${retry.attempt}/${retry.max}`;
-    } else {
-      const elapsed = Math.max(0, Math.floor((Date.now() - Number(entry?.job?.startedAtMs || Date.now())) / 1000));
-      const firstBodyMs = Number(entry?.job?.timings?.firstBodyMs);
-      const first = Number.isFinite(firstBodyMs) && firstBodyMs >= 0 ?
-        `首段 ${(firstBodyMs / 1000).toFixed(1)} 秒 · ` : "";
-      node.textContent = first + (total > 0 ? `分析中 ${Math.min(processed, total)}/${total} · ${elapsed} 秒` : `分析中 · ${elapsed} 秒`);
-    }
-    setIntentActionState(labelState.apiInsightWork?.postPending ? "submitting" : entry?.job?.status || "queued");
-  } else if (entry?.job?.status === "done") {
-    // Real wall-clock total from the backend job, never a poll count.
-    const totalMs = Number(entry.job.timings?.totalMs);
-    const firstBodyMs = Number(entry.job.timings?.firstBodyMs);
-    const total = Number(entry.job.total) || 0;
-    node.textContent = Number.isFinite(totalMs) && totalMs >= 0 ?
-      (Number.isFinite(firstBodyMs) && firstBodyMs >= 0 ? `首段 ${(firstBodyMs / 1000).toFixed(1)} 秒 · ` : "") +
-      `完成 · ${(totalMs / 1000).toFixed(1)} 秒` + (total > 0 ? ` · ${total} 条` : "") : "";
-    setIntentActionState("done");
-  } else {
-    node.textContent = "";
-    setIntentActionState("idle");
-  }
-  if (!entry?.error) retry.hidden = !portraitState.incrementalFailed;
-}
-function renderApiInsightResult(result, text = "") {
-  return messageLabelsApi().render(window.MessageInsightAdapters.apiView(result, text), String(result?.id || ""));
-}
-function updateApiInsightLabel(message, node, wrap) {
-  const id = String(message.id);
-  const eligible = settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" && settingsState.settings.intent &&
-    message.side === "other" && message.kind === "text" &&
-    typeof message.text === "string" && !!message.text.trim() &&
-    hasIntentContent(message.text) && !isIncompleteFragment(message.text);
-  const entry = activeApiInsightEntry();
-  let result = eligible && validApiInsight(entry?.results?.[id], id) ? entry.results[id] : null;
-  const work = labelState.apiInsightWork;
-  if (eligible && !result && !entry?.error && work?.hydrated && apiInsightWorkCurrent(work) &&
-      ["queued", "running"].includes(entry?.job?.status)) {
-    // Streaming is a temporary preview. Only GET results enter the confirmed
-    // cache; errors, cancellation and a retry's cleared stream discard previews.
-    const preview = entry.job.previewResults?.[id];
-    if (validApiInsight(preview, id)) result = preview;
-  }
-  const pending = eligible && !result && labelState.apiInsightWork?.key === activeApiInsightKey() &&
-    labelState.apiInsightWork.pendingIds.has(id);
-  const signature = result ? `api:${settingsState.modelSourceSnapshot.sourceId}:${JSON.stringify(result)}` :
-    pending ? `api:${settingsState.modelSourceSnapshot.sourceId}:pending:${id}` : "";
-  if (node.dataset.analysisSignature === signature) return;
-  const revealing = !!wrap.querySelector(".inline-intent-pending") && result?.status === "ok";
-  node.querySelector(".msg-avatar-column .msg-mood")?.remove();
-  wrap.querySelector(".inline-expression-row")?.remove();
-  wrap.querySelector(".inline-intent-row")?.remove();
-  wrap.querySelector(".inline-intent-pending")?.remove();
-  node.dataset.analysisSignature = signature;
-  if (pending) wrap.appendChild(element("div", "inline-intent-pending", "分析中"));
-  else if (result?.status === "ok") {
-    const row = messageLabelsApi().render(window.MessageInsightAdapters.apiView(result, message.text || ""), id);
-    if (revealing) row.classList.add("inline-intent-revealed");
-    wrap.appendChild(row);
-  }
-}
-// API insight job polling. The base interval sits in the 250-500 ms band so a fast job
-// is picked up quickly; while the job stays queued/running it backs off up to a bounded
-// cap so a slow provider does not cause a poll storm. Not a model-speed measurement.
-const API_INSIGHT_POLL_BASE_MS = 400;
-const API_INSIGHT_POLL_MAX_MS = 2000;
-function apiInsightPollDelay(attempt) {
-  const step = Math.max(0, (Number(attempt) || 1) - 1);
-  return Math.min(API_INSIGHT_POLL_MAX_MS, API_INSIGHT_POLL_BASE_MS * Math.pow(2, step));
-}
-function scheduleApiInsightPoll(work) {
-  clearTimeout(work.timer);
-  if (!apiInsightWorkCurrent(work)) return;
-  work.pollAttempt = (Number(work.pollAttempt) || 0) + 1;
-  work.timer = setTimeout(() => { void fetchApiInsightResults(work); }, apiInsightPollDelay(work.pollAttempt));
-}
-async function fetchApiInsightResults(work) {
-  if (!apiInsightWorkCurrent(work) || work.getPending) return;
-  work.getPending = true;
-  const entry = labelState.apiInsightCache.get(work.key);
-  let terminal = false;
+async function applyRole(role, value) {
+  if (settingsState.modelSourceBusy || !settingsState.modelSourceResolved) return;
+  if (role === "judge" && value === "download-local") { renderModelHome(); await localJudgeAction("prepare"); return; }
+  const snapshot = settingsState.modelSourceSnapshot;
+  if ((snapshot.roles?.[role] || null) === (value || null)) { renderModelHome(); return; }
+  if (role === "main" && !window.confirm("修改主模型会停止运行中的任务，继续吗？")) { renderModelHome(); return; }
+  settingsState.modelSourceBusy = true;
+  updateModelSourceControls();
   try {
-    const query = new URLSearchParams({ user: work.user });
-    if (chatState.historyState) {
-     const ids = apiInsightCandidates().map(message => String(message.id));
-      if (ids.length) query.set("ids", JSON.stringify(ids));
-    }
-    const data = await api(`/api/model-insights?${query}`, {}, work.controller.signal);
-    if (!apiInsightWorkCurrent(work)) return;
-    if (data?.account !== work.account || data.sourceId !== work.sourceId) {
-      beginUnknownModelSource();
-      void loadModelSource(true);
-      if (data?.account !== work.account) void loadSessions();
-      return;
-    }
-    if (!data.results || typeof data.results !== "object" || Array.isArray(data.results))
-      throw new Error("model insights scope mismatch");
-    const accepted = {};
-    for (const [id, value] of Object.entries(data.results)) if (validApiInsight(value, id)) accepted[id] = value;
-    entry.results = { ...entry.results, ...accepted };
-    const storedIds = Object.keys(entry.results);
-    for (const id of storedIds.slice(0, Math.max(0, storedIds.length - 320))) delete entry.results[id];
-    entry.job = data.job || { status: "idle" };
-    // Derive once per poll, not once per message row. This belongs to this job
-    // snapshot only and is never merged into confirmed results.
-    entry.job.previewResults = ["queued", "running"].includes(entry.job.status) ?
-      parseApiPartialLabels(entry.job.partialText,
-        Array.isArray(entry.job.targetIds) && entry.job.targetIds.length ?
-          entry.job.targetIds : [...work.pendingIds]) : {};
-    if (entry.job.status === "done") entry.sessionReady = true;
-    const insightErrors = {
-      "invalid-output": "模型返回格式不正确", "invalid-insights": "模型结果不完整",
-      "context-too-long": "上下文超过模型上限", "auth": "API Key 无效",
-      "rate-limit": "接口请求受限", "timeout": "模型响应超时",
-      "network": "网络连接失败", "provider-error": "模型服务返回错误",
-      "response-too-large": "模型返回内容过长", "empty-response": "模型未返回内容",
-      "output-truncated": "模型输出达到长度上限被截断",
-      "unsupported": "当前接口不支持分析", "model-source-changed": "模型来源已切换",
-    };
-    entry.error = entry.job.status === "error" ? insightErrors[entry.job.error] || "分析失败" : "";
-    if (entry.error && !work.force) entry.requestedSignature = null;
-    work.hydrated = true;
-    if (!["queued", "running"].includes(entry.job.status)) work.pendingIds.clear();
-    refreshLabels();
-    renderApiInsightStatus();
-    if (["queued", "running"].includes(entry.job.status)) {
-      work.force = false;
-      scheduleApiInsightPoll(work);
-    }
-    else terminal = true;
+    const data = await api("/api/model-source/roles", { method: "POST", body: JSON.stringify({[role]: value || null}) });
+    if (!validModelSource(data)) throw new Error("invalid model source");
+    applyActiveModelSource(data);
+    text("modelRolesStatus", "");
   } catch (error) {
-    if (apiInsightWorkCurrent(work) && error.name !== "AbortError") {
-      if (handleAccountBoundaryError(error)) return;
-      work.hydrated = true;
-      work.force = false;
-      work.pendingIds.clear();
-      entry.requestedSignature = null;
-      entry.error = "分析结果读取失败";
-      if (entry.job) entry.job.previewResults = {};
-      refreshLabels();
-      renderApiInsightStatus();
-    }
+    text("modelRolesStatus", `保存失败（${modelSourceRequestError(error)}）`);
   } finally {
-    work.getPending = false;
-    if (terminal && apiInsightWorkCurrent(work)) {
-      const force = work.force;
-      work.force = false;
-      ensureApiInsights(force);
-    }
+    settingsState.modelSourceBusy = false;
+    updateModelSourceControls();
+    renderModelHome();
   }
 }
-async function submitApiInsightJob(work, candidates, signature) {
-  if (!apiInsightWorkCurrent(work) || work.postPending) return;
-  const entry = labelState.apiInsightCache.get(work.key);
-  work.postPending = true;
-  work.pendingIds = new Set(candidates.map(message => String(message.id)));
-  // Retain previously confirmed results until the backend supplies a validated
-  // replacement. A new request or its streamed preview is not a saved result.
-  entry.requestedSignature = signature;
-  entry.error = "";
-  renderApiInsightStatus();
-  refreshLabels();
-  try {
-    // The visible recent window also has stable cursors. Keep the exact visible
-    // targets resolvable when new messages arrive or the user scrolls upward.
-    const around = candidates[Math.floor(candidates.length / 2)]?.historyCursor;
-    const data = await api("/api/model-insights", { method: "POST", body: JSON.stringify({
-       account: work.account, user: work.user, limit: Math.max(1, candidates.length),
-      targetIds: candidates.map(message => String(message.id)),
-      ...(around ? { around } : {}),
-    }) }, work.controller.signal);
-    if (!apiInsightWorkCurrent(work)) return;
-    if (data?.account !== work.account || data.sourceId !== work.sourceId) {
-      beginUnknownModelSource();
-      void loadModelSource(true);
-      if (data?.account !== work.account) void loadSessions();
-      return;
-    }
-    if (!data.job?.id)
-      throw new Error("model insights scope mismatch");
-    entry.job = { ...data.job, previewResults: {} };
-    work.pollAttempt = 0;
-    renderApiInsightStatus();
-    void fetchApiInsightResults(work);
-  } catch (error) {
-    if (apiInsightWorkCurrent(work) && error.name !== "AbortError") {
-      if (handleAccountBoundaryError(error)) return;
-      work.pendingIds.clear();
-      entry.error = "分析失败";
-      renderApiInsightStatus();
-      refreshLabels();
-    }
-  } finally {
-    work.postPending = false;
-    if (apiInsightWorkCurrent(work) && work.hydrated &&
-        !["queued", "running"].includes(entry.job?.status)) ensureApiInsights();
-  }
-}
-function ensureApiInsights(force = false) {
-  const key = settingsState.settings.intent && activeApiInsightKey();
-  const sourceKey = JSON.stringify([chatState.currentAccount, settingsState.modelSourceSnapshot.sourceId]);
-  if (settingsState.suppressedApiSources.has(sourceKey)) {
-    cancelApiInsightWork();
-    renderApiInsightStatus();
-    return;
-  }
-  if (!key || !chatState.controller) {
-    cancelApiInsightWork();
-    renderApiInsightStatus();
-    return;
-  }
-  if (!labelState.apiInsightCache.has(key)) {
-     labelState.apiInsightCache.set(key, { results: {}, job: null, requestedSignature: null,
-       error: "", sessionReady: false });
-    while (labelState.apiInsightCache.size > 64) labelState.apiInsightCache.delete(labelState.apiInsightCache.keys().next().value);
-  }
-  const entry = labelState.apiInsightCache.get(key);
-  if (entry.error && !force) {
-    renderApiInsightStatus();
-    return;
-  }
-  if (!labelState.apiInsightWork || labelState.apiInsightWork.key !== key || labelState.apiInsightWork.generation !== chatState.generation) {
-    cancelApiInsightWork();
-    labelState.apiInsightWork = { key, account: chatState.currentAccount, user: chatState.currentUser,
-      sourceId: settingsState.modelSourceSnapshot.sourceId, generation: chatState.generation, controller: new AbortController(),
-      timer: null, pollAttempt: 0, pendingIds: new Set(), getPending: false, postPending: false,
-      hydrated: false, force };
-    void fetchApiInsightResults(labelState.apiInsightWork);
-    return;
-  }
-  const work = labelState.apiInsightWork;
-  if (force) {
-    work.force = true;
-    entry.requestedSignature = null;
-    entry.error = "";
-  }
-  if (!work.hydrated || work.getPending || work.postPending ||
-      ["queued", "running"].includes(entry.job?.status)) return;
-  const candidates = apiInsightCandidates();
-  if (!candidates.length) return;
-   const pending = entry.sessionReady ? candidates.filter(message => !validApiInsight(
-     entry.results[String(message.id)], String(message.id))) : candidates;
-  if (!pending.length) return;
-  const signature = apiInsightSignature(pending);
-  if (signature !== entry.requestedSignature || work.force)
-    void submitApiInsightJob(work, pending, signature);
-  work.force = false;
-}
+// Modified 2026-11-01: 密钥清除随模型删除；blank 保存沿用同端点密文，不再单设清除入口。
 let managedAccounts = [];
 let managedCurrentAccountId = null;
 let selectedManagedAccountId = null;
@@ -4583,173 +2588,13 @@ async function loadAccounts() {
     text("accountManagerStatus", error.message);
   }
 }
-let analysisCacheRequest = 0;
-let analysisCacheBusy = false;
-let pendingAnalysisCacheClear = null;
-function renderAnalysisCache(data) {
-  const list = byId("analysisCacheList");
-  list.replaceChildren();
-  if (!data.sources.length) status(list, "暂无分析缓存");
-  for (const source of data.sources) {
-    const apiSourceKey = source.kind === "api" ? JSON.stringify([data.account, source.sourceId]) : null;
-    if (source.suspended) {
-      if (apiSourceKey) settingsState.suppressedApiSources.add(apiSourceKey);
-      else settingsState.suppressedLocalAccounts.add(data.account);
-    } else if (apiSourceKey) {
-      settingsState.suppressedApiSources.delete(apiSourceKey);
-    } else {
-      settingsState.suppressedLocalAccounts.delete(data.account);
-    }
-    const card = element("div", "analysis-cache-card");
-    const main = element("div", "analysis-cache-card-main");
-    const label = source.kind === "local" ? "本地 Laya" : source.label || "API 模型";
-    const title = element("strong", "", label);
-    const count = element("span", "", `消息分析 ${source.messageCount} · 画像 ${source.portraitCount}${source.suspended ? " · 已暂停" : ""}`);
-    main.append(title, count);
-    const clear = element("button", "settings-danger-btn", "清除");
-    clear.type = "button";
-    // An API source with a saved record can still hold stale job/config state, so
-    // its Clear stays available even at 0/0. Only a truly empty local cache is a no-op.
-    const clearable = source.kind === "api" || source.suspended ||
-      source.messageCount + source.portraitCount > 0;
-    clear.disabled = analysisCacheBusy || !clearable;
-    clear.title = clearable ? "" : "该来源当前没有可清除的分析缓存";
-    clear.addEventListener("click", () => {
-      if (clear.disabled || !chatState.currentAccount || data.account !== chatState.currentAccount) return;
-      pendingAnalysisCacheClear = { account: data.account, sourceId: source.sourceId,
-        kind: source.kind, label };
-      text("analysisCacheQuestion", `清除当前账号的「${label}」消息分析和画像缓存？聊天记录会保留。`);
-      byId("analysisCacheConfirm").hidden = false;
-    });
-    card.append(main, clear);
-    list.appendChild(card);
-  }
-}
-async function loadAnalysisCache() {
-  const request = ++analysisCacheRequest;
-  const account = chatState.currentAccount;
-  pendingAnalysisCacheClear = null;
-  byId("analysisCacheConfirm").hidden = true;
-  if (!account) {
-    status(byId("analysisCacheList"), "当前微信账号未就绪");
-    text("analysisCacheStatus", "");
-    return;
-  }
-  text("analysisCacheStatus", "正在读取…");
-  try {
-    const data = await api("/api/analysis-cache");
-    if (request !== analysisCacheRequest || account !== chatState.currentAccount) return;
-    if (data?.account !== account || !Array.isArray(data.sources) ||
-        !data.sources.every(source => source && typeof source.sourceId === "string" && source.sourceId &&
-          ["local", "api"].includes(source.kind) && typeof source.label === "string" &&
-          Number.isSafeInteger(source.messageCount) && source.messageCount >= 0 &&
-          Number.isSafeInteger(source.portraitCount) && source.portraitCount >= 0 &&
-          typeof source.suspended === "boolean"))
-      throw new Error("分析缓存状态无效");
-    renderAnalysisCache(data);
-    text("analysisCacheStatus", "");
-  } catch {
-    if (request === analysisCacheRequest) text("analysisCacheStatus", "缓存读取失败，请重试");
-  }
-}
-function clearLocalUiAnalysis(account) {
-  for (const map of [portraitState.storedProfileSnapshots, portraitState.profileCache, portraitState.profileRateSamples])
-    for (const key of map.keys()) try {
-      const scope = JSON.parse(key);
-      if (scope[0] === account && scope.length === 3) map.delete(key);
-    } catch { }
-  for (const key of portraitState.autoIncrementalState.keys()) try {
-    if (JSON.parse(key)[0] === account) portraitState.autoIncrementalState.delete(key);
-  } catch { }
-  for (const entry of chatState.sessionCache.values()) if (entry.account === account) {
-    entry.results = {};
-    entry.mood = null;
-  }
-  for (const key of portraitState.profileSnapshotsRequireRefresh) try {
-    const scope = JSON.parse(key);
-    if (scope[0] === account && scope.length === 3) portraitState.profileSnapshotsRequireRefresh.delete(key);
-  } catch { }
-  saveStoredProfiles();
-  for (let index = localStorage.length - 1; index >= 0; index--) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(`mbti-unlocked:${account}:`)) localStorage.removeItem(key);
-  }
-  if (chatState.currentAccount === account) {
-    labelState.results = {};
-    chatState.conversationMood = null;
-    labelState.requestedRecentSignatures.clear();
-    clearProfileView(chatState.sessions.get(chatState.currentUser)?.name || "人物画像");
-    text("stripDbPath", "—");
-    text("stripMsgCount", "—");
-    setStripStatus("画像缓存已清除");
-    if (chatState.messages.length) renderMessages(chatState.messages);
-  }
-}
-byId("btnManageAnalysisCache").addEventListener("click", () => {
-  const panel = byId("analysisCacheManager");
-  panel.hidden = !panel.hidden;
-  text("btnManageAnalysisCache", panel.hidden ? "查看缓存" : "收起");
-  if (!panel.hidden) void loadAnalysisCache();
-});
-byId("btnCancelAnalysisCacheClear").addEventListener("click", () => {
-  pendingAnalysisCacheClear = null;
-  byId("analysisCacheConfirm").hidden = true;
-});
-byId("btnConfirmAnalysisCacheClear").addEventListener("click", async () => {
-  const pending = pendingAnalysisCacheClear;
-  if (!pending || analysisCacheBusy || pending.account !== chatState.currentAccount) return;
-  analysisCacheBusy = true;
-  byId("btnConfirmAnalysisCacheClear").disabled = true;
-  text("analysisCacheStatus", "正在清除…");
-  try {
-    const result = await api("/api/analysis-cache/clear", {
-      method: "POST", body: JSON.stringify({ account: pending.account, sourceId: pending.sourceId }),
-    });
-    if (result?.cleared !== true || result.account !== pending.account || result.sourceId !== pending.sourceId)
-      throw new Error("清理结果不匹配");
-    if (pending.kind === "api") {
-      settingsState.suppressedApiSources.delete(JSON.stringify([pending.account, pending.sourceId]));
-      cancelApiInsightWork();
-      portraitState.apiPortraitSubmitErrors.clear();
-      for (const key of labelState.apiInsightCache.keys()) try {
-        const [account, _user, sourceId] = JSON.parse(key);
-        if (account === pending.account && sourceId === pending.sourceId) labelState.apiInsightCache.delete(key);
-      } catch { }
-      for (const map of [portraitState.storedProfileSnapshots, portraitState.profileCache, portraitState.profileRateSamples])
-        for (const key of map.keys()) try {
-          const scope = JSON.parse(key);
-          if (scope[0] === pending.account && scope[3] === pending.sourceId) map.delete(key);
-        } catch { }
-      for (const key of portraitState.profileSnapshotsRequireRefresh) try {
-        const scope = JSON.parse(key);
-        if (scope[0] === pending.account && scope[3] === pending.sourceId)
-          portraitState.profileSnapshotsRequireRefresh.delete(key);
-      } catch { }
-      saveStoredProfiles();
-      if (chatState.currentAccount === pending.account && settingsState.modelSourceSnapshot.sourceId === pending.sourceId) {
-        cancelApiPortraitPoll();
-        clearApiPortraitView();
-        portraitState.renderedApiPortraitKey = null;
-        portraitState.renderedApiPortraitScopeKey = null;
-        if (chatState.view === "persona") void loadApiPortrait(portraitState.activeMember);
-      }
-      if (settingsState.modelSourceSnapshot.sourceId === pending.sourceId && chatState.messages.length) renderMessages(chatState.messages);
-    } else {
-      settingsState.suppressedLocalAccounts.delete(pending.account);
-      clearLocalUiAnalysis(pending.account);
-    }
-    pendingAnalysisCacheClear = null;
-    byId("analysisCacheConfirm").hidden = true;
-    analysisCacheBusy = false;
-    await loadAnalysisCache();
-    text("analysisCacheStatus", "已清除");
-  } catch { text("analysisCacheStatus", "清除失败，请重试"); }
-  finally {
-    analysisCacheBusy = false;
-    byId("btnConfirmAnalysisCacheClear").disabled = false;
-  }
-});
 function closeSettingsModal() {
+  if (window.PluginSettings?.requestLeave) { window.PluginSettings.requestLeave(closeSettingsModalNow); return; }
+  closeSettingsModalNow();
+}
+function closeSettingsModalNow() {
+  hideApiKey();
+  settingsState.modelSourceDraftDirty = false;
   ++settingsState.dataRootRequest;
   settingsState.dataRootDraftDirty = false;
   settingsState.modelSourceLoadController?.abort();
@@ -4759,12 +2604,6 @@ function closeSettingsModal() {
   settingsState.modelTestController?.abort();
   settingsState.modelTestController = null;
   byId("settingsModal").classList.remove("show");
-  clearTimeout(settingsState.runtimePollTimer);
-  ++analysisCacheRequest;
-  pendingAnalysisCacheClear = null;
-  byId("analysisCacheConfirm").hidden = true;
-  byId("analysisCacheManager").hidden = true;
-  text("btnManageAnalysisCache", "查看缓存");
   closeConversationManager();
   text("conversationManagerStatus", "");
   ++settingsState.modelSourceReadRequest;
@@ -4780,6 +2619,49 @@ function closeSettingsModal() {
   pendingDeleteAccountId = null;
   byId("accountDeleteConfirm").hidden = true;
   renderManagedAccounts();
+  if (window.desktopHost?.isSettingsWindow) void window.desktopHost.closeSettingsWindow();
+}
+// Forget this window's per-account conveniences (read marks, last chat, pins) of a cleared account.
+async function clearAccountUiData(accountId) {
+  const storages = [localStorage];
+  if (typeof sessionStorage !== "undefined") storages.push(sessionStorage);
+  const prefixes = ["read-watermark:", "last-conversation:", "conversation-pins-v1:"];
+  const accounts = new Set();
+  for (const account of window.ChatComposer?.accounts() || []) accounts.add(account);
+  if (typeof chatState.currentAccount === "string" && chatState.currentAccount) accounts.add(chatState.currentAccount);
+  for (const key of chatState.sessionCache.keys()) {
+    try {
+      const [account] = JSON.parse(key);
+      if (typeof account === "string" && account) accounts.add(account);
+    } catch { }
+  }
+  for (const storage of storages) try {
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      const prefix = prefixes.find(item => key?.startsWith(item));
+      if (prefix) accounts.add(key.slice(prefix.length));
+      else if (key?.startsWith("mbti-unlocked:")) accounts.add(key.slice("mbti-unlocked:".length).split(":", 1)[0]);
+    }
+  } catch { }
+  const matching = new Set();
+  const encoder = new TextEncoder();
+  for (const account of accounts) {
+    const digest = await crypto.subtle.digest("SHA-256", encoder.encode(account));
+    const id = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (id === accountId) matching.add(account);
+  }
+  for (const key of chatState.sessionCache.keys()) {
+    try { if (matching.has(JSON.parse(key)[0])) chatState.sessionCache.delete(key); } catch { }
+  }
+  for (const account of matching) window.ChatComposer?.clearAccount(account);
+  for (const account of matching) for (const storage of storages) try {
+    for (const prefix of prefixes) storage.removeItem(prefix + account);
+    for (let index = storage.length - 1; index >= 0; index--) {
+      const key = storage.key(index);
+      if (key?.startsWith(`mbti-unlocked:${account}:`)) storage.removeItem(key);
+    }
+  } catch { }
+  return matching;
 }
 async function deleteManagedAccount() {
   const account = managedAccounts.find(item => item.accountId === pendingDeleteAccountId);
@@ -4796,21 +2678,21 @@ async function deleteManagedAccount() {
     if (!response.ok) throw new Error(typeof data?.message === "string" && data.message ? data.message :
       typeof data?.error === "string" && data.error ? data.error : `删除失败（HTTP ${response.status}）`);
     if (data?.deleted !== accountId) throw new Error("删除结果不匹配");
+    window.SettingsSync?.accountCleared(accountId);
+    announceFriendAccount("account-cleared", accountId);
     const exitAfterDelete = data.exitApp === true || data.current === true;
     if (exitAfterDelete) {
       accountClearedExiting = true;
       chatState.sessionRequest++;
       chatState.advance("generation");
-      portraitState.advance("profileGeneration");
-      portraitState.advance("analysisGeneration");
       chatState.controller?.abort();
       chatState.currentUser = null;
     }
     let cacheCleared = true;
     let clearedAccounts = new Set();
-    try { clearedAccounts = await clearStoredProfilesForAccount(accountId); }
+    try { clearedAccounts = await clearAccountUiData(accountId); }
     catch { cacheCleared = false; }
-    try { for (const clearedAccount of clearedAccounts) window.Advisor?.onAccountCleared(clearedAccount); }
+    try { for (const clearedAccount of clearedAccounts) window.PluginSlots?.onAccountCleared(clearedAccount); }
     catch { cacheCleared = false; }
     if (exitAfterDelete) {
       resetAccountView(cacheCleared ? "账号数据已清除，正在退出…" : "账号已清除，本地缓存清理失败，请关闭软件", true);
@@ -4829,7 +2711,7 @@ async function deleteManagedAccount() {
     byId("accountDeleteConfirm").hidden = true;
     accountDeleteBusy = false;
     await loadAccounts();
-    text("accountManagerStatus", cacheCleared ? "已清除" : "账号已清除，本地画像缓存清理失败");
+    text("accountManagerStatus", cacheCleared ? "已清除" : "账号已清除，本地界面缓存清理失败");
     void loadSessions();
   } catch (error) {
     text("accountManagerStatus", error.message);
@@ -4842,6 +2724,8 @@ async function deleteManagedAccount() {
 async function copyDraft() {
   const value = byId("chatInput").value;
   if (!value.trim()) return;
+  const scope = { account: chatState.currentAccount, user: chatState.currentUser };
+  const current = () => scope.account === chatState.currentAccount && scope.user === chatState.currentUser && byId("chatInput").value === value;
   let copied = false;
   if (window.desktopHost?.copyDraft) {
     try { copied = await window.desktopHost.copyDraft(value); } catch { }
@@ -4850,6 +2734,8 @@ async function copyDraft() {
     try { await navigator.clipboard.writeText(value); copied = true; } catch { }
   }
   if (!copied) {
+    // A delayed clipboard denial must not select and copy a different contact's new draft.
+    if (!current()) return;
     const input = byId("chatInput");
     const focus = document.activeElement;
     const start = input.selectionStart;
@@ -4864,281 +2750,58 @@ async function copyDraft() {
       if (focus && focus !== input && typeof focus.focus === "function") focus.focus();
     }
   }
-  toast(copied ? "草稿已复制，未发送到微信" : "复制失败，请手动复制草稿");
+  if (current()) toast(copied ? "草稿已复制" : "复制失败，请手动复制草稿");
 }
 byId("searchInput").addEventListener("input", renderSessions);
 byId("chatMessages").addEventListener("scroll", event => {
   const container = event.currentTarget;
+  const delta = container.scrollTop - chatState.lastChatScrollTop;
+  if (delta) queueHistoryScroll(delta < 0 ? "older" : "newer");
   if (chatState.historyState) {
     chatState.followLatest = false;
     chatState.lastChatScrollTop = container.scrollTop;
     updateHistoryNavigation();
-    clearTimeout(labelState.apiInsightViewportTimer);
-    labelState.apiInsightViewportTimer = setTimeout(() => ensureApiInsights(), 250);
     return;
   }
   if (container.scrollHeight - container.scrollTop - container.clientHeight < 80) chatState.followLatest = true;
   else if (container.scrollTop < chatState.lastChatScrollTop - 1) chatState.followLatest = false;
   chatState.lastChatScrollTop = container.scrollTop;
   updateHistoryNavigation();
-  if (settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api" && settingsState.settings.intent) {
-    clearTimeout(labelState.apiInsightViewportTimer);
-    labelState.apiInsightViewportTimer = setTimeout(() => ensureApiInsights(), 250);
-  }
 });
-byId("btnHistoryEarlier").addEventListener("click", () => void loadOlderHistory());
-byId("btnHistoryNewer").addEventListener("click", () => void loadNewerHistory());
+// A short conversation cannot emit scroll at its boundary. Wheel/key/touch intent still pages it.
+function historyWheel(event) {
+  if (!event.ctrlKey && event.deltaY) queueHistoryScroll(event.deltaY < 0 ? "older" : "newer");
+}
+byId("chatMessages").addEventListener("wheel", historyWheel, { passive: true });
+byId("chatMessages").addEventListener("keydown", event => {
+  if (event.target !== event.currentTarget) return;
+  if (["ArrowUp", "PageUp", "Home"].includes(event.key)) queueHistoryScroll("older");
+  else if (["ArrowDown", "PageDown", "End"].includes(event.key)) queueHistoryScroll("newer");
+});
+let historyTouchY = null;
+byId("chatMessages").addEventListener("touchstart", event => { historyTouchY = event.touches[0]?.clientY ?? null; }, { passive: true });
+byId("chatMessages").addEventListener("touchmove", event => {
+  const y = event.touches[0]?.clientY;
+  if (historyTouchY != null && y != null && Math.abs(y - historyTouchY) > 4) {
+    queueHistoryScroll(y > historyTouchY ? "older" : "newer");
+    historyTouchY = y;
+  }
+}, { passive: true });
+byId("btnHistoryRetry").addEventListener("click", retryHistory);
 byId("btnReturnLatest").addEventListener("click", returnToLatest);
-byId("btnChatHistory").addEventListener("click", () => byId("historySearchPanel").hidden ? openHistorySearch() : closeHistorySearch());
-byId("btnCloseHistorySearch").addEventListener("click", closeHistorySearch);
-byId("historySearchForm").addEventListener("submit", event => { event.preventDefault(); startHistorySearch(); });
-byId("btnCancelHistorySearch").addEventListener("click", () => cancelHistorySearch(true));
-byId("btnHistoryPrevResults").addEventListener("click", () => void loadHistorySearchPage(chatState.historySearchPage - 1));
-byId("btnHistoryNextResults").addEventListener("click", () => void loadHistorySearchPage(chatState.historySearchPage + 1));
-byId("btnSend").addEventListener("click", copyDraft);
-byId("chatInput").addEventListener("input", () => {
-  byId("btnSend").classList.toggle("ready", !!byId("chatInput").value.trim());
-  if (!byId("replyPrediction").hidden) clearReplyPrediction();
-});
-byId("btnPredictReply")?.addEventListener("click", () => {
-  closeSettingsModal();
-  switchView("chat");
-  void requestReplyPrediction();
-});
-byId("btnClosePrediction").addEventListener("click", clearReplyPrediction);
-byId("chatInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); copyDraft(); } });
+byId("btnChatHistory").addEventListener("click", () => { void openHistorySearch(); });
+byId("historySearchPanel").addEventListener("cancel", event => { event.preventDefault(); closeHistorySearch(); });
+window.ChatComposer = window.Composer.create({ drafts: window.ComposerDrafts.create(),
+  input: byId("chatInput"), copy: copyDraft });
+window.addEventListener("pagehide", () => window.ChatComposer.dispose());
 byId("navChat").addEventListener("click", () => switchView("chat"));
-byId("navPersona").addEventListener("click", () => switchView("persona"));
-byId("navAdvisor")?.addEventListener("click", () => switchView("advisor"));
-byId("btnToolbarPersona").addEventListener("click", () => switchView("persona"));
-byId("btnToolbarAdvisor")?.addEventListener("click", () => { void window.Advisor?.togglePanel(); });
-byId("btnBackToChat").addEventListener("click", () => switchView("chat"));
-let pendingAnalysisScopeReset = null;
-let analysisScopeResetBusy = false;
-let analysisScopeResetFocus = null;
-function analysisResetScope(kind) {
-  if (!["conversation", "portrait"].includes(kind) || !chatState.currentAccount || !chatState.currentUser ||
-      !chatState.selectedConversations.has(chatState.currentUser) || !settingsState.modelSourceResolved) return null;
-  const source = settingsState.modelSourceSnapshot;
-  const sourceId = source.mode === "local" ? source.sourceId || "local" : source.sourceId;
-  if (!["local", "api"].includes(source.mode) || typeof sourceId !== "string" || !sourceId) return null;
-  return { account: chatState.currentAccount, user: chatState.currentUser, sourceId, kind,
-    member: kind === "portrait" ? portraitState.activeMember || "" : "",
-    mode: source.mode, generation: chatState.generation, revision: settingsState.modelSourceRevision };
-}
-function analysisResetScopeCurrent(scope) {
-  const current = analysisResetScope(scope.kind);
-  return current && ["account", "user", "sourceId", "member", "mode", "generation", "revision"]
-    .every(field => current[field] === scope[field]);
-}
-function openAnalysisScopeReset(kind) {
-  if (analysisScopeResetBusy) return;
-  const scope = analysisResetScope(kind);
-  if (!scope) return;
-  pendingAnalysisScopeReset = scope;
-  analysisScopeResetFocus = document.activeElement;
-  const sessionName = chatState.sessions.get(scope.user)?.name || scope.user;
-  const memberName = scope.member ? portraitState.groupMembers.find(member => member.id === scope.member)?.name || scope.member : sessionName;
-  const sourceName = scope.mode === "local" ? "本地 Laya" : settingsState.modelSourceSnapshot.api?.model || "当前 API 模型";
-  text("analysisScopeTitle", kind === "conversation" ? "重置会话分析" : "重置画像");
-  text("analysisScopeQuestion", kind === "conversation" ?
-    `重置「${sessionName}」的${sourceName}消息分析和全部成员画像？聊天记录和聊天助手数据会保留。` :
-    `重置「${memberName}」的${sourceName}画像？消息标签、其他成员画像和聊天助手数据会保留。`);
-  text("analysisScopeStatus", "");
-  byId("analysisScopeConfirm").hidden = false;
-  byId("btnCancelAnalysisScopeReset").focus();
-}
-function closeAnalysisScopeReset() {
-  if (analysisScopeResetBusy) return;
-  pendingAnalysisScopeReset = null;
-  byId("analysisScopeConfirm").hidden = true;
-  analysisScopeResetFocus?.focus?.();
-  analysisScopeResetFocus = null;
-}
-function invalidateAnalysisScopeCaches(scope) {
-  const matchesProfile = key => {
-    try {
-      const value = JSON.parse(key);
-      return value[0] === scope.account && value[1] === scope.user &&
-        (value.length === 3 ? "local" : value[3]) === scope.sourceId &&
-        (scope.kind === "conversation" || value[2] === scope.member);
-    } catch { return false; }
-  };
-  for (const map of [portraitState.profileCache, portraitState.storedProfileSnapshots, portraitState.profileRateSamples])
-    for (const key of map.keys()) if (matchesProfile(key)) map.delete(key);
-  for (const key of portraitState.profileSnapshotsRequireRefresh) if (matchesProfile(key))
-    portraitState.profileSnapshotsRequireRefresh.delete(key);
-  for (const key of portraitState.apiPortraitSubmitErrors.keys()) try {
-    const [account, user, sourceId, subject] = JSON.parse(key);
-    if (account === scope.account && user === scope.user && sourceId === scope.sourceId &&
-        (scope.kind === "conversation" || subject === (scope.member || scope.user)))
-      portraitState.apiPortraitSubmitErrors.delete(key);
-  } catch { }
-  saveStoredProfiles();
-  if (scope.kind !== "conversation") return;
-  if (scope.mode === "api") labelState.apiInsightCache.delete(apiInsightKey(scope.account, scope.user, scope.sourceId));
-  else {
-    const cached = chatState.sessionCache.get(sessionCacheKey(scope.account, scope.user));
-    if (cached) { cached.results = {}; cached.mood = null; }
-    for (const key of portraitState.autoIncrementalState.keys()) try {
-      const [account, user] = JSON.parse(key);
-      if (account === scope.account && user === scope.user) portraitState.autoIncrementalState.delete(key);
-    } catch { }
-  }
-}
-function resumeResetAnalysisScope(scope) {
-  portraitState.profileGeneration++;
-  portraitState.profilePending = false;
-  cancelApiPortraitPoll();
-  if (scope.mode === "api") clearApiPortraitView();
-  else clearProfileView(chatState.sessions.get(scope.user)?.name || scope.user);
-  if (scope.kind === "conversation") {
-    chatState.controller?.abort();
-    chatState.controller = new AbortController();
-    chatState.advance("generation");
-    chatState.messageRequest++;
-    chatState.messagePending = false;
-    portraitState.analysisGeneration++;
-    portraitState.currentAnalysisJob = null;
-    portraitState.activeAnalysisScope = null;
-    portraitState.incrementalFailed = false;
-    if (scope.mode === "api") cancelApiInsightWork();
-    else {
-      labelState.results = {};
-      chatState.conversationMood = null;
-      labelState.currentRecentJob = null;
-      labelState.recentFailed = false;
-      labelState.recentPending = false;
-      labelState.requestedRecentSignatures.clear();
-      clearInlineIntentPending();
-      clearTimeout(labelState.selectedAnalysisTimer);
-      labelState.selectedAnalysisTimer = null;
-    }
-    renderMessages(chatState.messages);
-    retryAnalysis();
-  }
-  if (chatState.view === "persona") void loadProfile(scope.kind === "portrait" ? scope.member : portraitState.activeMember, true);
-}
-async function confirmAnalysisScopeReset() {
-  const scope = pendingAnalysisScopeReset;
-  if (!scope || analysisScopeResetBusy) return;
-  if (!analysisResetScopeCurrent(scope)) {
-    text("analysisScopeStatus", "账号、会话或分析来源已变化，请取消后重新确认");
-    return;
-  }
-  analysisScopeResetBusy = true;
-  for (const id of ["btnConfirmAnalysisScopeReset", "btnCancelAnalysisScopeReset", "btnResetConversationAnalysis", "btnResetPortrait"])
-    byId(id).disabled = true;
-  text("analysisScopeStatus", "正在重置…");
-  try {
-    const payload = { account: scope.account, user: scope.user, sourceId: scope.sourceId, kind: scope.kind,
-      ...(scope.member ? { member: scope.member } : {}) };
-    const result = await api("/api/analysis-scope/clear", { method: "POST", body: JSON.stringify(payload) });
-    if (result?.cleared !== true || result.account !== scope.account || result.user !== scope.user ||
-        result.sourceId !== scope.sourceId || result.kind !== scope.kind || (result.member || "") !== scope.member)
-      throw new Error("重置结果不匹配");
-    if (pendingAnalysisScopeReset !== scope || !analysisResetScopeCurrent(scope)) return;
-    invalidateAnalysisScopeCaches(scope);
-    resumeResetAnalysisScope(scope);
-    toast(scope.kind === "conversation" ? "会话分析已重置" : "画像已重置");
-    pendingAnalysisScopeReset = null;
-    byId("analysisScopeConfirm").hidden = true;
-    analysisScopeResetFocus?.focus?.();
-  } catch {
-    if (pendingAnalysisScopeReset === scope && analysisResetScopeCurrent(scope))
-      text("analysisScopeStatus", "重置未完成，请稍后重试");
-  } finally {
-    analysisScopeResetBusy = false;
-    byId("btnConfirmAnalysisScopeReset").disabled = false;
-    byId("btnCancelAnalysisScopeReset").disabled = false;
-    const available = !!analysisResetScope("conversation");
-    byId("btnResetConversationAnalysis").disabled = !available;
-    byId("btnResetPortrait").disabled = !available;
-    if (pendingAnalysisScopeReset === scope && !analysisResetScopeCurrent(scope)) {
-      pendingAnalysisScopeReset = null;
-      byId("analysisScopeConfirm").hidden = true;
-    }
-  }
-}
-byId("btnResetConversationAnalysis").addEventListener("click", () => openAnalysisScopeReset("conversation"));
-byId("btnResetPortrait").addEventListener("click", () => openAnalysisScopeReset("portrait"));
-byId("btnCancelAnalysisScopeReset").addEventListener("click", closeAnalysisScopeReset);
-byId("btnConfirmAnalysisScopeReset").addEventListener("click", () => { void confirmAnalysisScopeReset(); });
-byId("analysisScopeConfirm").addEventListener("click", event => {
-  if (event.target === byId("analysisScopeConfirm")) closeAnalysisScopeReset();
-});
-byId("analysisScopeConfirm").addEventListener("keydown", event => {
-  if (event.key === "Escape") { event.preventDefault(); closeAnalysisScopeReset(); }
-  if (event.key === "Tab" && !analysisScopeResetBusy) {
-    event.preventDefault();
-    const cancel = byId("btnCancelAnalysisScopeReset"), confirm = byId("btnConfirmAnalysisScopeReset");
-    (document.activeElement === cancel ? confirm : cancel).focus();
-  }
-});
-function retryAnalysis() {
-  if (!chatState.currentUser || !chatState.controller) return;
-  if (settingsState.suppressedLocalAccounts.has(chatState.currentAccount)) {
-    setStripStatus("分析已暂停，请在设置中清除该来源缓存后重试");
-    return;
-  }
-  if (settingsState.modelSourceResolved && settingsState.modelSourceSnapshot.mode === "api") {
-    if (activeApiInsightEntry()?.error) activeApiInsightEntry().error = "";
-    ensureApiInsights(true);
-    renderApiInsightStatus();
-    return;
-  }
-  if (!canAnalyzeLocal()) {
-    text("analysisStatus", settingsState.localModelResolved ? "未安装 Laya 模型，请在设置下载模型" : "正在检查 Laya 模型");
-    return;
-  }
-  const key = portraitState.activeAnalysisScope || JSON.stringify([chatState.currentAccount, chatState.currentUser, "current"]);
-  const state = incrementalState(key);
-  if (state.pending) return;
-  byId("btnRetryAnalysis").hidden = true;
-  byId("btnRetryProfile").hidden = true;
-  setStripStatus("");
-  text("analysisStatus", "");
-  labelState.recentFailed = false;
-  portraitState.incrementalFailed = false;
-  portraitState.activeAnalysisScope = key;
-  state.failed = false;
-  state.queued = false;
-  state.bootstrapRequested = true;
-  state.requestedSignature = JSON.stringify(chatState.messages);
-  void startIncremental(chatState.currentUser, chatState.generation, chatState.controller.signal, key, state);
-}
-byId("btnRetryAnalysis").addEventListener("click", retryAnalysis);
-byId("btnRetryProfile").addEventListener("click", () => {
-  if (chatState.view === "persona" && portraitState.activeMember) void loadProfile(portraitState.activeMember, true);
-  else retryAnalysis();
-});
-byId("btnToggleIntent").addEventListener("click", () => {
-  settingsState.settings.intent = !settingsState.settings.intent;
-  save();
-  if (!settingsState.settings.intent) {
-    labelState.manualRecentDeferred = false;
-    setIntentActionState("idle");
-    cancelApiInsightWork();
-  }
-  applySettings();
-  if (settingsState.settings.intent) {
-    if (settingsState.modelSourceSnapshot.mode === "api") ensureApiInsights(true);
-    else submitManualRecent();
-  }
-});
+window.desktopHost?.onFriendLocate?.(target => { void locateFromFriend(target); });
+window.desktopHost?.onHistoryLocate?.(target => { void locateFromFriend(target); });
 for (const [id, key] of [["selectThemeMode", "theme"], ["selectZoomLevel", "zoom"]]) byId(id).addEventListener("change", event => { settingsState.settings[key] = event.target.value; save(); applySettings(); });
-byId("selectRuntimeProvider").addEventListener("change", event => { void changeRuntime(event.target.value); });
-byId("selectModelSource").addEventListener("change", () => {
-  settingsState.modelSourceDraftDirty = true;
-  invalidateModelDiscovery();
-  showModelSourceMode();
-});
-for (const id of ["selectApiProtocol", "inputApiBaseUrl", "inputApiKey"])
-  byId(id).addEventListener(id === "selectApiProtocol" ? "change" : "input", () => {
-    settingsState.modelSourceDraftDirty = true;
-    invalidateModelDiscovery();
-    syncSavedApiKeyHint();
-  });
+for (const id of ["selectApiProtocol", "inputApiBaseUrl"])
+  byId(id).addEventListener(id === "selectApiProtocol" ? "change" : "input", apiConnectionChanged);
+byId("inputApiKey").addEventListener("input", apiKeyInputChanged);
+byId("btnToggleApiKeyVisibility").addEventListener("click", () => { void toggleApiKeyVisibility(); });
 byId("selectApiModel").addEventListener("change", event => {
   if (event.target.value) {
     byId("inputApiModelId").value = event.target.value;
@@ -5155,17 +2818,30 @@ byId("inputApiModelId").addEventListener("input", () => {
   settingsState.modelSourceDraftDirty = true;
   invalidateModelTest();
 });
-byId("inputApiContextTokens").addEventListener("input", () => {
+for (const id of ["inputApiContextTokens", "inputApiTimeoutMinutes", "inputApiConcurrency"]) byId(id).addEventListener("input", () => {
   settingsState.modelSourceDraftDirty = true;
   text("modelSourceStatus", "");
 });
 byId("btnFetchApiModels").addEventListener("click", () => { void fetchApiModels(); });
 byId("btnReloadModelSource").addEventListener("click", () => { void loadModelSource(true); });
 byId("btnTestApiModel").addEventListener("click", () => { void testApiModel(); });
-byId("btnActivateLocal").addEventListener("click", () => { void activateModelSource("local"); });
-byId("btnActivateApi").addEventListener("click", () => { void activateModelSource("api"); });
-byId("btnClearApiKey").addEventListener("click", () => { void clearStoredApiKey(); });
-const OFFICIAL_RELEASES_URL = "https://github.com/tswawa/WechatVibe/releases";
+byId("btnSaveApiModel").addEventListener("click", () => { void saveApiModel(); });
+byId("btnDeleteApiModel").addEventListener("click", () => { void deleteApiModel(); });
+byId("btnAddModel").addEventListener("click", () => openModelDetail(null));
+byId("btnBackModelHome").addEventListener("click", () => showModelView("home"));
+byId("btnOpenSearchSettings").addEventListener("click", () => showModelView("search"));
+byId("btnOpenDeveloperSettings").addEventListener("click", () => showModelView("developer"));
+byId("btnBackDeveloperSettings").addEventListener("click", () => showModelView("home"));
+byId("btnBackLocalJudge").addEventListener("click", () => showModelView("home"));
+byId("btnPrepareLocalJudge").addEventListener("click", () => void localJudgeAction("prepare"));
+byId("btnCancelLocalJudge").addEventListener("click", () => void localJudgeAction("cancel"));
+byId("btnDeleteLocalJudge").addEventListener("click", () => void localJudgeAction("delete"));
+byId("btnBackFromSearch").addEventListener("click", () => showModelView("home"));
+for (const [id, role] of [["selectRoleMain", "main"], ["selectRoleJudge", "judge"], ["selectRoleImage", "image"]])
+  byId(id).addEventListener("change", event => { void applyRole(role, event.target.value); });
+const OFFICIAL_RELEASES_URL = "https://github.com/youdrew/zhiji-wechat-assistant/releases";
+// Modified by Know Your Friends, 2026-10-12: development builds do not use upstream updates.
+const appUpdatesEnabled = window.desktopHost?.appUpdatesEnabled === true;
 const UPDATE_BUSY_PHASES = new Set(["downloading", "verifying", "extracting", "installing", "restarting"]);
 const UPDATE_BACKGROUND_CHECK_DELAY_MS = 10_000;
 const UPDATE_BACKGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -5189,7 +2865,8 @@ function setDisplayedVersion(value) {
   if (!version) return;
   text("aboutCurrentVersion", version);
   text("updateCurrentVersion", version);
-  byId("btnAboutVersion").setAttribute("aria-label", `查看软件更新，当前版本 ${version}`);
+  byId("btnAboutVersion").setAttribute("aria-label",
+    appUpdatesEnabled ? `查看软件更新，当前版本 ${version}` : `当前版本 ${version}`);
 }
 function loadAboutVersion() {
   if (aboutVersionPromise) return aboutVersionPromise;
@@ -5252,6 +2929,9 @@ function updateStatusMessage(state) {
 function renderUpdateState() {
   const phase = updatePhase(updateState);
   const latest = displayVersion(updateState.latestVersion);
+  byId("btnAboutVersion").disabled = !appUpdatesEnabled;
+  byId("btnCheckUpdates").hidden = !appUpdatesEnabled;
+  byId("updateReleaseLink").hidden = !appUpdatesEnabled;
   byId("updateLatestRow").hidden = !latest;
   text("updateLatestVersion", latest);
   text("updateStatus", updateCheckPending ? "正在检查更新" :
@@ -5275,23 +2955,24 @@ function renderUpdateState() {
     text("updateProgressText", knownTotal ? `${percent}%` : `${(safeDownloaded / 1048576).toFixed(1)} MB`);
   }
 
-  const canRollback = !!displayVersion(updateState.rollbackVersion) &&
+  const canRollback = appUpdatesEnabled && !!displayVersion(updateState.rollbackVersion) &&
     typeof window.desktopHost?.rollbackUpdate === "function";
   byId("updateRollback").hidden = !canRollback;
   text("updateRollbackVersion", displayVersion(updateState.rollbackVersion));
-  byId("btnRollbackUpdate").disabled = updateActionPending || updateCheckPending || UPDATE_BUSY_PHASES.has(phase);
+  byId("btnRollbackUpdate").disabled = !canRollback || updateActionPending || updateCheckPending || UPDATE_BUSY_PHASES.has(phase);
 
-  const canCheck = typeof window.desktopHost?.checkForUpdates === "function";
+  const canCheck = appUpdatesEnabled && typeof window.desktopHost?.checkForUpdates === "function";
   byId("btnCheckUpdates").disabled = !canCheck || updateCheckPending || updateActionPending ||
     UPDATE_BUSY_PHASES.has(phase) || phase === "ready";
-  const canBegin = typeof window.desktopHost?.beginUpdate === "function" &&
+  const canBegin = appUpdatesEnabled && typeof window.desktopHost?.beginUpdate === "function" &&
     (phase === "available" || phase === "ready");
   byId("btnBeginUpdate").hidden = !canBegin;
-  byId("btnBeginUpdate").disabled = updateCheckPending || updateActionPending;
+  byId("btnBeginUpdate").disabled = !canBegin || updateCheckPending || updateActionPending;
   text("btnBeginUpdate", phase === "ready" ? "立即安装" : "下载并安装");
 
   const notice = byId("btnUpdateNotice");
-  const showNotice = phase === "available" || phase === "ready" || UPDATE_BUSY_PHASES.has(phase);
+  const showNotice = appUpdatesEnabled &&
+    (phase === "available" || phase === "ready" || UPDATE_BUSY_PHASES.has(phase));
   const noticeLabel = latest ? `更新 ${latest}` : "更新";
   notice.hidden = !showNotice;
   notice.title = noticeLabel;
@@ -5299,7 +2980,7 @@ function renderUpdateState() {
   notice.textContent = "更新";
 }
 function applyUpdateState(next) {
-  if (!updatePhase(next)) return false;
+  if (!appUpdatesEnabled || !updatePhase(next)) return false;
   updateState = { ...updateState, ...next, phase: updatePhase(next) };
   updateOperationStatus = "";
   updateStateSequence++;
@@ -5307,7 +2988,7 @@ function applyUpdateState(next) {
   return true;
 }
 async function checkForUpdates(quiet = false) {
-  if (updateCheckPending || updateActionPending || typeof window.desktopHost?.checkForUpdates !== "function" ||
+  if (!appUpdatesEnabled || updateCheckPending || updateActionPending || typeof window.desktopHost?.checkForUpdates !== "function" ||
       UPDATE_BUSY_PHASES.has(updatePhase(updateState))) return;
   // A quiet check publishes only a definitive result. A miss leaves the first modal check unused.
   if (!quiet) updateCheckedOnce = true;
@@ -5328,7 +3009,8 @@ async function checkForUpdates(quiet = false) {
   }
 }
 function scheduleBackgroundUpdateChecks() {
-  if (updateBackgroundChecksScheduled || typeof window.desktopHost?.checkForUpdates !== "function") return;
+  if (window.desktopHost?.isSettingsWindow) return;
+  if (!appUpdatesEnabled || updateBackgroundChecksScheduled || typeof window.desktopHost?.checkForUpdates !== "function") return;
   updateBackgroundChecksScheduled = true;
   setTimeout(() => {
     void checkForUpdates(true);
@@ -5336,6 +3018,7 @@ function scheduleBackgroundUpdateChecks() {
   }, UPDATE_BACKGROUND_CHECK_DELAY_MS);
 }
 async function refreshUpdateState() {
+  if (!appUpdatesEnabled) return;
   if (typeof window.desktopHost?.getUpdateState === "function") {
     const before = updateStateSequence;
     try {
@@ -5347,6 +3030,7 @@ async function refreshUpdateState() {
     void checkForUpdates();
 }
 function openUpdateModal() {
+  if (!appUpdatesEnabled) return;
   updatePreviousFocus = document.activeElement;
   byId("updateModal").classList.add("show");
   byId("btnCloseUpdate").focus();
@@ -5361,11 +3045,11 @@ function closeUpdateModal() {
 byId("btnAboutVersion").addEventListener("click", openUpdateModal);
 byId("btnCloseUpdate").addEventListener("click", closeUpdateModal);
 byId("updateModal").addEventListener("click", event => { if (event.target === byId("updateModal")) closeUpdateModal(); });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && byId("updateModal").classList.contains("show")) closeUpdateModal(); });
-window.addEventListener("wechatvibe-update-state", event => { applyUpdateState(event.detail); });
+document.addEventListener("keydown", event => { if (event.key === "Escape" && byId("updateModal").classList.contains("show")) { event.preventDefault(); closeUpdateModal(); } });
+window.addEventListener("kyf-update-state", event => { applyUpdateState(event.detail); });
 byId("btnCheckUpdates").addEventListener("click", () => { void checkForUpdates(); });
 byId("btnBeginUpdate").addEventListener("click", async () => {
-  if (updateActionPending || !["available", "ready"].includes(updatePhase(updateState))) return;
+  if (!appUpdatesEnabled || updateActionPending || !["available", "ready"].includes(updatePhase(updateState))) return;
   updateActionPending = true;
   updateOperationStatus = updatePhase(updateState) === "ready" ? "正在安装更新" : "正在启动更新";
   renderUpdateState();
@@ -5383,7 +3067,7 @@ byId("btnBeginUpdate").addEventListener("click", async () => {
   }
 });
 byId("btnRollbackUpdate").addEventListener("click", async () => {
-  if (updateActionPending || !updateState.rollbackVersion ||
+  if (!appUpdatesEnabled || updateActionPending || !updateState.rollbackVersion ||
       typeof window.desktopHost?.rollbackUpdate !== "function") return;
   updateActionPending = true;
   updateOperationStatus = "正在回退版本";
@@ -5403,19 +3087,41 @@ byId("btnRollbackUpdate").addEventListener("click", async () => {
 });
 void loadAboutVersion();
 renderUpdateState();
-byId("btnSettings").addEventListener("click", () => {
+function showSettingsPanel() {
   byId("settingsModal").classList.add("show");
-  void loadRuntime();
+  void window.ModelTraces?.refreshSettings();
+  if (byId("panelPlugins")?.classList.contains("active")) void window.PluginSettings?.refresh();
+  if (byId("panelModels")?.classList.contains("active")) void window.CoreModelSettings?.refresh();
   void loadModelSource();
-  void loadLocalModel();
   void loadDataRoot();
-  if (typeof window.desktopHost?.getModelDownloadState === "function")
-    void window.desktopHost.getModelDownloadState().then(showLocalModelDownload);
-});
+}
+async function openAppSettings(target) {
+  if (!window.desktopHost?.isSettingsWindow && window.desktopHost?.openSettingsWindow) {
+    try {
+      if (await window.desktopHost.openSettingsWindow(target || {}) !== true) toast("设置窗口未能打开，请重试");
+    } catch { toast("设置窗口未能打开，请重试"); }
+    return;
+  }
+  showSettingsPanel();
+  if (target) applySettingsTarget(target);
+}
+function applySettingsTarget(target = {}) {
+  const activate = () => {
+    const tab = ["general", "models", "plugins", "about"].includes(target.tab) ? target.tab : "general";
+    document.querySelector(`.settings-tab-btn[data-tab="${tab}"]`)?.click();
+    if (target.section === "conversations") openConversationManager();
+    else if (target.section === "source") byId("inputDataRoot")?.focus();
+    else if (target.section === "update") openUpdateModal();
+    if (target.plugin && tab === "plugins") void window.PluginSettings?.openSettings(target.plugin);
+  };
+  if (window.PluginSettings?.requestLeave) window.PluginSettings.requestLeave(activate);
+  else activate();
+}
+window.openAppSettings = openAppSettings;
+byId("btnSettings").addEventListener("click", () => { void openAppSettings(); });
 byId("btnUpdateNotice").addEventListener("click", () => {
-  byId("btnSettings").click();
-  document.querySelector('.settings-tab-btn[data-tab="about"]')?.click();
-  openUpdateModal();
+  if (!appUpdatesEnabled) return;
+  void openAppSettings({ tab: "about", section: "update" });
 });
 byId("btnAddConversation").addEventListener("click", openConversationManager);
 byId("btnManageConversations").addEventListener("click", () => {
@@ -5424,19 +3130,11 @@ byId("btnManageConversations").addEventListener("click", () => {
   else closeConversationManager();
 });
 byId("conversationSearch").addEventListener("input", renderConversationManager);
+byId("conversationSelectAll").addEventListener("change", event => selectAllRemovableConversations(event.target.checked));
+byId("btnClearConversationSelection").addEventListener("click", clearConversationRemovalSelection);
+byId("conversationAutoFollow").addEventListener("change", event => setConversationAutoFollow(event.target.checked));
 byId("btnAddAllConversations").addEventListener("click", () => { void addAllConversations(); });
 byId("btnRemoveSelectedConversations").addEventListener("click", () => { void removeSelectedConversations(); });
-byId("btnToggleBackgroundAnalyze").addEventListener("click", () => {
-  settingsState.settings.backgroundAnalyze = !settingsState.settings.backgroundAnalyze;
-  save();
-  applySettings();
-  if (settingsState.settings.backgroundAnalyze) void backgroundAnalyzeAll();
-});
-byId("btnWorkerMinus").addEventListener("click", () => { void changeWorkerSettings(-1); });
-byId("btnWorkerPlus").addEventListener("click", () => { void changeWorkerSettings(1); });
-byId("btnToggleElasticWorkers").addEventListener("click", () => {
-  void changeWorkerSettings(0, !settingsState.workerSettings?.elastic);
-});
 byId("btnCloseSettings").addEventListener("click", closeSettingsModal);
 byId("settingsModal").addEventListener("click", event => { if (event.target === byId("settingsModal")) closeSettingsModal(); });
 byId("btnManageAccounts").addEventListener("click", () => {
@@ -5462,11 +3160,22 @@ byId("btnCancelDeleteAccount").addEventListener("click", () => {
   byId("accountDeleteConfirm").hidden = true;
 });
 byId("btnConfirmDeleteAccount").addEventListener("click", () => { void deleteManagedAccount(); });
+// Modified 2026-10-16: model settings have their own top-level panel.
 document.querySelectorAll(".settings-tab-btn").forEach(tab => tab.addEventListener("click", () => {
-  document.querySelectorAll(".settings-tab-btn").forEach(node => node.classList.toggle("active", node === tab));
-  document.querySelectorAll(".settings-panel").forEach(node => node.classList.toggle("active", node.id === ({ general: "panelGeneral", about: "panelAbout" })[tab.dataset.tab]));
-  if (tab.dataset.tab === "about") void loadAboutVersion();
+  const activate = () => {
+    if (tab.dataset.tab !== "models") hideApiKey();
+    document.querySelectorAll(".settings-tab-btn").forEach(node => node.classList.toggle("active", node === tab));
+    document.querySelectorAll(".settings-panel").forEach(node => node.classList.toggle("active", node.id === ({ general: "panelGeneral", models: "panelModels", plugins: "panelPlugins", about: "panelAbout" })[tab.dataset.tab]));
+    if (tab.dataset.tab === "about") void loadAboutVersion();
+    if (tab.dataset.tab === "models") void window.CoreModelSettings?.refresh();
+    if (tab.dataset.tab === "plugins") void window.PluginSettings?.refresh();
+  };
+  if (window.PluginSettings?.requestLeave) window.PluginSettings.requestLeave(activate);
+  else activate();
 }));
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !event.defaultPrevented && byId("settingsModal").classList.contains("show")) { event.preventDefault(); closeSettingsModal(); }
+});
 byId("btnEmoji").addEventListener("click", event => { event.stopPropagation(); byId("emojiPopover").classList.toggle("show"); });
 document.querySelectorAll(".popover-tab").forEach(tab => tab.addEventListener("click", event => {
   event.stopPropagation();
@@ -5503,61 +3212,10 @@ function renderKaomojiPanel() {
     grid.appendChild(section);
   }
 }
-async function loadCatalog() {
-  try {
-    const response = await fetch("data/analysis-catalog.json", { cache: "no-store" });
-    if (!response.ok) return;
-    const catalog = await response.json();
-    const coverage = window.Kaomoji.installCatalog(catalog);
-    if (coverage.missing.length) { console.error("Missing canonical kaomoji mapping:", coverage.missing); return; }
-    const addAlias = (map, alias, display) => {
-      const key = intentAlias(alias);
-      if (!key || !display) return;
-      if (!map.has(key)) map.set(key, display);
-      else if (map.get(key) !== display) map.set(key, null);
-    };
-    const legacyIntentAliases = new Map();
-    for (const [alias, display] of Object.entries(catalog.legacyIntentLabels || {})) {
-      addAlias(legacyIntentAliases, alias, String(display || "").trim());
-    }
-    const canonicalIntentAliases = new Map();
-    for (const entry of catalog.intents || []) {
-      const display = String(entry.displayLabel || entry.label || "").trim();
-      for (const alias of [entry.id, entry.modelLabel, entry.label, display]) {
-        addAlias(canonicalIntentAliases, alias, display);
-      }
-    }
-    const legacyEmotionAliases = new Map();
-    const canonicalEmotionAliases = new Map();
-    for (const entry of catalog.emotions || []) {
-      const display = String(entry.label || "").trim();
-      for (const alias of Array.isArray(entry.aliases) ? entry.aliases : []) {
-        addAlias(legacyEmotionAliases, alias, display);
-      }
-      for (const alias of [entry.id, entry.modelLabel, display]) {
-        addAlias(canonicalEmotionAliases, alias, display);
-      }
-    }
-    labelState.intentDisplayAliases = new Map([...legacyIntentAliases, ...canonicalIntentAliases]);
-    labelState.emotionDisplayAliases = new Map([...legacyEmotionAliases, ...canonicalEmotionAliases]);
-    labelState.catalogLabelRevision = String(catalog.labelRevision || catalog.intentDisplayVersion || catalog.version || "");
-    labelState.catalogReady = true;
-    renderKaomojiPanel();
-    refreshLabels();
-    if (chatState.view === "persona") loadProfile(portraitState.activeMember);
-  } catch { }
-}
 document.addEventListener("click", event => { if (!event.target.closest("#emojiPopover, #btnEmoji")) byId("emojiPopover").classList.remove("show"); });
-function closeMemberPicker() {
-  byId("groupMemberTabs").querySelector(".member-picker")?.classList.remove("open");
-  byId("groupMemberTabs").querySelector(".member-picker-trigger")?.setAttribute("aria-expanded", "false");
-}
-document.addEventListener("click", event => { if (!event.target.closest("#groupMemberTabs")) closeMemberPicker(); });
-document.addEventListener("keydown", event => { if (event.key === "Escape") { closeMemberPicker(); closeHistorySearch(); byId("emojiPopover").classList.remove("show"); } });
+document.addEventListener("keydown", event => { if (event.key === "Escape") { closeHistorySearch(); byId("emojiPopover").classList.remove("show"); } });
 renderKaomojiPanel();
 applySettings();
-loadCatalog();
-setInterval(() => { if (!labelState.catalogReady && !document.hidden) loadCatalog(); }, 30000);
 async function startInitialLoad() {
   const attempt = ++startupAttempt;
   clearTimeout(startupAccountRetryTimer);
@@ -5569,15 +3227,28 @@ async function startInitialLoad() {
     const data = await api("/api/health");
     if (attempt !== startupAttempt || !startupActive) return;
     healthReady = data.data?.state === "ready";
-    if (data.data?.state === "error") setStripStatus("数据源不可用");
+    if (data.data?.state === "error") notifyStatus("数据源不可用");
   } catch { }
   if (attempt !== startupAttempt || !startupActive) return;
   showStartup(healthReady ? "sessions" : "account", healthReady ? "正在读取会话列表…" : "正在确认当前微信账号…");
   void loadSessions();
 }
 byId("startupRetry").addEventListener("click", retryStartup);
+byId("databaseLoadingRetry").addEventListener("click", () => { void loadSessions(); });
 byId("startupContinue").addEventListener("click", () => { if (startupActive && accountUnavailable) completeStartup(); });
 const updateValidationMode = window.desktopHost?.updateValidationMode === true;
+window.ConversationMenu?.init({ state: chatState, byId, renderSessions, deleteConversation, setStatus: notifyStatus });
+window.MessageMenu?.init({ state: chatState, byId, toast });
+window.SessionResize?.init({ pane: byId("sessionPane"), handle: byId("sessionResizeHandle"),
+  container: byId("appWindow"), rail: document.querySelector(".nav-rail") });
+function keepComposerScroll() {
+  if (chatState.view !== "chat" || !chatState.followLatest || chatState.historyState || window.MessageAnalysis?.isReading()) return;
+  const messages = byId("chatMessages");
+  messages.scrollTop = messages.scrollHeight;
+  chatState.lastChatScrollTop = messages.scrollTop;
+}
+window.ComposerResize?.init({ pane: byId("chatInputPane"), handle: byId("chatInputResizeHandle"),
+  container: byId("chatView"), mainArea: byId("chatMainArea"), onResize: keepComposerScroll });
 const updateFinalReadyMode = window.desktopHost?.updateFinalReadyMode === true;
 let updateCommitReady = !updateFinalReadyMode;
 if (updateValidationMode) {
@@ -5598,49 +3269,103 @@ if (updateValidationMode) {
     unlockStartupUi();
     void startInitialLoad();
   }).catch(() => {});
-} else {
+} else if (!window.desktopHost?.isSettingsWindow) {
   void startInitialLoad();
   scheduleBackgroundUpdateChecks();
 }
-if (!updateValidationMode) {
-  void loadModelSource();
-  void loadLocalModel();
-}
-window.addEventListener("wechatvibe-service-restored", () => {
+if (!updateValidationMode) void loadModelSource();
+window.addEventListener("kyf-service-restored", () => {
   if (updateValidationMode || !updateCommitReady) return;
-  // A new bridge has no in-memory jobs, even if the earlier POST succeeded.
-  // Keep all saved UI/results and let the persisted server cursor resume the job.
-  portraitState.autoIncrementalState.clear();
-  labelState.requestedRecentSignatures.clear();
-  portraitState.incrementalFailed = portraitState.analysisNetworkFailed = labelState.recentFailed = labelState.recentNetworkFailed = false;
-  settingsState.localModelResolved = false;
+  window.ChatMedia?.reset();
+  window.MessageAnalysis?.recover();
   beginUnknownModelSource();
-  if (byId("settingsModal").classList.contains("show")) {
-    void loadRuntime();
-    invalidateModelDiscovery();
-  }
+  if (byId("settingsModal").classList.contains("show")) invalidateModelDiscovery();
   void loadModelSource(true);
-  void loadLocalModel();
+  if (byId("settingsModal").classList.contains("show") && byId("panelModels")?.classList.contains("active")) void window.CoreModelSettings?.refresh();
   void loadSessions();
-  if (chatState.currentUser && chatState.controller) {
-    // Refresh in place: a bridge recovery is not an account/conversation/source
-    // change, so the visible portrait and counts must not be cleared.
-    if (!chatState.historyState) void loadMessages(chatState.generation, true, true);
-    if (chatState.view === "persona") void loadProfile(portraitState.activeMember);
-  }
+  // Refresh in place: a bridge recovery is not an account or conversation change.
+  if (chatState.currentUser && chatState.controller && !chatState.historyState)
+    void loadMessages(chatState.generation, true, true);
 });
-if (!updateValidationMode) {
+if (!updateValidationMode && !window.desktopHost?.isSettingsWindow) {
   setInterval(() => { if (updateCommitReady && chatState.currentUser && !document.hidden) loadMessages(chatState.generation, true); }, 4000);
   setInterval(() => { if (updateCommitReady && !document.hidden) loadSessions(); }, 15000);
-  setTimeout(() => { if (updateCommitReady) void backgroundAnalyzeAll(); }, 20000);
-  setInterval(() => { if (updateCommitReady) void backgroundAnalyzeAll(); }, 600000);
-  setTimeout(() => { if (updateCommitReady) void loadAnalysisOverview(); }, 8000);
-  setInterval(() => { if (updateCommitReady && !document.hidden) void loadAnalysisOverview(); }, 60000);
-  setTimeout(() => { if (updateCommitReady) void loadWorkerSettings(); }, 9000);
 }
+window.MediaSettings?.init({ account: () => chatState.currentAccount, request: api });
+window.ModelTraces?.init({ account: chatState.currentAccount, user: chatState.currentUser, view: chatState.view });
+// Modified 2026-10-13: enabling, disabling or rescanning plugins in 设置 → 插件 refreshes every contribution slot.
+async function pluginsChanged(listing) {
+  window.dispatchEvent(new CustomEvent("kyf-plugins-changed", { detail: listing }));
+  await window.MessageAnalysis?.pluginsChanged();
+  const container = byId("chatMessages");
+  if (chatState.view === "chat" && chatState.currentUser && chatState.messages.length) {
+    // Rebuild the open chat's bubbles so message annotations attach or detach without switching chats.
+    const messages = chatState.messages, scrollTop = container.scrollTop;
+    chatState.messages = []; container.replaceChildren();
+    renderMessages(messages, { followLatest: chatState.followLatest, scrollTop });
+  }
+}
+window.PluginSettings?.init({ onChange: listing => {
+  window.SettingsSync?.changed("/api/plugins");
+  if (!window.desktopHost?.isSettingsWindow) void pluginsChanged(listing);
+},
+  onModelSettings() {
+    document.querySelector('.settings-tab-btn[data-tab="models"]')?.click();
+    byId("apiModelSettings")?.scrollIntoView({ block: "start" });
+    byId("selectApiProtocol")?.focus();
+  },
+  onOpenNav(plugin, nav) {
+    if (window.desktopHost?.isSettingsWindow) { void window.desktopHost.openSettingsMainNav(plugin, nav); return; }
+    closeSettingsModal(); window.PluginSlots?.openNav(plugin, nav);
+  }
+});
+if (!window.desktopHost?.isSettingsWindow) window.PluginSlots?.init({ switchView, toast, openFriendWindow, updateFriendButton,
+  focusChat(scope) {
+    if (scope.account !== chatState.currentAccount || !chatState.sessions.has(scope.user)) return false;
+    switchSession(scope.user); return true;
+  } });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || updateValidationMode || !updateCommitReady) return;
   void loadSessions();
   if (chatState.currentUser) void loadMessages(chatState.generation, true, true);
-  if (chatState.currentUser && chatState.view === "persona") void loadProfile(portraitState.activeMember);
 });
+window.desktopHost?.onSettingsMainNav?.(target => { window.PluginSlots?.openNav(target.plugin, target.nav); });
+window.SettingsSync?.listen((path, clearedAccount) => {
+  if (path === "/api/accounts" && clearedAccount) {
+    void clearAccountUiData(clearedAccount).then(accounts => {
+      for (const account of accounts) window.PluginSlots?.onAccountCleared(account);
+    }).catch(() => { toast("账号已清除，请重新打开应用以刷新界面缓存"); });
+  }
+  if (path === "/api/plugins") { void window.PluginSettings?.refresh(); }
+  else if (path.startsWith("/api/model-source/")) { void loadModelSource(true); }
+  else if (path === "/api/conversation-selection" || path.startsWith("/api/data-root") || path === "/api/accounts") {
+    // Fence an in-flight directory read as well as invalidating its cached selection.
+    chatState.sessionRequest++;
+    chatState.selectionLoadedAccount = null;
+    chatState.sessionSignature = null;
+    void loadSessions();
+    if (path.startsWith("/api/data-root")) void loadDataRoot();
+    if (!byId("accountManager").hidden) void loadAccounts();
+  }
+});
+window.addEventListener("storage", event => {
+  if (event.key !== "real-ui-settings-1") return;
+  try {
+    const next = JSON.parse(event.newValue || "{}");
+    if (["light", "dark"].includes(next.theme)) settingsState.settings.theme = next.theme;
+    if (["0.9", "1.0", "1.1", "1.25", "1.5"].includes(next.zoom)) settingsState.settings.zoom = next.zoom;
+    applySettings();
+  } catch { }
+});
+if (window.desktopHost?.isSettingsWindow) {
+  let targetReceived = false;
+  window.addEventListener("focus", () => {
+    void loadSessions();
+    void window.MediaSettings?.refresh?.();
+  });
+  window.desktopHost.onSettingsCloseRequested?.(closeSettingsModal);
+  window.desktopHost.onSettingsTarget?.(target => { targetReceived = true; applySettingsTarget(target); });
+  showSettingsPanel();
+  void loadSessions();
+  void window.desktopHost.getSettingsTarget?.().then(target => { if (target && !targetReceived) applySettingsTarget(target); });
+}

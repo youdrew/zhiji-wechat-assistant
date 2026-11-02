@@ -32,11 +32,11 @@ async function checkJunctionParent(parent) {
   fs.symlinkSync(physicalParent, alias, process.platform === "win32" ? "junction" : "dir");
   assert.notEqual(path.resolve(root), fs.realpathSync.native(root));
 
-  const workDir = path.join(physicalParent, ".wechatvibe-update-staged");
+  const workDir = path.join(physicalParent, ".kyf-update-staged");
   const candidatePath = path.join(workDir, "win-unpacked");
-  put(path.join(candidatePath, "WechatVibe.exe"));
-  const rollbackWork = path.join(physicalParent, ".wechatvibe-update-previous");
-  put(path.join(rollbackWork, "backup", "WechatVibe.exe"));
+  put(path.join(candidatePath, "KnowYourFriends.exe"));
+  const rollbackWork = path.join(physicalParent, ".kyf-update-previous");
+  put(path.join(rollbackWork, "backup", "KnowYourFriends.exe"));
   put(path.join(rollbackWork, "journal.json"), JSON.stringify({
     schema: 1, phase: "succeeded", installRoot,
     expectedVersion: "1.2.0", previousVersion: "1.0.4",
@@ -92,6 +92,10 @@ async function checkJunctionParent(parent) {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(stageCalls, 1);
   assert.equal(calls.launcher.length, 1);
+  assert.equal(calls.launcher[0].program, path.join(root, "runtime", "python", "python.exe"));
+  // The bundled runtime runs with -s, so it never loads the user's own Python packages.
+  assert.deepEqual(Array.from(calls.launcher[0].args), ["-s", path.join(root, "scripts", "start-real-client.py"),
+    "--stop-owned-bridge", "--json"]);
   assert.equal(calls.helper.length, 1);
   assert.equal(calls.quit, 1);
   const operationFile = calls.helper[0].args[1];
@@ -104,7 +108,7 @@ async function checkJunctionParent(parent) {
   assert.equal(controller.getState().rollbackVersion, "1.0.4");
 
   const outsideCandidate = path.join(parent, "越界候选目录");
-  put(path.join(outsideCandidate, "WechatVibe.exe"));
+  put(path.join(outsideCandidate, "KnowYourFriends.exe"));
   const rejected = moduleStub.exports.createUpdateController({
     ...options,
     stageImpl: async () => ({ candidatePath: outsideCandidate, workDir, expectedVersion: "1.2.1" }),
@@ -119,21 +123,21 @@ async function checkJunctionParent(parent) {
 }
 
 async function main() {
-  const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "wechatvibe-controller-")));
+  const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "kyf-controller-")));
   try {
-    const installRoot = path.join(parent, "WechatVibe");
+    const installRoot = path.join(parent, "KnowYourFriends");
     const clientRoot = path.join(installRoot, "resources", "client");
     fs.mkdirSync(clientRoot, { recursive: true });
-    const work = path.join(parent, ".wechatvibe-update-valid");
+    const work = path.join(parent, ".kyf-update-valid");
     fs.mkdirSync(path.join(work, "backup"), { recursive: true });
-    fs.writeFileSync(path.join(work, "backup", "WechatVibe.exe"), "previous binary");
+    fs.writeFileSync(path.join(work, "backup", "KnowYourFriends.exe"), "previous binary");
     fs.writeFileSync(path.join(work, "journal.json"), JSON.stringify({
       schema: 1, phase: "succeeded", installRoot,
       expectedVersion: "1.0.2", previousVersion: "1.0.1",
     }));
-    const damaged = path.join(parent, ".wechatvibe-update-damaged");
+    const damaged = path.join(parent, ".kyf-update-damaged");
     fs.mkdirSync(path.join(damaged, "backup"), { recursive: true });
-    fs.writeFileSync(path.join(damaged, "backup", "WechatVibe.exe"), "wrong binary");
+    fs.writeFileSync(path.join(damaged, "backup", "KnowYourFriends.exe"), "wrong binary");
     fs.writeFileSync(path.join(damaged, "journal.json"), JSON.stringify({
       schema: 1, phase: "succeeded", installRoot: path.join(parent, "Other"),
       expectedVersion: "1.0.2", previousVersion: "1.0.0",

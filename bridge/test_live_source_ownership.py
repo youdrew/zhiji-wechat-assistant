@@ -111,6 +111,60 @@ class OwnershipCacheTests(unittest.TestCase):
         self.assertEqual(ordinary, [((42, 1.0),)])
         self.assertEqual(verified, [((42, 2.0),)])
 
+    def test_fresh_caller_shares_only_a_query_started_after_its_request(self):
+        clock = [100.0]
+        with patch("live_source.time.monotonic", side_effect=lambda: clock[0]),                 patch("live_source.file_owners", return_value=((42, 10.0),)) as query:
+            live_source._owned_processes(["synthetic-a.db"])
+            clock[0] = 105.0
+            live_source._owned_processes(["synthetic-a.db"], since=99.5)
+            self.assertEqual(query.call_count, 1)
+            live_source._owned_processes(["synthetic-a.db"], since=100.5)
+            self.assertEqual(query.call_count, 2)
+            clock[0] = 106.0
+            live_source._owned_processes(["synthetic-a.db"])
+            self.assertEqual(query.call_count, 3)
+
+    def test_fresh_callers_queued_behind_an_older_query_share_the_next_one(self):
+        entered, release = threading.Event(), threading.Event()
+        calls, results = [], []
+        def query(_paths):
+            calls.append(len(calls) + 1)
+            if len(calls) == 1:
+                entered.set()
+                self.assertTrue(release.wait(2))
+            return ((42, float(len(calls))),)
+        def call():
+            results.append(live_source._owned_processes(["synthetic-a.db"]))
+        with patch("live_source.file_owners", side_effect=query):
+            first = threading.Thread(target=call)
+            first.start()
+            self.assertTrue(entered.wait(1))
+            waiters = [threading.Thread(target=call) for _ in range(3)]
+            for thread in waiters:
+                thread.start()
+            deadline = time.monotonic() + 1
+            while len(live_source._ownership_condition._waiters) < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            release.set()
+            for thread in [first, *waiters]:
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sorted(results), [((42, 1.0),)] + [((42, 2.0),)] * 3)
+
+    def test_selection_records_when_its_answer_finished_without_changing_identity(self):
+        account = SimpleNamespace(path="C:/synthetic/account-a/db_storage")
+        psutil = SimpleNamespace(Process=lambda _pid: SimpleNamespace(name=lambda: "Weixin.exe", create_time=lambda: 10.0),
+                                 NoSuchProcess=RuntimeError, AccessDenied=PermissionError)
+        clock = [50.0]
+        def query(_paths):
+            clock[0] += 1.0
+            return ((42, 10.0),)
+        with patch("live_source._account_database_files", return_value=["synthetic-a.db"]),                 patch("live_source.time.monotonic", side_effect=lambda: clock[0]),                 patch("live_source.file_owners", side_effect=query),                 patch.object(live_source.discovery, "psutil", psutil):
+            selection = live_source._account_from_file_owners([account], [SimpleNamespace(pid=42)])
+        self.assertEqual(selection.proved_at, 51.0)
+        self.assertEqual(selection, live_source.ActiveSelection(selection.account_dir, selection.processes))
+
     def test_failed_fresh_query_drops_prior_cached_success(self):
         with patch("live_source.file_owners", return_value=((42, 10.0),)):
             live_source._owned_processes(["synthetic-a.db"], fresh=False)

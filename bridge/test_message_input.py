@@ -12,7 +12,6 @@ import math
 import unittest
 
 import message_input
-from node_analysis import NodeAnalysis
 
 
 def source_item(**overrides):
@@ -45,8 +44,7 @@ class IdentityTests(unittest.TestCase):
             [source_item(id="a", senderId="member-a", senderName="阿甲"),
              source_item(id="b", senderId="member-b", senderName="阿乙")],
             account_id="acct", conversation_id="room@chatroom", source_kind="wechat")
-        wire = [NodeAnalysis._wire_messages([item])[0] for item in prepared]
-        round_tripped = json.loads(json.dumps(wire, ensure_ascii=False))
+        round_tripped = json.loads(json.dumps(prepared, ensure_ascii=False))
         meta = [message_input.normalize_input_meta(entry["inputMeta"]) for entry in round_tripped]
         self.assertEqual([entry["senderId"] for entry in meta], ["member-a", "member-b"])
         self.assertEqual([entry["senderName"] for entry in meta], ["阿甲", "阿乙"])
@@ -177,16 +175,6 @@ class WireCompatibilityTests(unittest.TestCase):
         self.assertEqual(prepared["inputMeta"]["accountId"], "acct")
         self.assertEqual(prepared["inputMeta"]["source"]["kind"], "wechat")
 
-    def test_node_projection_is_the_same_with_and_without_metadata(self):
-        item = source_item()
-        prepared = message_input.prepare_item(item, account_id="acct",
-                                              conversation_id="friend", source_kind="wechat")
-        legacy = NodeAnalysis._wire_messages([item])[0]
-        with_meta = NodeAnalysis._wire_messages([prepared])[0]
-        self.assertEqual({key: with_meta[key] for key in legacy}, legacy)
-        self.assertNotIn("inputMeta", legacy)
-        self.assertIn("inputMeta", with_meta)
-
     def test_metadata_length_is_counted_by_codepoint(self):
         accepted = message_input.normalize_input_meta({"senderName": "😀" * 200})
         self.assertEqual(len(accepted["senderName"]), 200)
@@ -218,37 +206,6 @@ class AdditionalContractTests(unittest.TestCase):
     def test_repeated_preparation_preserves_metadata(self):
         first = message_input.prepare_item(source_item(quote={"text": "原文\n🙂"}), account_id="acct", conversation_id="friend", source_kind="wechat")
         self.assertEqual(first, message_input.prepare_item(first, account_id="acct", conversation_id="friend", source_kind="wechat"))
-
-
-class InputQueueBoundaryTests(unittest.TestCase):
-    # Reuse setup/helpers only, without re-running the imported test class.
-    import test_api_insights as fixtures
-    setUp = fixtures.ApiInsightTests.setUp
-    activate = fixtures.ApiInsightTests.activate
-    wait_done = fixtures.ApiInsightTests.wait_done
-
-    def test_invalid_metadata_leaves_no_queued_job_and_retry_can_start(self):
-        self.activate()
-        self.source.rows[2]["inputMeta"] = {"accountId": "foreign-account"}
-        with self.assertRaises(ValueError):
-            self.backend.start_model_insights("account-a", "friend", 1, target_ids=["o2"])
-        self.assertEqual(self.backend.api_jobs, {})
-        self.assertEqual(self.backend.api_inflight, 0)
-        self.assertEqual(self.analyzer.calls, [])
-        del self.source.rows[2]["inputMeta"]
-        self.backend.start_model_insights("account-a", "friend", 1, target_ids=["o2"])
-        self.assertEqual(self.wait_done()["job"]["status"], "done")
-        self.assertEqual(len(self.analyzer.calls), 1)
-
-    def test_bad_metadata_outside_selected_context_is_not_examined(self):
-        self.activate()
-        self.source.rows[0]["inputMeta"] = {"accountId": "foreign-account"}
-        for index in range(3, 9):
-            self.source.rows.append({"id": f"o{index}", "side": "other", "kind": "text", "text": "合成消息",
-                                     "senderId": "friend", "_sort": [index + 1, "shard", index + 1]})
-        self.backend.start_model_insights("account-a", "friend", 1, target_ids=["o8"])
-        self.assertEqual(self.wait_done()["job"]["status"], "done")
-        self.assertEqual(len(self.analyzer.calls), 1)
 
 
 if __name__ == "__main__":

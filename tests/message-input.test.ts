@@ -2,17 +2,10 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { execFileSync } from "node:child_process";
 
-import { analyzeApiInsights, type ApiInsightInput } from "../electron/api-message-insights";
-import type { GenerationRequest, ModelConfig } from "../electron/model-connectors";
 import {
   buildUnifiedInput, normalizeInputMeta, normalizeQuote, projectLegacyWire,
   type MessageInputMeta,
 } from "../shared/message-input";
-
-const config: ModelConfig = {
-  protocol: "responses", baseUrl: "https://example.invalid/v1",
-  model: "synthetic-model", apiKey: "synthetic-key",
-};
 
 function meta(overrides: Partial<MessageInputMeta> = {}): MessageInputMeta {
   return {
@@ -38,16 +31,15 @@ it("keeps SELF identity and missing senders null without guessing", () => {
 });
 
 it("keeps two OTHER group members distinct through a JSON round trip", () => {
-  // Exercise the actual Python normalizer and NodeAnalysis projection before JSONL/TS.
+  // Exercise the actual Python normalizer before the JSON reaches TypeScript.
   const fixture = `import sys,json
 sys.path.insert(0,'bridge')
 from message_input import prepare_messages
-from node_analysis import NodeAnalysis
 rows=[{'id':'a','side':'other','text':'甲说','senderId':'member-a','senderName':'阿甲','time':1.5},
       {'id':'b','side':'other','text':'乙说','senderId':'member-b','senderName':'阿乙','time':2}]
 prepared=prepare_messages(rows,account_id='acct',conversation_id='group@chatroom',source_kind='wechat')
-print(json.dumps(NodeAnalysis._wire_messages(prepared),ensure_ascii=True))`;
-  const wire = JSON.parse(execFileSync(process.env.WECHATVIBE_PYTHON || "python", ["-B", "-c", fixture],
+print(json.dumps(prepared,ensure_ascii=True))`;
+  const wire = JSON.parse(execFileSync(process.env.KYF_PYTHON || "python", ["-B", "-c", fixture],
     { cwd: new URL("../", import.meta.url), encoding: "utf8" })) as Record<string, unknown>[];
   const restored = wire.map((entry) => buildUnifiedInput(entry,
     { accountId: "acct", conversationId: "group@chatroom" }));
@@ -128,37 +120,4 @@ it("preserves supplied SELF identity and rejects conflicting known provenance", 
   assert.throws(() => buildUnifiedInput({ id: "m", side: "other", text: "x", inputMeta: meta({ source: { kind: "ocr" } }) }, { sourceKind: "wechat" }), /conflicting source/u);
   assert.throws(() => buildUnifiedInput({ id: "m", side: "other", text: "x", time: 7, inputMeta: meta() }), /conflicting sentAtMs/u);
   assert.equal(normalizeInputMeta({ source: { kind: null } })?.source.kind, "unknown");
-});
-
-it("never lets metadata change the provider system/prompt/budget", async () => {
-  const base: ApiInsightInput = {
-    messages: [
-      { id: "a", sender: "SELF", text: "今天怎么样？" },
-      { id: "b", sender: "OTHER", text: "我有点累。" },
-    ],
-    targetIds: ["b"],
-  };
-  const withMeta: ApiInsightInput = {
-    messages: [
-      { ...base.messages[0]!, inputMeta: meta({ senderId: "me", senderName: "我" }) },
-      { ...base.messages[1]!, inputMeta: meta({ senderId: "member-b", senderName: "阿乙",
-        quote: { id: null, senderId: null, senderName: null, text: "旧\n文", sentAtMs: 0 } }) },
-    ],
-    targetIds: ["b"],
-  };
-  const requestFor = async (input: ApiInsightInput): Promise<GenerationRequest> => {
-    let request: GenerationRequest | undefined;
-    await analyzeApiInsights(config, input, async (_config, value) => {
-      request = value;
-      return { text: JSON.stringify({ items: [{ id: "b", status: "ok",
-        emotion: "疲惫", intent: "说明近况" }] }) };
-    });
-    return request!;
-  };
-  const plain = await requestFor(base);
-  const enriched = await requestFor(withMeta);
-  assert.equal(plain.system, enriched.system);
-  assert.equal(plain.prompt, enriched.prompt);
-  assert.equal(plain.maxOutputTokens, enriched.maxOutputTokens);
-  assert.doesNotMatch(enriched.prompt, /member-b|阿乙|inputMeta/u);
 });

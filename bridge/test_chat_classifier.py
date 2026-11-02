@@ -12,7 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from chat_server import classify
-from real_backend import WeChatSource
+from wechat_source import WeChatSource
 from real_http import make_handler
 
 

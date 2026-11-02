@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from conversation_selection import ConversationSelectionStore
-from real_backend import Backend
+from backend_service import Backend
 from real_http import make_handler
 
 
@@ -35,18 +35,13 @@ class MetadataSource:
         raise AssertionError("selection must not read chat messages")
 
 
-class StubAnalyzer:
-    model = {"state": "ready"}
-
-
 class ConversationSelectionHTTPTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         self.source = MetadataSource(root / "snapshot")
-        self.backend = Backend(self.source, StubAnalyzer(),
-                               selection_store=ConversationSelectionStore(root / "results"))
+        self.backend = Backend(self.source, selection_store=ConversationSelectionStore(root / "results"))
         self.addCleanup(self.backend.shutdown)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.backend))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

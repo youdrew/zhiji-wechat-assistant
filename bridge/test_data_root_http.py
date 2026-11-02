@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from data_root_source import CUSTOM_ROOT_ENV, DataRootSource
-from real_backend import Backend
+from backend_service import Backend
 from real_http import make_handler
 
 

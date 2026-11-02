@@ -1,0 +1,12 @@
+[
+  {
+    "file": "memory.py",
+    "oldSha256": "ea9b1b0f63702bf64aa50e64a09a5e2e3c859774e27e732d78d0175837d7e009",
+    "reason": "Windows venv python.exe launcher spawns actual Python child and console helper. Sampling only Popen.pid undercounted the ranking worker. Need owned-process-tree sum, no changes to data, rankings, model encodings, primary timings, thresholds or selection policy.",
+    "amendedAtUtc": "2026-10-18T09:29:03.435220+00:00",
+    "newSha256": "a52fe36883b8c79d9dc334fd95671e96dc05a752a9eda051746d56d1e444153b",
+    "dataAndPrimaryMetricsUnchanged": true,
+    "invalidOutputLocalArchive": "method-memory-launcher-only-invalid.json",
+    "replacementOutput": "method-memory.json"
+  }
+]

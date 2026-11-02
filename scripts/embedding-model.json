@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "modelId": "BAAI/bge-small-zh-v1.5",
+  "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+  "dimensions": 512,
+  "maxTokens": 512,
+  "queryInstruction": "为这个句子生成表示以用于检索相关文章：",
+  "pooling": "cls",
+  "normalize": true,
+  "license": "MIT",
+  "source": "https://modelscope.cn/models/Xenova/bge-small-zh-v1.5",
+  "allowedHosts": ["modelscope.cn", "www.modelscope.cn", "cdn-lfs-cn-1.modelscope.cn", "cdn-lfs-cn-2.modelscope.cn"],
+  "files": [
+    {
+      "name": "model.onnx",
+      "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=onnx%2Fmodel.onnx",
+      "bytes": 94851877,
+      "sha256": "69a0b846f4f116b5e6aabf9546ea6754d02264f3211a13a1bd69b31b8040749a"
+    },
+    {
+      "name": "tokenizer.json",
+      "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=tokenizer.json",
+      "bytes": 439125,
+      "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=tokenizer_config.json",
+      "bytes": 367,
+      "sha256": "e6f3b96db926a37d4039995fbf5ad17de158dfb8f6343d607e4dbaad18d75f5a"
+    },
+    {
+      "name": "MODEL_CARD.md",
+      "url": "https://modelscope.cn/api/v1/models/Xenova/bge-small-zh-v1.5/repo?Revision=313386ad7ffad360a4870fd1910f8ecaf1a05151&FilePath=README.md",
+      "bytes": 1057,
+      "sha256": "cb22054df1a98f7ee9d5b281d023e67c27cc316e1733baf03fc994d95c3048ab"
+    }
+  ]
+}

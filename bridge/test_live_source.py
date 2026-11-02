@@ -311,11 +311,41 @@ class LiveKeyPreparationTests(unittest.TestCase):
         overlapping_scan_key = bytes([1]) + b"X" * 31
         factory = self.prepare({session: overlapping_scan_key, message: self.keys[message]})
         reader = factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
-        self.assertIsInstance(reader, VolatileKeyWeChatDB)
+        # The ready scan completed the stable cache, so the reader no longer needs volatile keys.
+        self.assertIsInstance(reader, CacheOnlyWeChatDB)
         self.assertEqual(reader._keys, self.keys)
         self.assertIn("result=ready required=3 matched=3 cache=2 scan_new=1 union=3", self.log.getvalue())
         self.assertIn("session=1/1 contact=1/1 message=1/1 other=0/0", self.log.getvalue())
         self.assert_private_log()
+
+    def test_ready_scan_is_saved_and_next_start_skips_the_memory_scan(self):
+        session, contact, message = self.files
+        self.save_cache({session: self.keys[session]})
+        self.prepare({contact: self.keys[contact], message: self.keys[message]})
+        saved = json.loads(self.stable_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved, {rel: key.hex() for rel, key in self.keys.items()})
+        restarted = LiveWeChatFactory(retry_seconds=30)
+        with patch("live_source._scan_config_cipher_keys") as scan:
+            reader = restarted(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        scan.assert_not_called()
+        self.assertIsInstance(reader, CacheOnlyWeChatDB)
+        self.assertNotIsInstance(reader, VolatileKeyWeChatDB)
+        self.assertEqual(reader._keys, self.keys)
+
+    def test_partial_scan_saves_only_validated_keys_and_keeps_older_entries(self):
+        session, contact, message = self.files
+        self.save_cache({"message/message_9.db": b"O" * 32})
+        self.prepare({session: self.keys[session], contact: self.keys[contact], message: b"W" * 32})
+        saved = json.loads(self.stable_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"message/message_9.db": (b"O" * 32).hex(),
+                                 session: self.keys[session].hex(), contact: self.keys[contact].hex()})
+
+    def test_discarded_scan_saves_nothing(self):
+        session, contact, message = self.files
+        changed = ActiveSelection(self.location.resolve(), ((999, 1.0),))
+        with patch("live_source.active_account_snapshot", return_value=changed):
+            self.prepare(dict(self.keys))
+        self.assertFalse(self.stable_file.exists())
 
     def test_wrong_message_key_keeps_only_validated_session_reader(self):
         session, contact, message = self.files
@@ -397,6 +427,89 @@ class LiveKeyPreparationTests(unittest.TestCase):
         for key in self.keys.values():
             self.assertNotIn(key.hex(), public)
         self.assertIsNone(factory.preparation_status("other-synthetic-account"))
+
+    def test_transient_identity_failure_retries_before_full_backoff(self):
+        factory = LiveWeChatFactory(retry_seconds=30)
+        with patch("live_source.active_account_snapshot",
+                   side_effect=OSError(234, "synthetic ownership change")), redirect_stderr(self.log):
+            with self.assertRaisesRegex(RuntimeError, "preparation pending"):
+                factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        status = factory.preparation_status(self.account)
+        self.assertEqual((status["state"], status["reason"]), ("failed", "final_identity_error"))
+        self.assertGreater(status["retryAfterSeconds"], 0)
+        self.assertLessEqual(status["retryAfterSeconds"], 3)
+
+    def test_scan_limit_keeps_full_retry_backoff(self):
+        def byte_limited(_pid, _pages, metrics):
+            metrics.update({"anchors": 0, "scan_bytes": live_source.CONFIG_SCAN_PASS_BYTES,
+                            "limit_hit": "byte_limit"})
+            return {}
+
+        factory = LiveWeChatFactory(retry_seconds=30)
+        with patch("live_source._scan_config_cipher_keys", side_effect=byte_limited), redirect_stderr(self.log):
+            with self.assertRaisesRegex(RuntimeError, "preparation pending"):
+                factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        status = factory.preparation_status(self.account)
+        self.assertEqual(status["reason"], "scan_limit")
+        self.assertGreaterEqual(status["retryAfterSeconds"], 29)
+
+    def test_first_scan_reports_active_preparation_until_ready(self):
+        factory = LiveWeChatFactory(retry_seconds=30)
+
+        def scan(_pid, _pages, _metrics):
+            status = factory.preparation_status(self.account)
+            self.assertEqual(status, {"reason": "preparing", "state": "preparing",
+                                      "message": "正在准备微信聊天记录，请稍候…",
+                                      "retryAfterSeconds": 0})
+            self.assertIsNone(factory.preparation_status("other-synthetic-account"))
+            return self.keys
+
+        with patch("live_source._scan_config_cipher_keys", side_effect=scan), redirect_stderr(self.log):
+            with self.assertRaisesRegex(RuntimeError, "preparation pending"):
+                factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        self.assertEqual(factory.preparation_status(self.account)["state"], "ready")
+
+    def test_final_identity_failure_reports_account_check_instead_of_missing_keys(self):
+        factory = LiveWeChatFactory(retry_seconds=30)
+        with patch("live_source._scan_config_cipher_keys", return_value=self.keys), \
+                patch("live_source.active_account_snapshot", side_effect=[
+                    self.selection, OSError("synthetic-private-detail")]), \
+                redirect_stderr(self.log):
+            with self.assertRaisesRegex(RuntimeError, "preparation pending"):
+                factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        status = factory.preparation_status(self.account)
+        self.assertEqual((status["state"], status["reason"], status["matched"]),
+                         ("failed", "final_identity_error", 0))
+        self.assertIn("核对当前微信账号", status["message"])
+        self.assertNotIn("凭据", status["message"])
+        self.assertNotIn("synthetic-private-detail", str(status))
+        self.assertIn("scan_new=3 union=0", self.log.getvalue())
+        self.assert_private_log()
+
+    def test_session_retry_hides_previous_failure_while_scan_is_active(self):
+        session, contact, _message = self.files
+        factory = self.prepare({session: self.keys[session], contact: self.keys[contact]})
+        previous = factory.preparation_status(self.account)
+        self.assertEqual((previous["state"], previous["reason"]), ("sessions", "keys_incomplete"))
+        slot = next(iter(factory.slots.values()))
+        slot.retry_at = 0
+
+        def scan(_pid, _pages, _metrics):
+            status = factory.preparation_status(self.account)
+            self.assertEqual(status["state"], "preparing")
+            self.assertEqual(status["reason"], "preparing")
+            self.assertEqual(status["retryAfterSeconds"], 0)
+            self.assertNotEqual(status["message"], previous["message"])
+            self.assertNotIn("matched", status)
+            self.assertNotIn("metrics", status)
+            return {}
+
+        with patch("live_source._scan_config_cipher_keys", side_effect=scan), redirect_stderr(self.log):
+            reader = factory(db_dir=str(self.db_dir), account=self.account, selection=self.selection)
+        self.assertIsInstance(reader, SessionOnlyWeChatDB)
+        completed = factory.preparation_status(self.account)
+        self.assertEqual((completed["state"], completed["reason"]), ("sessions", "keys_incomplete"))
+        self.assertGreater(completed["retryAfterSeconds"], 0)
 
 
 if __name__ == "__main__":

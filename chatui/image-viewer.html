@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>图片 · 知己微信助手</title>
+  <link rel="stylesheet" href="/image-viewer.css">
+  <script src="/image-viewer.js" defer></script>
+</head>
+<body>
+  <!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+  <main id="imageViewport" aria-label="聊天图片">
+    <div id="imageCanvas"><img id="previewImage" alt="聊天图片" draggable="false" hidden></div>
+    <p id="imageStatus" role="status">加载中…</p>
+  </main>
+  <nav class="image-toolbar" aria-label="缩放图片">
+    <button id="zoomOut" type="button" aria-label="缩小" title="缩小" disabled>−</button>
+    <button id="zoomFit" type="button" title="适应窗口" disabled>适应</button>
+    <button id="zoomIn" type="button" aria-label="放大" title="放大" disabled>+</button>
+  </nav>
+</body>
+</html>
