@@ -22,7 +22,10 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   const ipcHandlers = new Map();
   const stopCalls = [];
   const dialogs = [];
+  const fetchCalls = [];
+  let backgroundResponse = options.background || { mcpConnections: 0, guiLeases: 0, holders: [] };
   const monitorStops = [];
+  const switches = [];
   let updateOptions;
   let quitAttempts = 0;
   let completedQuits = 0;
@@ -44,6 +47,7 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   const app = {
     isPackaged: true,
     setAppUserModelId() {}, setPath() {}, requestSingleInstanceLock: () => true,
+    commandLine: { appendSwitch: (name, value) => switches.push([name, value]) },
     getVersion: () => "1.0.2", whenReady: () => Promise.resolve(),
     on(name, callback) {
       const listeners = appEvents.get(name) || [];
@@ -62,7 +66,9 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   const electron = {
     app, BrowserWindow: class { constructor() { return window; } },
     clipboard: { writeText() {} },
-    dialog: { showErrorBox: (title, message) => dialogs.push({ title, message }) },
+    dialog: { showErrorBox: (title, message) => dialogs.push({ title, message }),
+      showMessageBox: options => dialogs.push({ title: options.message, message: options.message,
+        detail: options.detail }) },
     ipcMain: { on() {}, handle: (name, callback) => ipcHandlers.set(name, callback) },
     session: { defaultSession: {
       setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {},
@@ -74,7 +80,11 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   vm.runInNewContext(source, {
     require(name) {
       if (name === "electron") return electron;
-      if (name === "node:fs") return { mkdirSync() {}, existsSync: () => true };
+      if (name === "node:fs") return { mkdirSync() {}, existsSync: () => true,
+        readFileSync(file) {
+          assert.equal(path.resolve(file), path.join(ROOT, "package.json"));
+          return '{"kyfUpdatesEnabled":true}';
+        } };
       if (name === "node:path") return path;
       if (name === "node:child_process") return {
         execFile(file, args, options, callback) {
@@ -84,9 +94,10 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
       };
       if (name === "./real-client-recovery.cjs") return {
         monitorBridge: () => () => { monitorStops.push(true); return monitorDrain; },
+        pythonFlags: require("./real-client-recovery.cjs").pythonFlags,
       };
       if (name === "./real-client-update.cjs") return {
-        RELEASES_URL: "https://github.com/tswawa/WechatVibe/releases",
+        RELEASES_URL: "https://github.com/youdrew/zhiji-wechat-assistant/releases",
         checkForUpdates: async () => ({ status: "current" }),
       };
       if (name === "./real-client-update-proxy.cjs") return {
@@ -96,9 +107,9 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
             enableSavedLoopbackFallback: async () => false };
         }
       };
-      if (name === "./real-client-model.cjs") return {
-        ModelDownload: class { cancel() {} getState() { return { phase: "idle" }; } },
-      };
+      if (name === "./model-traces-host.cjs") return { attachModelTraces: () => ({ close() {} }),
+        readControlToken: () => "c".repeat(64) };
+      if (name === "./chat-link-host.cjs") return require("./chat-link-host.cjs");
       if (name === path.join(ROOT, "node_modules", "undici")) return { ProxyAgent: class {} };
       if (name === "./real-client-update-controller.cjs") return {
         createUpdateController(options) {
@@ -116,11 +127,15 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
     __dirname: SHELL_DIR,
     URL,
     setImmediate,
+    async fetch(target, init) {
+      fetchCalls.push({ target: String(target), init });
+      return { ok: true, json: async () => backgroundResponse };
+    },
     setTimeout: () => ({ syntheticTimer: true }),
     clearTimeout() {},
     process: {
       platform: "win32", pid: 12345,
-      env: { WECHATVIBE_CLIENT_ROOT: ROOT, WECHATVIBE_INSTANCE_ID: INSTANCE_ID, ...extraEnv },
+      env: { KYF_CLIENT_ROOT: ROOT, KYF_INSTANCE_ID: INSTANCE_ID, ...extraEnv },
       argv: ["electron", "shell", "--client-url", CLIENT_URL, ...extraArgs],
       stdout: { write() {} }, stderr: { write() {} },
     },
@@ -128,7 +143,8 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   await settle();
   assert.equal(exitCode, null, "synthetic shell must pass its startup validation");
   return {
-    app, stopCalls, dialogs, monitorStops, get updateOptions() { return updateOptions; },
+    app, stopCalls, dialogs, monitorStops, switches, fetchCalls,
+    get updateOptions() { return updateOptions; },
     get quitAttempts() { return quitAttempts; },
     get completedQuits() { return completedQuits; },
     exitApp: () => ipcHandlers.get("real-client:exit-app")({ sender: contents, senderFrame: mainFrame }),
@@ -141,19 +157,23 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   };
 }
 
-function assertOwnedStop(call) {
-  assert.equal(call.file, path.join(ROOT, "runtime", "python", "python.exe"));
+function assertOwnedStop(call, python = path.join(ROOT, "runtime", "python", "python.exe")) {
+  assert.equal(call.file, python);
+  // Only the bundled runtime runs with -s, so it never loads the user's own Python packages.
+  const flags = python === path.join(ROOT, "runtime", "python", "python.exe") ? ["-s"] : [];
   assert.deepEqual(call.args, [
-    path.join(ROOT, "scripts", "start-real-client.py"), "--stop-owned-bridge", "--json",
+    ...flags, path.join(ROOT, "scripts", "start-real-client.py"), "--stop-owned-bridge", "--json",
   ]);
   assert.equal(call.options.cwd, ROOT);
   assert.equal(call.options.windowsHide, true);
   assert.equal(call.options.env.CHATUI_PORT, "34567");
-  assert.equal(call.options.env.WECHATVIBE_CLIENT_ROOT, ROOT);
+  assert.equal(call.options.env.KYF_CLIENT_ROOT, ROOT);
 }
 
 async function testNormalQuitWaitsForOwnedBridge() {
   const shell = await startShell();
+  // Plugin pages in sandboxed frames get their own renderer process.
+  assert.deepEqual(shell.switches, [["enable-features", "IsolateSandboxedIframes:grouping/per-document"]]);
   assert.equal(shell.exitApp(), true);
   await settle();
   assert.equal(shell.stopCalls.length, 1, "normal UI exit must request an owned-bridge stop");
@@ -175,6 +195,15 @@ async function testNormalQuitWaitsForOwnedBridge() {
   assert.equal(shell.stopCalls.length, 1, "a later quit must never start another stop");
 }
 
+async function testDevelopmentInterpreterKeepsItsUserSite() {
+  const python = path.join(ROOT, ".venv", "Scripts", "python.exe");
+  const shell = await startShell({ KYF_PYTHON: python });
+  shell.app.quit();
+  await settle();
+  assert.equal(shell.stopCalls.length, 1);
+  assertOwnedStop(shell.stopCalls[0], python);
+}
+
 async function testFailedStopShowsErrorAndFinishesQuit() {
   const shell = await startShell();
   shell.app.quit();
@@ -185,14 +214,14 @@ async function testFailedStopShowsErrorAndFinishesQuit() {
     JSON.stringify({ stopped: true }), "");
   await settle();
   assert.equal(shell.dialogs.length, 1, "a failed stop must alert the user");
-  assert.match(shell.dialogs[0].title, /WechatVibe/);
+  assert.match(shell.dialogs[0].title, /知己微信助手/);
   assert.match(shell.dialogs[0].message, /后台进程/);
   assert.equal(shell.completedQuits, 1, "the failed stop must still finish quitting");
   assert.equal(shell.stopCalls.length, 1, "failure must not retry an uncontrolled stop");
 }
 
 async function testReadyInitializationFailureStillStopsCreatedBridge() {
-  const shell = await startShell({ WECHATVIBE_BRIDGE_CREATED: "1" }, [], undefined,
+  const shell = await startShell({ KYF_BRIDGE_CREATED: "1" }, [], undefined,
     { readyThrow: true });
   assert.equal(shell.stopCalls.length, 1,
     "a ready-time initialization failure must still stop the bridge created by this launch");
@@ -255,7 +284,7 @@ async function testAbortedHandoffResumesNormalExit() {
 }
 
 async function testValidationSkipsStop() {
-  const shell = await startShell({ WECHATVIBE_UPDATE_VALIDATE: "1" });
+  const shell = await startShell({ KYF_UPDATE_VALIDATE: "1" });
   shell.app.quit();
   await settle();
   assert.equal(shell.stopCalls.length, 0, "validation mode must not stop the live bridge");
@@ -264,8 +293,8 @@ async function testValidationSkipsStop() {
 
 async function testUncommittedFinalUpdateStopsOwnedBridge() {
   const shell = await startShell({
-    WECHATVIBE_UPDATE_FINAL_READY_FILE: path.join(ROOT, "final-ready.json"),
-    WECHATVIBE_UPDATE_FINAL_READY_NONCE: "b".repeat(32),
+    KYF_UPDATE_FINAL_READY_FILE: path.join(ROOT, "final-ready.json"),
+    KYF_UPDATE_FINAL_READY_NONCE: "b".repeat(32),
   });
   shell.app.quit();
   await settle();
@@ -284,8 +313,31 @@ async function testSelfTestSkipsStop() {
   assert.equal(shell.completedQuits, 1);
 }
 
+async function testMcpConnectionsKeepCoreRunning() {
+  const shell = await startShell({}, [], undefined,
+    { background: { mcpConnections: 2, guiLeases: 0, holders: [] } });
+  shell.exitApp();
+  await settle();
+  assert.equal(shell.stopCalls.length, 0,
+    "active MCP connections must keep the Core running past a GUI exit");
+  assert.equal(shell.dialogs.length, 1, "the exit must note the background run once");
+  assert.match(shell.dialogs[0].message, /知己仍在后台运行/);
+  assert.match(shell.dialogs[0].detail, /2 个 MCP 客户端/);
+  assert.equal(shell.completedQuits, 1, "the GUI itself still quits; only the stop is skipped");
+  const release = shell.fetchCalls
+    .map(call => ({ target: call.target, body: JSON.parse(call.init.body || "null") }))
+    .find(call => call.target.endsWith("api/control/lease") && call.body?.action === "release");
+  assert.ok(release, "the GUI lease must be released when the Core keeps running");
+  // A later quit must not restart anything: the bridge is no longer ours to stop.
+  shell.app.quit();
+  await settle();
+  assert.equal(shell.stopCalls.length, 0);
+  assert.equal(shell.dialogs.length, 1);
+}
+
 async function main() {
   await testNormalQuitWaitsForOwnedBridge();
+  await testDevelopmentInterpreterKeepsItsUserSite();
   await testFailedStopShowsErrorAndFinishesQuit();
   await testReadyInitializationFailureStillStopsCreatedBridge();
   await testQuitWaitsForRecoveryDrain();
@@ -294,6 +346,7 @@ async function main() {
   await testValidationSkipsStop();
   await testUncommittedFinalUpdateStopsOwnedBridge();
   await testSelfTestSkipsStop();
+  await testMcpConnectionsKeepCoreRunning();
   process.stdout.write("real-client shell exit lifecycle checks passed\n");
 }
 

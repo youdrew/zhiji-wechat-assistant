@@ -1,0 +1,16 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+/* Main-window places for plugin pages (added 2026-10-13, from the host rules of chatui/advisor.css):
+   nav entries and the nav page view. Chat-toolbar pages open in their own windows since 2026-10-22. */
+.chat-header { min-height: 60px; height: auto; gap: 10px; flex-shrink: 0; padding-top: 8px; padding-bottom: 8px; box-sizing: border-box; }
+.chat-header .chat-title-group { min-width: 0; flex-wrap: wrap; column-gap: 10px; row-gap: 5px; }
+.chat-header .chat-title { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.nav-item.plugin-nav-item { position: relative; }
+.nav-item .plugin-nav-icon { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+html.desktop-host .app-window { width: calc(100vw * var(--zoom-inverse, 1)); }
+#pluginNavView { flex: 1; height: 100%; display: none; flex-direction: column; overflow: hidden; background: var(--bg-chat, #1e1e1e); box-sizing: border-box; }
+#pluginNavView.active { display: flex; }
+#pluginNavView > .plugin-nav-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#pluginNavView > .plugin-nav-page[hidden] { display: none; }
+#pluginNavView .plugin-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: transparent; }
+.plugin-nav-empty { margin: auto; padding: 24px; text-align: center; font-size: 13px; color: var(--text-secondary, #888); }
+.plugin-nav-empty button { margin-top: 10px; padding: 5px 12px; border: 1px solid var(--border-color, #2b2b2b); border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }

@@ -70,6 +70,20 @@ def _same_checked_directory(left, right):
     return left.resolve() == right.resolve()
 
 
+def pin_temp_directory(root):
+    """Keep the process temp directory fixed, whoever launched the service.
+
+    wechatauto keeps its snapshots under gettempdir(), the source fingerprint hashes
+    that path, and every saved result is keyed by the fingerprint. The dev shell points
+    TEMP at ``.local/tmp`` while an MCP adapter starting the service headlessly does
+    not, so a checkout that already keeps its snapshots there stays there.
+    """
+    pinned = Path(root) / ".local" / "tmp"
+    if (pinned / "wechatauto_db").is_dir():
+        os.environ["TEMP"] = os.environ["TMP"] = str(pinned)
+        tempfile.tempdir = str(pinned)
+
+
 class AccountStore:
     def __init__(self, data_dir, snapshot_root=None, stable_keys_dir=None):
         self.data_dir = Path(os.path.abspath(data_dir))
@@ -108,11 +122,11 @@ class AccountStore:
                     raise AccountConflict("账号缓存路径不安全")
         return files, sorted(directories, key=lambda path: len(path.parts), reverse=True)
 
-    def _stable_key_file(self, account):
+    def _stable_key_file(self, account, suffix=".json"):
         if self.stable_keys_dir is None:
             return None
         _check_root(self.stable_keys_dir)
-        path = self.stable_keys_dir / (account + ".json")
+        path = self.stable_keys_dir / (account + suffix)
         if path.parent != self.stable_keys_dir or (_reparse(path) if os.path.lexists(path) else False):
             raise AccountConflict("账号密钥缓存路径不安全")
         return path
@@ -305,9 +319,10 @@ class AccountStore:
                 sidecar = Path(str(result) + suffix)
                 if _regular(sidecar):
                     files.append(sidecar)
-            stable = self._stable_key_file(account)
-            if stable is not None and _regular(stable):
-                files.append(stable)
+            for suffix in (".json", ".media.json"):  # database and media keys (cache_source)
+                stable = self._stable_key_file(account, suffix)
+                if stable is not None and _regular(stable):
+                    files.append(stable)
             if related_cleanup is not None:
                 guard(account)
                 related_cleanup(account)

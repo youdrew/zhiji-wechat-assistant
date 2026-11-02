@@ -14,6 +14,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from community_package import check_source_snapshot, source_revision
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,52 +146,52 @@ def verify_asar(root: Path, unpacked: Path, node_exe: Path, version: str,
         cwd=root, check=True, capture_output=True, text=True,
     )
     report = json.loads(completed.stdout)
-    if report["version"] != version or report["name"] != "wechatvibe" or report["main"] != "scripts/desktop-main.cjs":
+    if report["version"] != version or report["name"] != "know-your-friends" or report["main"] != "scripts/desktop-main.cjs":
         raise ValueError("app.asar source version or entry point differs")
     for name in scripts:
         if report["files"].get(name) != expected[name.casefold()]["sha256"]:
             raise ValueError(f"app.asar script hash differs: {name}")
 
 
-def verify_package(root: Path, build_dir: Path, node_exe: Path) -> dict:
+def verify_package(root: Path, build_dir: Path, node_exe: Path, *, require_clean=False) -> dict:
     expected, client = manifest_files(build_dir)
     verify_tree(build_dir / "client", expected)
     version = client["sourceVersion"]
+    check_source_snapshot(client, source_revision(root, require_clean=require_clean), require_clean=require_clean)
     if digest(root / "package.json") != client["sourcePackageSha256"]:
         raise ValueError("source package.json changed during build")
     unpacked = build_dir / "release" / "win-unpacked"
-    executable = unpacked / "WechatVibe.exe"
+    executable = unpacked / "KnowYourFriends.exe"
     if not executable.is_file() or executable.stat().st_size == 0:
-        raise ValueError("packaged WechatVibe.exe missing")
+        raise ValueError("packaged KnowYourFriends.exe missing")
     with executable.open("rb") as stream:
         if stream.read(2) != b"MZ":
-            raise ValueError("packaged WechatVibe.exe header differs")
+            raise ValueError("packaged KnowYourFriends.exe header differs")
     packaged_client = unpacked / "resources" / "client"
     verify_tree(packaged_client, expected)
     packaged_version = json.loads((packaged_client / "package.json").read_text(encoding="utf-8"))["version"]
     if packaged_version != version:
         raise ValueError("packaged client version differs from source")
     verify_asar(root, unpacked, node_exe, version, expected)
+    check_source_snapshot(client, source_revision(root, require_clean=require_clean), require_clean=require_clean)
     return {"buildDirectory": str(build_dir), "preview": str(unpacked),
             "version": version, "verifiedFiles": len(expected),
-            "sourcePackageSha256": client["sourcePackageSha256"]}
+            "sourcePackageSha256": client["sourcePackageSha256"],
+            "sourceGitSha": client.get("sourceGitSha"), "sourceDirty": client.get("sourceDirty")}
 
 
 def build(args: argparse.Namespace) -> dict:
     root = ROOT
+    source_revision(root, require_clean=getattr(args, "require_clean", False))
     python_exe = Path(args.python_exe).resolve() if args.python_exe else Path(sys.executable).resolve()
-    node_source = args.node_exe or os.environ.get("WECHATVIBE_BUILD_NODE") or shutil.which("node")
+    node_source = args.node_exe or os.environ.get("KYF_BUILD_NODE") or shutil.which("node")
     if not node_source:
         raise ValueError("node.exe not found; use --node-exe")
     node_exe = Path(node_source).resolve()
     if not python_exe.is_file() or not node_exe.is_file():
         raise ValueError("Python or Node executable is missing")
-    model_source = args.models_dir or os.environ.get("LAYA_MODEL_DIR") or root / ".models/laya"
-    models = Path(model_source).resolve()
-    electron_source = args.electron_dist or os.environ.get("WECHATVIBE_ELECTRON_DIST") or root / "node_modules/electron/dist"
+    electron_source = args.electron_dist or os.environ.get("KYF_ELECTRON_DIST") or root / "node_modules/electron/dist"
     electron_dist = Path(electron_source).resolve()
-    if not models.is_dir():
-        raise ValueError(f"Laya model directory is missing: {models}")
     if not (root / "node_modules/electron-builder/cli.js").is_file():
         raise ValueError("electron-builder is missing; run npm install first")
     build_root = root / ".local" / "portable-builds"
@@ -197,22 +201,24 @@ def build(args: argparse.Namespace) -> dict:
     build_dir = Path(tempfile.mkdtemp(prefix="build-", dir=build_root))
     stage = build_dir / "client"
     environment = os.environ.copy()
-    environment["WECHATVIBE_BUILD_NODE"] = str(node_exe)
+    environment["KYF_BUILD_NODE"] = str(node_exe)
     if args.node_license:
-        environment["WECHATVIBE_NODE_LICENSE"] = str(Path(args.node_license).resolve())
+        environment["KYF_NODE_LICENSE"] = str(Path(args.node_license).resolve())
     print(f"Clean build directory: {build_dir}", flush=True)
     subprocess.run([str(python_exe), str(root / "scripts/stage-real-runtime.py"),
                     "--output", str(stage)], cwd=root, env=environment, check=True)
-    subprocess.run([str(python_exe), str(root / "scripts/stage-real-client.py"),
-                    "--source-root", str(root), "--models-dir", str(models),
-                    "--output", str(stage)], cwd=root, env=environment, check=True)
+    staging_args = [str(python_exe), str(root / "scripts/stage-real-client.py"),
+                    "--source-root", str(root), "--output", str(stage)]
+    if getattr(args, "require_clean", False):
+        staging_args.append("--require-clean")
+    subprocess.run(staging_args, cwd=root, env=environment, check=True)
     expected, _ = manifest_files(build_dir)
     verify_tree(stage, expected)
     generated = generate_config(root, build_dir, electron_dist)
     subprocess.run([str(node_exe), str(root / "node_modules/electron-builder/cli.js"),
                     "--win", "--dir", "--config", str(generated)],
                    cwd=root, env=environment, check=True)
-    result = verify_package(root, build_dir, node_exe)
+    result = verify_package(root, build_dir, node_exe, require_clean=getattr(args, "require_clean", False))
     (build_dir / "build-verification.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return result
@@ -220,7 +226,7 @@ def build(args: argparse.Namespace) -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models-dir", type=Path, help="pinned external Laya model directory")
+    parser.add_argument("--require-clean", action="store_true", help="require committed, clean source for a formal package")
     parser.add_argument("--electron-dist", type=Path, help="directory containing electron.exe")
     parser.add_argument("--python-exe", type=Path, help="Python 3.14 executable with runtime dependencies")
     parser.add_argument("--node-exe", type=Path, help="Node 24.11.1 executable")

@@ -55,7 +55,7 @@ function hasClass(node, name) {
 }
 
 function harness(options = {}) {
-  const calls = { checks: 0, downloads: 0, fetches: 0 };
+  const calls = { checks: 0, downloads: 0, states: 0, rollbacks: 0, fetches: 0 };
   const timers = [];
   const nodes = new Map();
   const byId = id => {
@@ -76,6 +76,11 @@ function harness(options = {}) {
     getAppVersion: async () => "1.2.3",
     beginUpdate: async () => { calls.downloads++; return false; },
   };
+  if (desktopHost && !options.omitPolicy) desktopHost.appUpdatesEnabled = options.updatesEnabled ?? true;
+  if (desktopHost && (options.updatesEnabled === false || options.omitPolicy)) {
+    desktopHost.getUpdateState = async () => { calls.states++; return { phase: "available" }; };
+    desktopHost.rollbackUpdate = async () => { calls.rollbacks++; return false; };
+  }
   if (desktopHost && !options.omitCheck) desktopHost.checkForUpdates = async () => {
     calls.checks++;
     if (options.failCheck) throw new Error("synthetic update check failure");
@@ -87,8 +92,7 @@ function harness(options = {}) {
     setTimeout(fn, delay) { timers.push({ fn, delay, kind: "timeout" }); return timers.length; },
     setInterval(fn, delay) { timers.push({ fn, delay, kind: "interval" }); return timers.length; },
     clearTimeout() {}, clearInterval() {},
-    loadRuntime() {}, loadModelSource() {}, loadLocalModel() {}, loadDataRoot() {},
-    showLocalModelDownload() {},
+    loadModelSource() {}, loadDataRoot() {}, hideApiKey() {},
     fetch() { calls.fetches++; throw new Error("update check must not use the network"); },
     document: {
       activeElement: null,
@@ -268,3 +272,40 @@ it("does not schedule a check when the desktop host cannot check", async () => {
   assert.equal(ui.calls.checks, 0);
   assert.equal(ui.calls.fetches, 0);
 });
+
+for (const options of [{ updatesEnabled: false }, { omitPolicy: true }]) {
+  it(`disables every update entry when the host ${options.omitPolicy ? "has no update capability" : "disables updates"}`, async () => {
+    const ui = harness(options);
+    await ui.settle();
+    ui.unlock();
+    ui.context.scheduleBackgroundUpdateChecks();
+    assert.equal(ui.timers.length, 0);
+    assert.equal(ui.byId("aboutCurrentVersion").textContent, "v1.2.3");
+    assert.equal(ui.byId("btnAboutVersion").disabled, true);
+    assert.equal(ui.byId("btnAboutVersion").getAttribute("aria-label"), "当前版本 v1.2.3");
+
+    for (const phase of ["available", "ready", "downloading", "installing", "restarting"]) {
+      assert.equal(ui.apply({ phase, latestVersion: "9.9.9", rollbackVersion: "1.2.2" }), false);
+      assert.equal(ui.notice.hidden, true);
+      assert.equal(ui.byId("btnBeginUpdate").hidden, true);
+      assert.equal(ui.byId("updateRollback").hidden, true);
+    }
+    assert.equal(ui.byId("btnCheckUpdates").hidden, true);
+    assert.equal(ui.byId("updateReleaseLink").hidden, true);
+
+    // Even directly invoked handlers and stale state cannot activate a hidden entry.
+    vm.runInContext('updateState = { phase: "ready", rollbackVersion: "1.2.2" }; renderUpdateState();', ui.context);
+    ui.notice.click();
+    ui.byId("btnAboutVersion").click();
+    ui.byId("btnCheckUpdates").click();
+    ui.byId("btnBeginUpdate").click();
+    ui.byId("btnRollbackUpdate").click();
+    await ui.context.checkForUpdates();
+    await ui.context.refreshUpdateState();
+    await ui.settle();
+    assert.equal(hasClass(ui.byId("updateModal"), "show"), false);
+    assert.equal(hasClass(ui.byId("settingsModal"), "show"), false);
+    assert.equal(ui.notice.hidden, true);
+    assert.deepEqual(ui.calls, { checks: 0, downloads: 0, states: 0, rollbacks: 0, fetches: 0 });
+  });
+}

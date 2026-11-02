@@ -17,11 +17,11 @@ function removeFixture(root) {
 }
 
 async function main() {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "wechatvibe-final-ready-"));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "kyf-final-ready-"));
   try {
-    const installRoot = path.join(parent, "WechatVibe");
+    const installRoot = path.join(parent, "KnowYourFriends");
     const clientRoot = path.join(installRoot, "resources", "client");
-    const workDir = path.join(parent, ".wechatvibe-update-fixture");
+    const workDir = path.join(parent, ".kyf-update-fixture");
     fs.mkdirSync(clientRoot, { recursive: true });
     fs.mkdirSync(workDir);
     const marker = path.join(workDir, "ui-final-ready-11111111-1111-4111-8111-111111111111.json");
@@ -42,7 +42,8 @@ async function main() {
     const timers = [];
     const cleared = [];
     const app = { isPackaged: true, setAppUserModelId() {}, setPath() {},
-      requestSingleInstanceLock: () => true, on() {}, whenReady: () => Promise.resolve(),
+      requestSingleInstanceLock: () => true, commandLine: { appendSwitch() {} }, on() {},
+      whenReady: () => Promise.resolve(),
       getVersion: () => "1.0.2", quit() {} };
     const electron = { app, BrowserWindow: class { constructor() { return window; } },
       clipboard: {}, dialog: { showErrorBox() {} },
@@ -52,25 +53,30 @@ async function main() {
     const source = fs.readFileSync(path.join(__dirname, "real-client-shell.cjs"), "utf8");
     vm.runInNewContext(source, { __dirname, URL, fs,
       process: { platform: "win32", env: {
-        WECHATVIBE_CLIENT_ROOT: clientRoot, WECHATVIBE_INSTANCE_ID: instanceId,
-        WECHATVIBE_UPDATE_FINAL_READY_FILE: marker,
-        WECHATVIBE_UPDATE_FINAL_READY_NONCE: nonce,
+        KYF_CLIENT_ROOT: clientRoot, KYF_INSTANCE_ID: instanceId,
+        KYF_UPDATE_FINAL_READY_FILE: marker,
+        KYF_UPDATE_FINAL_READY_NONCE: nonce,
       }, argv: ["electron", "shell", "--client-url", url], stderr: { write() {} } },
       setImmediate, setTimeout: callback => { const id = timers.length + 1; timers.push({ id, callback }); return id; },
       clearTimeout: id => cleared.push(id),
       require(name) {
         if (name === "electron") return electron;
-        if (name === "node:fs") return fs;
+        if (name === "node:fs") return { ...fs, readFileSync(file, ...args) {
+          if (path.resolve(file) === path.resolve(__dirname, "..", "package.json"))
+            return '{"kyfUpdatesEnabled":true}';
+          return fs.readFileSync(file, ...args);
+        } };
         if (name === "node:path") return path;
         if (name === "node:child_process") return { execFile() { throw new Error("ready check must not stop a bridge"); } };
-        if (name === "./real-client-model.cjs") return { ModelDownload: class { cancel() {} } };
+        if (name === "./model-traces-host.cjs") return { attachModelTraces: () => ({ close() {} }) };
+        if (name === "./chat-link-host.cjs") return require("./chat-link-host.cjs");
         if (name === "./real-client-update-proxy.cjs") return {
           createUpdateProxyFetch: () => ({ fetchImpl: async () => { throw new Error("unexpected network"); } }),
         };
         if (name.endsWith(path.join("node_modules", "undici"))) return { ProxyAgent: class {} };
         if (name === "./real-client-recovery.cjs") return { monitorBridge: () => () => {} };
         if (name === "./real-client-update.cjs") return {
-          RELEASES_URL: "https://github.com/tswawa/WechatVibe/releases",
+          RELEASES_URL: "https://github.com/youdrew/zhiji-wechat-assistant/releases",
           checkForUpdates: async () => ({ status: "current" }),
         };
         if (name === "./real-client-update-controller.cjs") return {

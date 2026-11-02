@@ -1,8 +1,10 @@
 """Cached-key initialization and reusable snapshots with upstream database/WAL decoding."""
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 
 from wechatauto.db import WeChatDB
 from snapshot_cache import SnapshotCacheMixin
@@ -10,6 +12,63 @@ from snapshot_cache import SnapshotCacheMixin
 
 ANCHOR_DATABASES = frozenset(("session/session.db", "contact/contact.db"))
 MESSAGE_DATABASE = re.compile(r"message/message_\d+\.db\Z")
+MEDIA_KEY_SUFFIX = ".media.json"
+
+
+def stable_key_path(account, suffix=".json"):
+    """The upstream reader's stable key cache for one account (same rule as ``WeChatDB``).
+
+    Validated keys persist here so a restart reuses them instead of reading WeChat's
+    memory again; every use still validates each key against the current file.
+    """
+    if not account or os.path.basename(account) != account or account in (".", ".."):
+        return None
+    root = os.environ.get("WECHATAUTO_KEYS_DIR")
+    if not root:
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("USERPROFILE")
+        root = os.path.join(base, "wechatauto_keys") if base else None
+    return Path(os.path.abspath(root)) / (account + suffix) if root else None
+
+
+def _plain_file(path):
+    return not path.is_symlink() and not getattr(path.lstat(), "st_file_attributes", 0) & 0x400
+
+
+def read_key_file(path):
+    """A JSON key file's object, or {} when it is missing, unsafe or malformed."""
+    try:
+        if path is None or not os.path.lexists(path) or not _plain_file(path):
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_key_file(path, data):
+    """Atomically replace one key file; a failed write keeps the previous file."""
+    if path is None:
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not _plain_file(path.parent) or (os.path.lexists(path) and not _plain_file(path)):
+            return False
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+        return True
+    except OSError:
+        return False
+
+
+def persist_database_keys(account, keys):
+    """Merge validated per-database keys into the account's stable cache."""
+    path = stable_key_path(account)
+    saved = read_key_file(path)
+    merged = dict(saved)
+    merged.update({rel: raw.hex() for rel, raw in keys.items()
+                   if isinstance(raw, bytes) and len(raw) in (32, 48)})
+    return merged == saved or write_key_file(path, merged)
 
 
 def database_groups(rels):

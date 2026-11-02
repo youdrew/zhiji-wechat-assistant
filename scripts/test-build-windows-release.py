@@ -23,16 +23,16 @@ SPEC.loader.exec_module(builder)
 
 class BuildReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="wechatvibe-build-zip-test-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="kyf-build-zip-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / "win-unpacked"
         self.node = shutil.which("node")
         if not self.node:
             self.skipTest("Node.js is unavailable")
-        self.add_file("WechatVibe.exe", b"MZsynthetic")
+        self.add_file("KnowYourFriends.exe", b"MZsynthetic")
         self.add_file("resources/client/package.json", json.dumps({
-            "name": "wechatvibe-runtime", "version": "1.0.2",
+            "name": "know-your-friends-runtime", "version": "1.0.2",
         }).encode("utf-8"))
         self.asar_source = self.root / "asar-source"
         for name in builder.ASAR_SCRIPTS:
@@ -58,7 +58,7 @@ class BuildReleaseTests(unittest.TestCase):
         target.write_bytes(payload)
         return target
 
-    def make_asar(self, *, name="wechatvibe", main="scripts/desktop-main.cjs", version="1.0.2"):
+    def make_asar(self, *, name="know-your-friends", main="scripts/desktop-main.cjs", version="1.0.2"):
         (self.asar_source / "package.json").write_text(json.dumps({
             "name": name, "main": main, "version": version,
         }), encoding="utf-8")
@@ -70,10 +70,10 @@ class BuildReleaseTests(unittest.TestCase):
                        check=True, capture_output=True, text=True)
 
     def test_build_is_deterministic_and_extractable(self):
-        self.add_file("resources/client/chatui/assets/wechatvibe-icon.png", b"synthetic image")
+        self.add_file("resources/client/chatui/assets/app-icon.png", b"synthetic image")
         first = builder.build_release(self.source, self.root / "first", "1.0.2")
         second = builder.build_release(self.source, self.root / "second", "1.0.2")
-        self.assertEqual(first.name, "WechatVibe-1.0.2-windows-x64.zip")
+        self.assertEqual(first.name, "KnowYourFriends-1.0.2-windows-x64.zip")
         self.assertEqual(first.read_bytes(), second.read_bytes())
         with zipfile.ZipFile(first) as archive:
             names = archive.namelist()
@@ -91,7 +91,7 @@ class BuildReleaseTests(unittest.TestCase):
     def test_full_variant_has_distinct_name_and_includes_model(self):
         archive_path = builder.build_release(self.source, self.root / "full", "1.0.2",
                                              with_model=True)
-        self.assertEqual(archive_path.name, "WechatVibe-1.0.2-windows-x64-full.zip")
+        self.assertEqual(archive_path.name, "KnowYourFriends-1.0.2-windows-x64-full.zip")
         with zipfile.ZipFile(archive_path) as archive:
             self.assertEqual(archive.read(
                 "win-unpacked/resources/client/.models/laya/model.onnx"), b"synthetic model")
@@ -175,6 +175,30 @@ class BuildReleaseTests(unittest.TestCase):
             builder.build_release(self.source, self.root / "sdk-private", "1.0.2")
         private.unlink()
 
+    def test_community_package_rejects_send_sdk_and_non_reader_dependency_modules(self):
+        paths = ("plugins/kyf.wechat-send/sdk/Assets/wechat.ico", "native-sender/bin/win-x64/sender.exe",
+                 "plugins/kyf.unknown-pro/backend/main.py", "scripts/wechat-send-host.cjs",
+                 "runtime/python/Lib/site-packages/wechatauto/guia.py",
+                 "runtime/python/Lib/site-packages/wechatauto/moment.py",
+                 "runtime/python/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
+                 "plugins/kyf.mcp/backend/unreviewed.dll", "plugins/kyf.mcp/model-connection.json")
+        for index, relative in enumerate(paths):
+            with self.subTest(relative=relative):
+                with self.assertRaisesRegex(ValueError, "community package forbids"):
+                    builder._check_private_path(Path("resources/client") / relative, directory=False)
+
+    def test_reviewed_community_plugin_and_reader_directories_survive_final_package_scan(self):
+        plugin = "resources/client/plugins/kyf.mcp/"
+        self.add_file(plugin + "plugin.json", b"{}")
+        self.add_file(plugin + "backend/main.py")
+        reader = "resources/client/runtime/python/Lib/site-packages/wechatauto/"
+        self.add_file(reader + "db.py")
+        self.add_file(reader + "KYF_READ_ONLY.md")
+        archive = builder.build_release(self.source, self.root / "community", "1.0.2")
+        with zipfile.ZipFile(archive) as release:
+            self.assertIn("win-unpacked/" + plugin + "backend/main.py", release.namelist())
+            self.assertIn("win-unpacked/" + reader + "db.py", release.namelist())
+
     def test_symlink_and_output_containment(self):
         with self.assertRaisesRegex(ValueError, "output directory cannot"):
             builder.build_release(self.source, self.source / "release", "1.0.2")
@@ -212,7 +236,7 @@ class BuildReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "compressed archive"):
                 builder.build_release(self.source, self.root / "compressed", "1.0.2")
         self.assertEqual(list((self.root / "compressed").iterdir()), [])
-        target = self.root / "existing" / "WechatVibe-1.0.2-windows-x64.zip"
+        target = self.root / "existing" / "KnowYourFriends-1.0.2-windows-x64.zip"
         target.parent.mkdir()
         target.write_bytes(b"keep")
         with self.assertRaises(FileExistsError):

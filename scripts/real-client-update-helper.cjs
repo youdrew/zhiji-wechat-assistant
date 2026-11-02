@@ -113,7 +113,7 @@ function validateOperation(op, operationFile, { recovery = false } = {}) {
   }
   const installParent = path.dirname(op.installRoot);
   if (!samePath(path.dirname(op.workDir), installParent) ||
-      !path.basename(op.workDir).startsWith(".wechatvibe-update-") ||
+      !path.basename(op.workDir).startsWith(".kyf-update-") ||
       samePath(op.installRoot, op.workDir) ||
       path.parse(op.installRoot).root.toLowerCase() !== path.parse(op.workDir).root.toLowerCase() ||
       !samePath(op.candidatePath, path.join(op.workDir,
@@ -136,14 +136,14 @@ function validateOperation(op, operationFile, { recovery = false } = {}) {
 }
 function validateCandidate(candidate, expectedVersion, fresh) {
   checkTree(candidate, fresh);
-  regular(path.join(candidate, "WechatVibe.exe"));
+  regular(path.join(candidate, "KnowYourFriends.exe"));
   regular(path.join(candidate, "resources", "app.asar"));
   regular(path.join(candidate, "resources", "client", "runtime", "python", "python.exe"));
   regular(path.join(candidate, "resources", "client", "scripts", "start-real-client.py"));
   const metadata = path.join(candidate, "resources", "client", "package.json");
   if (regular(metadata).size > 64 * 1024) fail("oversized candidate metadata");
   const pkg = readJson(metadata, 64 * 1024);
-  if (pkg.name !== "wechatvibe-runtime" || pkg.version !== expectedVersion) {
+  if (pkg.name !== "know-your-friends-runtime" || pkg.version !== expectedVersion) {
     fail("candidate version mismatch");
   }
 }
@@ -375,13 +375,13 @@ async function waitHealthy(op, check = healthy, timeout = HEALTH_MS, requiredVer
   fail("updated client failed health or UI check");
 }
 function launchClient(root, spawnImpl = spawn) {
-  const env = { ...process.env, CHATUI_PORT: "", WECHATVIBE_CLIENT_ROOT: "" };
-  delete env.WECHATVIBE_UPDATE_VALIDATE;
-  delete env.WECHATVIBE_UPDATE_READY_FILE;
-  delete env.WECHATVIBE_UPDATE_READY_NONCE;
-  delete env.WECHATVIBE_UPDATE_FINAL_READY_FILE;
-  delete env.WECHATVIBE_UPDATE_FINAL_READY_NONCE;
-  const child = spawnImpl(path.join(root, "WechatVibe.exe"), [], { cwd: root,
+  const env = { ...process.env, CHATUI_PORT: "", KYF_CLIENT_ROOT: "" };
+  delete env.KYF_UPDATE_VALIDATE;
+  delete env.KYF_UPDATE_READY_FILE;
+  delete env.KYF_UPDATE_READY_NONCE;
+  delete env.KYF_UPDATE_FINAL_READY_FILE;
+  delete env.KYF_UPDATE_FINAL_READY_NONCE;
+  const child = spawnImpl(path.join(root, "KnowYourFriends.exe"), [], { cwd: root,
     detached: true, stdio: "ignore", env });
   return new Promise((resolve, reject) => {
     child.once("error", reject);
@@ -389,24 +389,24 @@ function launchClient(root, spawnImpl = spawn) {
   });
 }
 function launchValidation(root, _op, readyFile, nonce, spawnImpl = spawn) {
-  const child = spawnImpl(path.join(root, "WechatVibe.exe"), [], { cwd: root,
+  const child = spawnImpl(path.join(root, "KnowYourFriends.exe"), [], { cwd: root,
     detached: true, stdio: "ignore",
-    env: { ...process.env, CHATUI_PORT: "", WECHATVIBE_CLIENT_ROOT: "",
-      WECHATVIBE_UPDATE_VALIDATE: "1", WECHATVIBE_UPDATE_READY_FILE: readyFile,
-      WECHATVIBE_UPDATE_READY_NONCE: nonce } });
+    env: { ...process.env, CHATUI_PORT: "", KYF_CLIENT_ROOT: "",
+      KYF_UPDATE_VALIDATE: "1", KYF_UPDATE_READY_FILE: readyFile,
+      KYF_UPDATE_READY_NONCE: nonce } });
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("spawn", () => resolve(child));
   });
 }
 function launchFinalClient(root, _op, readyFile, nonce, spawnImpl = spawn) {
-  const env = { ...process.env, CHATUI_PORT: "", WECHATVIBE_CLIENT_ROOT: "",
-    WECHATVIBE_UPDATE_FINAL_READY_FILE: readyFile,
-    WECHATVIBE_UPDATE_FINAL_READY_NONCE: nonce };
-  delete env.WECHATVIBE_UPDATE_VALIDATE;
-  delete env.WECHATVIBE_UPDATE_READY_FILE;
-  delete env.WECHATVIBE_UPDATE_READY_NONCE;
-  const child = spawnImpl(path.join(root, "WechatVibe.exe"), [], { cwd: root,
+  const env = { ...process.env, CHATUI_PORT: "", KYF_CLIENT_ROOT: "",
+    KYF_UPDATE_FINAL_READY_FILE: readyFile,
+    KYF_UPDATE_FINAL_READY_NONCE: nonce };
+  delete env.KYF_UPDATE_VALIDATE;
+  delete env.KYF_UPDATE_READY_FILE;
+  delete env.KYF_UPDATE_READY_NONCE;
+  const child = spawnImpl(path.join(root, "KnowYourFriends.exe"), [], { cwd: root,
     detached: true, stdio: "ignore", env });
   return new Promise((resolve, reject) => {
     child.once("error", reject);
@@ -472,10 +472,11 @@ function startBridge(root, op, execute = execFileSync) {
   const script = path.join(clientRoot, "scripts", "start-real-client.py");
   regular(python);
   regular(script);
-  const stdout = execute(python, [script, "--no-open", "--json"], {
+  // -s keeps the bundled runtime from loading packages from the user's own Python.
+  const stdout = execute(python, ["-s", script, "--no-open", "--json"], {
     cwd: clientRoot, windowsHide: true, timeout: 45000, maxBuffer: 65536, encoding: "utf8",
     env: { ...process.env, CHATUI_PORT: String(op.port),
-      WECHATVIBE_CLIENT_ROOT: clientRoot, WECHATVIBE_PYTHON: python },
+      KYF_CLIENT_ROOT: clientRoot, KYF_PYTHON: python },
   });
   const result = JSON.parse(stdout);
   if (result.version !== "real-ui-1" || result.instanceId !== op.instanceId ||
@@ -487,16 +488,16 @@ function stopOwnedBridge(root, port) {
   const script = path.join(root, "resources", "client", "scripts", "start-real-client.py");
   regular(python);
   regular(script);
-  const stdout = execFileSync(python, [script, "--stop-owned-bridge", "--json"], {
+  const stdout = execFileSync(python, ["-s", script, "--stop-owned-bridge", "--json"], {
     cwd: path.join(root, "resources", "client"), windowsHide: true,
     timeout: 45000, maxBuffer: 65536, encoding: "utf8",
     env: { ...process.env, CHATUI_PORT: String(port),
-      WECHATVIBE_CLIENT_ROOT: path.join(root, "resources", "client"), WECHATVIBE_PYTHON: python },
+      KYF_CLIENT_ROOT: path.join(root, "resources", "client"), KYF_PYTHON: python },
   });
   const result = JSON.parse(stdout);
   if (result.stopped !== true && result.alreadyStopped !== true) fail("owned bridge did not stop");
 }
-function runOnceName(op) { return "WechatVibeUpdate-" + path.basename(op.workDir).slice(0, 80); }
+function runOnceName(op) { return "KnowYourFriendsUpdate-" + path.basename(op.workDir).slice(0, 80); }
 function setRunOnce(op, operationFile) {
   const node = path.join(op.workDir, "helper", "node.exe");
   const script = path.join(op.workDir, "helper", "real-client-update-helper.cjs");
@@ -581,7 +582,7 @@ function paths(op) {
 function cleanupArchive(op) {
   const archiveVersion = op.action === "install" ? op.expectedVersion : op.previousVersion;
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(archiveVersion)) return;
-  const archive = path.join(op.workDir, `WechatVibe-${archiveVersion}-windows-x64.zip`);
+  const archive = path.join(op.workDir, `KnowYourFriends-${archiveVersion}-windows-x64.zip`);
   if (!present(archive)) return;
   noReparse(archive);
   if (!fs.lstatSync(archive).isFile()) fail("archive cleanup target is not a file");
@@ -628,7 +629,7 @@ function pruneOldWorkDirs(op, { runOnceAbsent: isAbsent = runOnceAbsent,
   const currentTime = Date.parse(current.updatedAt);
   const errors = [];
   for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^\.wechatvibe-update-[a-zA-Z0-9-]+$/.test(entry.name)) continue;
+    if (!entry.isDirectory() || !/^\.kyf-update-[a-zA-Z0-9-]+$/.test(entry.name)) continue;
     const workDir = path.join(parent, entry.name);
     if (samePath(workDir, op.workDir)) continue;
     try {

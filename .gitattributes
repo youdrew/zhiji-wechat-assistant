@@ -2,3 +2,9 @@
 chatui/*.html text
 chatui/*.css text
 chatui/*.js text
+# Frozen benchmark hashes must survive Windows checkout with core.autocrlf.
+benchmarks/self-analysis-chat/** text eol=lf
+# Keep original signed inputs, license spacing and pinned resource hashes intact.
+scripts/ffmpeg-runtime-resources/* -text -whitespace
+scripts/opencv-ffmpeg-runtime-resources/* -text -whitespace
+scripts/build-ffmpeg-lgpl.sh text eol=lf

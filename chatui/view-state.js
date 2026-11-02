@@ -13,10 +13,16 @@
         selectedConversations: new Set(),
         selectionLoadedAccount: null,
         conversationSelectionBusy: false,
+        conversationSelectionEpoch: 0,
         sessionCache: new Map(),
         historyState: null,
         historyRequest: 0,
         historyController: null,
+        // Modified by Know Your Friends, 2026-10-11: scoped continuous-history work.
+        historyPrefetch: null,
+        historyPrefetchTimer: null,
+        historyScrollFrame: null,
+        historyDirection: null,
         historySearchRequest: 0,
         historySearchController: null,
         historySearchPending: false,
@@ -133,6 +139,9 @@
         modelListController: null,
         modelTestRequest: 0,
         modelTestController: null,
+        apiKeyRevealRequest: 0,
+        apiKeyRevealController: null,
+        apiKeyRevealedSaved: false,
         modelSourceLoading: false,
         modelSourceBusy: false,
         modelListBusy: false,
@@ -166,7 +175,7 @@
         chat: ["generation", "historyRequest", "historySearchRequest", "sessionRequest", "windowRequestSerial", "messageRequest"],
         labels: [],
         portrait: ["profileGeneration", "analysisGeneration", "apiPortraitRequest"],
-        settings: ["runtimeRequest", "localModelRequest", "dataRootRequest", "modelSourceReadRequest", "modelSourceRevision", "modelListRequest", "modelTestRequest"],
+        settings: ["runtimeRequest", "localModelRequest", "dataRootRequest", "modelSourceReadRequest", "modelSourceRevision", "modelListRequest", "modelTestRequest", "apiKeyRevealRequest"],
       };
       if (keys.some(key => counters[domain].includes(key))) throw new Error("Request counters must never reset");
       if (keys.some(key => !fields.has(key))) throw new Error("Unknown state field");

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: http:; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>知己分析</title>
+  <link rel="stylesheet" href="/friend.css">
+  <script src="/friend-core.js" defer></script>
+  <script src="/friend-memory.js" defer></script>
+  <script src="/friend-run.js" defer></script>
+  <script src="/plugin-frame.js" defer></script>
+  <script src="/friend-scheme.js" defer></script>
+  <script src="/friend.js" defer></script>
+</head>
+<body>
+  <!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+  <!-- Modified 2026-10-13: host window of the plugin architecture; scheme pages run in a sandboxed frame. -->
+  <header class="fa-header">
+    <div class="fa-who">
+      <span id="faAvatar" class="fa-avatar" aria-hidden="true"></span>
+      <div class="fa-who-text">
+        <h1 id="faName">知己分析</h1>
+      </div>
+    </div>
+    <label class="fa-scheme" id="faSchemeLabel" hidden>
+      <span class="fa-visually-hidden">分析方案</span>
+      <select id="faScheme" aria-label="分析方案"></select>
+    </label>
+    <div class="fa-run">
+      <button type="button" id="faRunInfo" class="fa-run-info"></button>
+      <button type="button" id="faRunButton" class="fa-primary"></button>
+    </div>
+    <div class="fa-more">
+      <button type="button" id="faMoreButton" class="fa-plain" aria-haspopup="menu" aria-expanded="false">更多</button>
+      <div id="faMenu" class="fa-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-menu="settings">联系目标与自己的资料</button>
+        <button type="button" role="menuitem" data-menu="add-memory">手动新增记忆</button>
+        <button type="button" role="menuitem" data-menu="ignored">查看已忽略的记录</button>
+        <button type="button" role="menuitem" data-menu="rebuild">重新分析全部…</button>
+        <button type="button" role="menuitem" data-menu="clear-memory" class="fa-danger-text">清空这位联系人的记忆…</button>
+      </div>
+    </div>
+  </header>
+  <nav id="faTabs" class="fa-tabs" role="tablist" aria-label="知己分析栏目"></nav>
+  <div id="faTasks" class="fa-tasks" aria-live="polite"></div>
+  <main class="fa-main">
+    <section id="pageMemory" class="fa-page" role="tabpanel" hidden></section>
+    <section id="faSchemeFrame" class="fa-page fa-scheme-page" role="tabpanel" hidden></section>
+  </main>
+  <aside id="faSheet" class="fa-sheet" role="dialog" aria-modal="false" aria-labelledby="faSheetTitle" hidden>
+    <div class="fa-sheet-head">
+      <h2 id="faSheetTitle"></h2>
+      <button type="button" id="faSheetClose" class="fa-plain" aria-label="关闭">关闭</button>
+    </div>
+    <div id="faSheetBody" class="fa-sheet-body"></div>
+  </aside>
+  <div id="faMask" class="fa-mask" hidden>
+    <p id="faMaskText"></p>
+  </div>
+  <div id="faToast" class="fa-toast" role="status" hidden></div>
+</body>
+</html>

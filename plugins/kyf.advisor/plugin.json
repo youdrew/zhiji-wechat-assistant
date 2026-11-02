@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "id": "kyf.advisor",
+  "name": "聊天助手",
+  "version": "0.2.0",
+  "description": "依据当前好友的聊天资料进行独立讨论，管理助手模板、技能包和历史会话",
+  "author": "Know Your Friends",
+  "core": { "api": [1] },
+  "runtime": { "type": "python", "entry": "backend/main.py" },
+  "events": ["human.changed"],
+  "contributes": {
+    "settings": {
+      "schema": 1,
+      "description": "控制后续讨论直接加入的好友资料；保存后从下一个问题生效，已有讨论记录保留。联网方式在模型设置中统一配置。",
+      "groups": [{
+        "id": "context", "title": "讨论资料",
+        "fields": [
+          { "key": "includeMemories", "title": "使用关系记忆", "type": "boolean", "default": true,
+            "description": "加入已确认和待确认的关系记忆，并保留来源标记。关闭后，已有讨论中提及的内容仍会保留。" },
+          { "key": "includeObservations", "title": "使用用户观察", "type": "boolean", "default": true,
+            "description": "加入你填写的主观观察，始终标明它们是个人看法。" }
+        ]
+      }],
+      "links": [{ "label": "管理助手模板与技能", "nav": "repository" }]
+    },
+    "chatToolbar": [{ "id": "advisor", "label": "聊天助手", "page": "ui/panel.html" }],
+    "nav": [{ "id": "repository", "label": "助手仓库", "page": "ui/repository.html", "icon": "assistant" }]
+  }
+}
