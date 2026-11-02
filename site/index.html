@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="知己微信助手：回看聊天，整理关系记忆，准备更合适的回复。免费开源、本地优先的 Windows 桌面助手。">
+  <meta name="theme-color" content="#f7f6f2">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="知己微信助手 · 朋友，值得被认真记住。">
+  <meta property="og:description" content="回看对话，记住共同经历，准备下一次交流。免费开源的 Windows 微信桌面助手。">
+  <title>知己微信助手 · 朋友，值得被认真记住。</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header shell">
+    <a class="brand" href="#" aria-label="知己微信助手首页"><span class="brand-mark" aria-hidden="true">知</span><span>知己微信助手</span></a>
+    <nav aria-label="主导航"><a href="#gallery">界面与功能</a><a href="#data">数据与隐私</a><a class="nav-source" href="https://github.com/youdrew/zhiji-wechat-assistant" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a><a class="nav-download" href="#download">Windows 版 <span aria-hidden="true">↓</span></a></nav>
+  </header>
+
+  <main id="main">
+    <section class="hero shell" aria-labelledby="hero-heading">
+      <div><p class="eyebrow">回看 · 记得 · 理解</p><h1 id="hero-heading">朋友，值得被<br><em>认真记住。</em></h1></div>
+      <div class="hero-intro"><p>从日常对话，<br>到值得留下的共同经历。<br>让下一次相处，更有准备。</p><div class="actions"><a class="button primary" href="#download" data-download>Windows 安装包准备中 <span aria-hidden="true">↓</span></a><a class="text-link" href="#gallery">先看看界面 <span aria-hidden="true">↘</span></a></div><p class="micro">免费开源 · 一台 Windows 电脑即可运行<br>模型服务与 API Key 由你提供</p></div>
+    </section>
+
+    <section class="opening shell" aria-label="聊天与回复建议展示">
+      <figure class="feature-shot opening-shot"><button class="image-button" type="button" data-image="0" aria-label="放大查看聊天与回复建议界面"><img src="assets/chat-suggestions.png" width="1600" height="1000" alt="虚构好友邀请周末散步，聊天窗口展示三条可复制回复建议" fetchpriority="high"></button><figcaption><span class="shot-index">01 / 聊天与回复建议</span><span>每一条建议，都留给你自己决定。</span><span class="demo-note">演示数据 · 全部虚构</span></figcaption></figure>
+      <div class="opening-copy"><p class="small-label">从一次对话开始</p><h2>读懂上下文，<br>再找到自己的表达。</h2><p>回看单聊与群聊，按关键词和日期找回聊过的内容。需要时开启“分析与建议”，参考三条回复，再决定怎么说。</p><p class="quiet">回复可复制后自行使用，应用不会操作微信发送。</p></div>
+    </section>
+
+    <section class="gallery shell" id="gallery" aria-labelledby="gallery-heading">
+      <div class="section-heading"><p class="eyebrow">关于朋友，也关于自己</p><h2 id="gallery-heading">藏在聊天里的细节，<br>慢慢变得清晰。</h2><p>以下截图使用真实应用界面。人物、聊天、记忆与分析结果均为专门编写的虚构演示资料。</p></div>
+
+      <div class="scene-group">
+        <div class="scene-heading"><span class="chapter">I / 记得</span><h3>把细节，留给下一次相处。</h3><p>朋友的偏好、边界和共同经历，可以确认、编辑、删除，并回到原文核对。</p></div>
+        <div class="image-pair memory-pair">
+          <figure class="feature-shot"><button class="image-button" type="button" data-image="1" aria-label="放大查看关系记忆界面"><img src="assets/relationship-memories.png" width="1120" height="900" alt="关系记忆按经历、爱好、偏好与边界整理虚构好友资料" loading="lazy"></button><figcaption><span class="shot-index">02 / 关系记忆</span><span>记住朋友在意的事。</span></figcaption></figure>
+          <figure class="feature-shot offset"><button class="image-button" type="button" data-image="2" aria-label="放大查看好友概述界面"><img src="assets/friend-overview.png" width="1120" height="900" alt="好友概述展示虚构好友的近况、共同话题和下一次交流建议" loading="lazy"></button><figcaption><span class="shot-index">03 / 好友概述</span><span>下次见面，接着上次聊。</span></figcaption></figure>
+        </div>
+      </div>
+
+      <div class="scene-group">
+        <div class="scene-heading"><span class="chapter">II / 理解</span><h3>先想清楚，再回应。</h3><p>向聊天助手提问，整理讨论；也可以结合互动统计回看交流节奏。AI 的建议与推测，始终需要放回实际语境核对。</p></div>
+        <div class="image-pair assistant-pair">
+          <figure class="feature-shot"><button class="image-button" type="button" data-image="3" aria-label="放大查看聊天助手界面"><img src="assets/chat-assistant.png" width="1080" height="820" alt="聊天助手结合虚构对话，讨论如何自然地回应朋友" loading="lazy"></button><figcaption><span class="shot-index">04 / 聊天助手</span><span>向 AI 助手提问，把下一句话想清楚。</span></figcaption></figure>
+          <figure class="feature-shot offset"><button class="image-button" type="button" data-image="4" aria-label="放大查看互动统计界面"><img src="assets/interaction-trends.png" width="1120" height="1080" alt="互动统计以虚构数据展示交流频率和变化" loading="lazy"></button><figcaption><span class="shot-index">05 / 互动统计</span><span>回看交流节奏，保留自己的判断。</span></figcaption></figure>
+        </div>
+      </div>
+
+      <div class="scene-group">
+        <div class="scene-heading"><span class="chapter">III / 回看</span><h3>理解朋友，也回看自己。</h3><p>把工作、兴趣和关系里的经历整理成时间线，回看自己的表达与性格倾向，并核对相应的聊天依据。</p></div>
+        <div class="image-pair self-pair">
+          <figure class="feature-shot"><button class="image-button" type="button" data-image="5" aria-label="放大查看个人时间线界面"><img src="assets/self-timeline.png" width="1440" height="1000" alt="虚构个人时间线展示工作、兴趣和关系事件，以及聊天原文依据" loading="lazy"></button><figcaption><span class="shot-index">06 / 个人时间线</span><span>把零散的经历，连成自己的路。</span></figcaption></figure>
+          <figure class="feature-shot offset"><button class="image-button" type="button" data-image="6" aria-label="放大查看自我剖析界面"><img src="assets/self-personality.png" width="1440" height="1000" alt="自我剖析使用虚构内容展示性格倾向、变化和分析依据" loading="lazy"></button><figcaption><span class="shot-index">07 / 自我剖析</span><span>看到倾向，也看到依据与不确定。</span></figcaption></figure>
+        </div>
+      </div>
+
+      <div class="scene-group model-group">
+        <div class="scene-heading"><span class="chapter">IV / 选择</span><h3>模型服务，由你来选择。</h3><p>连接你选择的云端、本机或局域网模型服务，按用途设置模型，查看用量与调用记录。软件不附带模型账号或 API Key。</p></div>
+        <figure class="feature-shot model-shot"><button class="image-button" type="button" data-image="7" aria-label="放大查看模型设置界面"><img src="assets/model-settings.png" width="1080" height="900" alt="模型设置展示虚构配置，不含真实服务凭据" loading="lazy"></button><figcaption><span class="shot-index">08 / 模型设置</span><span>配置自己的模型服务。</span><span class="demo-note">演示配置 · 全部虚构</span></figcaption></figure>
+      </div>
+      <p class="gallery-disclosure">截图中的回复与分析文案是虚构演示，不代表模型实际效果。点击任意图片可查看原图。</p>
+    </section>
+
+    <section class="data-section shell" id="data" aria-labelledby="data-heading">
+      <div><p class="eyebrow">本地优先，边界清楚</p><h2 id="data-heading">资料保存在本机。<br>模型服务，由你配置。</h2></div>
+      <div class="data-details"><div><h3>留在电脑上的资料</h3><p>聊天资料、关系记忆、分析结果与个人设置保存在本机。你可以核对和管理这些内容。</p></div><div><h3>使用 AI 功能时</h3><p>必要的文本、摘要或图片会发送到你配置的模型服务。本地优先不等于始终离线。</p></div><div><h3>主动开启搜索时</h3><p>聊天助手默认关闭外部搜索。主动启用搜索后，搜索关键词会发送到所配置的搜索源。</p></div></div>
+    </section>
+
+    <section class="faq-section shell" aria-labelledby="faq-heading"><div><p class="eyebrow">开始之前</p><h2 id="faq-heading">几个你可能<br>关心的问题。</h2></div><div class="faq-list">
+      <details><summary>软件免费吗？</summary><p>软件免费开源。模型服务与所需 API Key 由你提供，服务费用取决于你的选择。项目源码采用 Apache-2.0，第三方组件保留各自许可。</p></details>
+      <details><summary>会自动发送微信消息吗？</summary><p>不会。回复建议可以复制，由你自行决定是否使用。当前版本不操作微信输入或发送。</p></details>
+      <details><summary>需要什么电脑和微信版本？</summary><p>面向 Windows 10/11 x64 和 Windows 微信 4.x。正式安装包自带 Node.js、Python、FFmpeg 等运行环境；AI 功能仍需配置自己的模型服务。具体兼容范围以发行说明为准。</p></details>
+      <details><summary>可以把聊天记录发给你们排查问题吗？</summary><p>反馈问题前，请先移除聊天正文、联系人、账号标识、凭据与本机配置。优先提供虚构的最小复现，不上传真实聊天数据库或私人运行资料。</p></details>
+    </div></section>
+
+    <section class="download-section" id="download" aria-labelledby="download-heading"><div class="shell download-inner"><p class="eyebrow">从下一次认真聊天开始</p><h2 id="download-heading">给相处，多一点准备。</h2><p>知己微信助手 · Windows 桌面版</p><div class="actions"><a class="button primary" href="https://github.com/youdrew/zhiji-wechat-assistant/releases" data-download>Windows 安装包准备中 <span aria-hidden="true">↓</span></a><a class="text-link" href="https://github.com/youdrew/zhiji-wechat-assistant/releases" target="_blank" rel="noopener noreferrer" data-release-notes>查看发行动态 ↗</a></div><p class="release-meta" data-release-meta>安装包完成核验后，将在这里提供直接下载。</p><div class="checksum" hidden><span>SHA-256</span><code data-sha256></code><button type="button" class="copy-checksum">复制</button><span class="sr-only" data-copy-status role="status"></span></div><p class="signing-note" data-signing-note hidden></p><noscript><p>当前发行与 Windows 安装包请见 <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases">GitHub Releases</a>。</p></noscript></div></section>
+  </main>
+
+  <footer class="site-footer shell"><a class="brand" href="#"><span class="brand-mark" aria-hidden="true">知</span><span>知己微信助手</span></a><div><a href="https://github.com/youdrew/zhiji-wechat-assistant" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://github.com/youdrew/zhiji-wechat-assistant/issues" target="_blank" rel="noopener noreferrer">问题反馈</a><a href="https://eugenepage.com/" target="_blank" rel="noopener noreferrer">作者博客</a></div><p>基于 <a href="https://github.com/tswawa/WechatVibe" target="_blank" rel="noopener noreferrer">WechatVibe</a> 独立开发。<a href="https://github.com/youdrew/zhiji-wechat-assistant/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">Apache-2.0</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">第三方声明</a></p></footer>
+
+  <dialog class="image-viewer" aria-labelledby="viewer-title"><header><div><h2 id="viewer-title"></h2><p>演示数据 · 全部虚构</p></div><button type="button" class="viewer-close" aria-label="关闭大图">关闭 <span aria-hidden="true">×</span></button></header><div class="viewer-image"><img alt=""></div><footer><button type="button" class="viewer-previous" aria-label="上一张截图">← 上一张</button><span class="viewer-count" aria-live="polite"></span><button type="button" class="viewer-next" aria-label="下一张截图">下一张 →</button></footer></dialog>
+</body>
+</html>
