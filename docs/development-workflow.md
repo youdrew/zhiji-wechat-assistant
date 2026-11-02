@@ -58,6 +58,8 @@ npm.cmd test
 
 2.0.0 是本项目首个免费开源安装版本。继承的上游标签用于溯源，不代表知己微信助手已发布同名产品版本。
 
+构建前先完成 [Microsoft 应用私有运行库准备](windows-runtime-distribution.md#源码构建前准备)，固定官方 x64 CRT 输入；正常构建不安装系统级 Redistributable。
+
 `npm.cmd run build:installer` 从全新的白名单 staging 构建 Windows x64 用户级安装器，内置运行环境；安装器只删除其安装的文件，运行后生成的本机资料保留在原目录。产物保存在被忽略的 `.local/portable-builds/`，不得提交到代码仓库。版本由 `package.json` 与 `package-lock.json` 同步维护。
 
 首版明确关闭应用内自动更新，后续到[官方发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases)下载并重装；自有更新签名、自动升级与回退链路需另行验收。公开发行前核对产物 SHA-256、程序签名状态、第三方二进制及对应源码交付，并完成安装、重装、卸载保留数据的检查。应用标识、内部产物名与数据目录继续保持兼容。构建成功不等于已经上传或发布。
