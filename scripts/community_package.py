@@ -28,6 +28,12 @@ PLUGIN_JSON_FILES = frozenset({"plugins/" + name + "/plugin.json" for name in CO
     "plugins/kyf.self-analysis/backend/ipip50-terms.json",
     "plugins/kyf.self-analysis/backend/worldview-terms.json",
 })
+EXCLUDED_SOURCE_TREES = (("docs",), ("benchmarks", "self-analysis-chat", "results"))
+
+
+def excluded_source_path(relative):
+    parts = tuple(part.casefold() for part in PurePosixPath(str(relative).replace("\\", "/")).parts)
+    return any(parts[:len(tree)] == tree for tree in EXCLUDED_SOURCE_TREES)
 
 
 def source_revision(root: Path, *, require_clean=False):
@@ -42,7 +48,12 @@ def source_revision(root: Path, *, require_clean=False):
         dirty = bool(subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
                                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                     timeout=30).stdout.strip())
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        if require_clean:
+            tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], check=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30).stdout.decode("utf-8")
+            if any(excluded_source_path(name) for name in tracked.split("\0") if name):
+                raise ValueError("a formal community build cannot track project docs or generated benchmark results")
+    except (OSError, UnicodeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         raise ValueError("cannot determine the Git source revision") from None
     if len(sha) != 40 or any(char not in "0123456789abcdef" for char in sha):
         raise ValueError("invalid Git source revision")
@@ -66,6 +77,8 @@ def check_community_path(relative):
     parts = tuple(part.casefold() for part in path.parts)
     if not parts:
         return
+    if excluded_source_path(path):
+        raise ValueError(f"community package forbids project docs and generated benchmark results: {path}")
     if ("native-sender" in parts or "kyf.wechat-send" in parts or
             any("wechat-send" in part or "wechat-sdk" in part or "wechatauto.sdk" in part
                 for part in parts)):

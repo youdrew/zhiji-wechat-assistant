@@ -39,7 +39,6 @@
 - 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #31](https://github.com/tswawa/WechatVibe/pull/31) 提供累计分析状态异常的定位、最小复现和回归测试，帮助修复情绪证据缺失导致的分析中断，并提供读取问题的独立核对与测试反馈。
 - 感谢 [Berge520](https://github.com/Berge520) 通过 [Issue #24](https://github.com/tswawa/WechatVibe/issues/24) 反馈会话管理与分析恢复问题。
 
-详细说明见 [1.3.0 发布说明](docs/releases/1.3.0.md)。
 
 ## [1.2.4](https://github.com/tswawa/WechatVibe/releases/tag/v1.2.4)
 
@@ -121,7 +120,7 @@
 
 感谢 [LianYu-Ya](https://github.com/LianYu-Ya) 在 [Issue #14](https://github.com/tswawa/WechatVibe/issues/14) 中反馈自部署模型批量标签格式错误、只返回一条的问题。
 
-本版采纳了与当前流程兼容的改进；详细使用及升级说明见 [1.2.3 发布说明](docs/releases/1.2.3.md)。
+本版采纳了与当前流程兼容的改进。
 
 ## [1.2.2](https://github.com/tswawa/WechatVibe/releases/tag/v1.2.2)
 

@@ -45,6 +45,7 @@ CURRENT_TASKS.md
 SOURCE_MANIFEST.json
 tools/sync-source.ps1
 
-# Agent coordination notes between sessions; local only.
-docs/loop/
+# Project documents and generated measurements stay local.
+/docs/
+/benchmarks/self-analysis-chat/results/
 .mcp.json
