@@ -187,6 +187,15 @@ class BuildReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "community package forbids"):
                     builder._check_private_path(Path("resources/client") / relative, directory=False)
 
+    def test_final_scan_rejects_project_docs_and_generated_measurements(self):
+        for relative in ("docs", "Docs", "benchmarks/self-analysis-chat/results"):
+            with self.subTest(path=relative):
+                with self.assertRaisesRegex(ValueError, "project docs and generated benchmark results"):
+                    builder._check_private_path(Path("resources/client") / relative, directory=True)
+                with self.assertRaisesRegex(ValueError, "project docs and generated benchmark results"):
+                    builder._check_private_path(Path("resources/client") / relative / "synthetic.txt", directory=False)
+        builder._check_private_path(Path("resources/client/runtime/ffmpeg/docs/license.txt"), directory=False)
+
     def test_reviewed_community_plugin_and_reader_directories_survive_final_package_scan(self):
         plugin = "resources/client/plugins/kyf.mcp/"
         self.add_file(plugin + "plugin.json", b"{}")

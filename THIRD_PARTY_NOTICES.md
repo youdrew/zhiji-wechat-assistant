@@ -41,21 +41,25 @@ Agent 使用 OpenCode `v1.18.34` 的官方 SDK 和独立 Windows 引擎。来源
 | TypeScript / `@types/node` | 7.0.2 / 26.6.2 | Apache-2.0 / MIT；仅开发期使用，安装包内许可证 |
 | Node.js | 24.11.1 | Node.js 及其第三方条款；源码保留 [完整许可证](licenses/node-LICENSE-24.11.1.txt)，便携版复制到 `resources/client/runtime/node/LICENSE` |
 | Python | 3.14 | PSF License；便携版复制基础运行时的 `LICENSE.txt` |
-| Microsoft Visual C++ Runtime | 14.44.35211.0，Windows x64 release | 微软专有组件；保留[原始运行库许可](licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf)及[独立声明](licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md)，不适用本项目 Apache-2.0；来源与应用私有部署见[交付说明](docs/windows-runtime-distribution.md) |
+| Microsoft Visual C++ Runtime | 14.44.35211.0，Windows x64 release | 微软专有组件；保留[原始运行库许可](licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf)及[独立声明](licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md)，不适用本项目 Apache-2.0；固定来源与文件哈希见 [msvc-runtime.json](scripts/msvc-runtime.json) |
 | `wechatauto-replica` | 1.2.2.6 | Apache-2.0；安装发行包 `wechatauto_replica-1.2.2.6.dist-info/licenses/LICENSE` |
 
 `pywin32` wheel 随附的 `pythonwin/mfc140u.dll`（14.44.35211.0）同属 Microsoft release 组件，按上述微软条款提供；`pywin32` 自身的 PSF 许可不替代该 DLL 的微软条款。[VS2022 REDIST 列表](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)列明 MFC release 再分发范围。
 
 完整 Python 版本集合见 [python-requirements.lock.txt](python-requirements.lock.txt)，Node 直接及传递版本见 [package-lock.json](package-lock.json)。读取层的来源说明见 [native-reader/THIRD_PARTY_NOTICES.md](native-reader/THIRD_PARTY_NOTICES.md)。便携构建只复制所需的 Python 包与 Node 包闭包，并保留包内实际附带的许可文件；它不复制整个开发环境。
 
-`wechatauto-replica` 声明的 `winsdk`、`pyautogui` 未安装，属于未启用的可选 GUI 路径；读取依赖与来源声明继续保留。免费版不含微信发送插件、发送 SDK 或执行器，不会操作微信发送。当前生成式分析使用用户配置的模型服务，所需聊天片段及有限媒体图像会发送到该地址；旧 Laya 分析已停用，详见[媒体说明](docs/chat-media.md)。
+`wechatauto-replica` 声明的 `winsdk`、`pyautogui` 未安装，属于未启用的可选 GUI 路径；读取依赖与来源声明继续保留。免费版不含微信发送插件、发送 SDK 或执行器，不会操作微信发送。当前生成式分析使用用户配置的模型服务，所需聊天片段及有限媒体图像会发送到该地址；旧 Laya 分析已停用。
+
+发行构建将固定的微软 release DLL 放入应用自己的 Node、Python、判断运行时及原生模块目录，不安装系统级 Redistributable。开发者用 `scripts/setup-msvc-runtime.py` 从具备相应许可的 VS2022 Community CRT，或显式提供的同一官方静态解包目录准备输入；只接受清单中的版本和哈希。原始 RTF 单独在安装时展示，项目 Apache-2.0 不替代微软组件条款。
 
 ## 本地媒体解码（Know Your Friends，2026-10-10 新增）
 
 - `Pillow 12.0.0` 用于图像缩放，MIT-CMU，保留发行包中的许可。
-- `opencv-python 4.13.0.90` 是既有锁定依赖，外部聊天导入使用其 `cv2` 接口读取录屏和提取证据画面。发行元数据声明 Apache 2.0；实际发行包中，OpenCV 二进制采用 Apache-2.0，Python 包装器的 `LICENSE.txt` 为 MIT。须保留 `opencv_python-4.13.0.90.dist-info/LICENSE.txt` 与 `opencv_python-4.13.0.90.dist-info/LICENSE-3RD-PARTY.txt`；后者还包含二进制所用其他组件的条款，不能全部用包装器或本项目许可证替代。上述文件名与内容已核对本机安装发行包，版本记录见 [python-requirements.lock.txt](python-requirements.lock.txt)。 其中 `opencv_videoio_ffmpeg4130_64.dll` 有独立 FFmpeg／编解码依赖；官方对应源归档、脚本与许可闭包按精确提交和哈希随包提供，见[FFmpeg 与 OpenCV 插件交付](docs/ffmpeg-source-distribution.md#opencv-的独立-ffmpeg-插件)。
+- `opencv-python 4.13.0.90` 是既有锁定依赖，外部聊天导入使用其 `cv2` 接口读取录屏和提取证据画面。发行元数据声明 Apache 2.0；实际发行包中，OpenCV 二进制采用 Apache-2.0，Python 包装器的 `LICENSE.txt` 为 MIT。须保留 `opencv_python-4.13.0.90.dist-info/LICENSE.txt` 与 `opencv_python-4.13.0.90.dist-info/LICENSE-3RD-PARTY.txt`；后者还包含二进制所用其他组件的条款，不能全部用包装器或本项目许可证替代。上述文件名与内容已核对本机安装发行包，版本记录见 [python-requirements.lock.txt](python-requirements.lock.txt)。其中 `opencv_videoio_ffmpeg4130_64.dll` 有独立 FFmpeg／编解码依赖，官方对应源归档、脚本与许可闭包按精确提交和哈希随包提供，见 [opencv-ffmpeg-runtime.json](scripts/opencv-ffmpeg-runtime.json)。
 - [`silk-python 0.2.8`](https://pypi.org/project/silk-python/0.2.8/) 提供 `pysilk` 流式音频解码接口；发行元数据声明 BSD，包装项目来源为 [synodriver/pysilk](https://github.com/synodriver/pysilk)。其微信 SILK 适配来源为 `kn007/silk-v3-decoder`，上游子模块固定提交 `507be6bca8ce1fb977a061481f1d79e8c610e309`；MIT 原文保留在 [silk-v3-decoder-MIT.txt](licenses/silk-v3-decoder-MIT.txt)，Skype SILK 源码中的版权和 BSD 条款保留在 [Skype-SILK-BSD.txt](licenses/Skype-SILK-BSD.txt)。包装发行包未附独立 LICENSE，发布时仍须核对上游完整授权与二进制组成，不以本项目 Apache-2.0 覆盖第三方代码。
-- [`imageio-ffmpeg 0.6.0`](https://github.com/imageio/imageio-ffmpeg/tree/v0.6.0) 是 BSD-2-Clause 包装器，条款见 [imageio-ffmpeg-BSD.txt](licenses/imageio-ffmpeg-BSD.txt)。免费发行包不复制其 wheel 内的 Gyan GPL 程序；改用本项目从官方签名 FFmpeg 7.1 源码编译的独立 LGPL 2.1-or-later 程序。完整条款见 [FFmpeg-LGPL-2.1.txt](licenses/FFmpeg-LGPL-2.1.txt)，固定源码、二进制与构建脚本及运行库许可随包交付，准确身份与文件位置见 [FFmpeg 交付说明](docs/ffmpeg-source-distribution.md)。包装器的安装副本仅调整程序映射并附修改记录。源码开发者自行安装的原 wheel 仍按其实际程序与各自许可使用，不等同于本项目发行包。
+- [`imageio-ffmpeg 0.6.0`](https://github.com/imageio/imageio-ffmpeg/tree/v0.6.0) 是 BSD-2-Clause 包装器，条款见 [imageio-ffmpeg-BSD.txt](licenses/imageio-ffmpeg-BSD.txt)。免费发行包不复制其 wheel 内的 Gyan GPL 程序；改用本项目从官方签名 FFmpeg 7.1 源码编译的独立 LGPL 2.1-or-later 程序。完整条款见 [FFmpeg-LGPL-2.1.txt](licenses/FFmpeg-LGPL-2.1.txt)，固定身份见 [ffmpeg-runtime.json](scripts/ffmpeg-runtime.json)。包装器的安装副本仅调整程序映射并附修改记录。源码开发者自行安装的原 wheel 仍按其实际程序与各自许可使用，不等同于本项目发行包。
+
+FFmpeg CLI 的精确源码、分离签名、公钥、构建脚本、配置输出及运行库许可随安装包位于 `resources/client/runtime/ffmpeg/`；源码仓库也保留 [BUILD-INFO.md](https://github.com/youdrew/zhiji-wechat-assistant/blob/main/scripts/ffmpeg-runtime-resources/BUILD-INFO.md)。OpenCV 插件的独立对应源码与构建材料位于 `resources/client/runtime/ffmpeg-opencv/`，来源说明见 [SOURCES.md](https://github.com/youdrew/zhiji-wechat-assistant/blob/main/scripts/opencv-ffmpeg-runtime-resources/SOURCES.md)，不以 CLI 源码替代该插件来源。发行者先按固定配方构建 CLI，再使用 `scripts/setup-media-runtimes.py --ffmpeg-exe <程序> --ffmpeg-source <原始源码归档>` 准备按哈希验证的交付闭包。第三方源归档内部的文档和原始许可保留，项目本机文档不随包交付。
 
 `bridge/media_keys.py` 的限定配置指针读取方法适配自 [julibeian/wechat-local-exporter](https://github.com/julibeian/wechat-local-exporter) 1.6.0 的 `src/wechat_exporter/media.py`；表情缓存的完整 UIN 读取与密钥派生规则参考其 [1.6.1 源码](https://github.com/julibeian/wechat-local-exporter/blob/50b79147a16f3d3510c07bc54da1bba5387152a9/src/wechat_exporter/media.py)。原作者 Copyright (c) 2026 julibeian，MIT 原文保留在 [wechat-exporter-MIT.txt](licenses/wechat-exporter-MIT.txt)。适配增加当前账号和进程归属验证、读取范围限制及内存缓存；运行时不依赖旧导出工程。
 
@@ -65,11 +69,11 @@ Agent 使用 OpenCode `v1.18.34` 的官方 SDK 和独立 Windows 引擎。来源
 
 自我剖析使用的 IPIP 题项由[上游许可说明](https://ipip.ori.org/newPermission.htm)置于公有领域，可用于商业或非商业目的。本项目的译文、检索提示与基于聊天的适配不代表上游验证了这些使用方式。8values 的固定来源、MIT 许可、翻译和计分适配见下文。
 
-ECR-RS 官方页面允许翻译，但本次未确认将其题目随软件转载、再许可或商业分发的授权；首版暂不交付该问卷分支。不可将本项目 Apache-2.0 许可覆盖到授权未闭环的题库。具体来源与复核依据见[量表来源与许可](docs/scale-sources-and-permissions.md)。
+[ECR-RS 作者页面](https://labs.psychology.illinois.edu/~rcfraley/measures/relstructures.htm)欢迎翻译，但本次未确认将其题目随软件转载、再许可或商业分发的授权；首版暂不交付该问卷分支。不可将本项目 Apache-2.0 许可覆盖到授权未闭环的题库。
 
 ## README 演示头像
 
-README 两张演示图中的头像来自 Lisa Wischofsky 的 [Adventurer](https://www.dicebear.com/styles/adventurer/) 插画，采用 [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/)（CC BY 4.0）。演示通过 DiceBear 组合角色、调整配色，并在应用截图中缩放展示。人物、对白及分析数值为虚构演示；头像素材不适用本项目代码的 Apache-2.0 许可，继续分发时须保留上述署名和许可说明。
+历史 README 演示图中的头像来自 Lisa Wischofsky 的 [Adventurer](https://www.dicebear.com/styles/adventurer/) 插画，采用 [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/)（CC BY 4.0）。演示通过 DiceBear 组合角色、调整配色，并在应用截图中缩放展示。人物、对白及分析数值为虚构演示；本版不再附带这些图片，历史素材仍保留原署名与许可，不适用本项目代码的 Apache-2.0。
 
 ## ONNX Runtime 的 MIT 许可证
 
@@ -117,3 +121,26 @@ from 8values is generated.
 
 Copyright (c) 2020 8values. Distributed under the MIT License; the complete notice is retained
 in [licenses/8values-LICENSE.txt](licenses/8values-LICENSE.txt).
+
+## 上游贡献者署名
+
+<details>
+<summary>继承的上游贡献者署名</summary>
+
+以下保留上游 README 的具体贡献说明。链接中的 Issue 和 PR 均属于 WechatVibe；其中“本版”指所引用的上游版本，不表示这些贡献者参与了知己微信助手的独立维护。
+
+- 感谢 [china-luo](https://github.com/china-luo) 在 [Issue #1](https://github.com/tswawa/WechatVibe/issues/1) 中反馈 Windows 微信 4.1.15.13 的聊天记录读取异常，并提出对非字符串消息类型进行兼容转换的建议。
+- 感谢 [Li Xiang](https://github.com/Misaka1008611) 反馈微信数据库密钥不完整、反复读取的问题，并提供排查信息，帮助定位读取兼容性问题。
+- 感谢 [luo785859020（小闹一起）](https://github.com/luo785859020) 通过 [PR #3](https://github.com/tswawa/WechatVibe/pull/3) 和 [PR #4](https://github.com/tswawa/WechatVibe/pull/4) 改进源码模型下载、Python 环境选择与验证流程，并完成后端职责分层。
+- 感谢 [morticuke](https://github.com/morticuke) 在 [Issue #5](https://github.com/tswawa/WechatVibe/issues/5) 中提供 Windows MIME 映射异常的排查过程和修复建议。
+- 感谢 [Dl1447（Geekline）](https://github.com/Dl1447) 通过 [PR #12](https://github.com/tswawa/WechatVibe/pull/12) 修复选中首个会话后无法继续添加会话的问题。
+- 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #13](https://github.com/tswawa/WechatVibe/pull/13) 改进 API 消息标签的批量结果对应。
+- 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #10](https://github.com/tswawa/WechatVibe/pull/10)、[PR #18](https://github.com/tswawa/WechatVibe/pull/18)、[PR #19](https://github.com/tswawa/WechatVibe/pull/19)、[PR #20](https://github.com/tswawa/WechatVibe/pull/20) 和 [PR #21](https://github.com/tswawa/WechatVibe/pull/21) 加入本地多路并行分析、过滤服务号与系统会话、一键添加全部会话、只读的整账号分析进度与耗时，以及后台分析开关。
+- 感谢 [Ch1cken-1145（Ch1cken_#）](https://github.com/Ch1cken-1145) 通过 [PR #16](https://github.com/tswawa/WechatVibe/pull/16) 加入手动设置微信聊天记录路径的功能。
+- 感谢 [LianYu-Ya](https://github.com/LianYu-Ya) 在 [Issue #14](https://github.com/tswawa/WechatVibe/issues/14) 中反馈自部署模型批量标签格式错误、只返回一条的问题。
+- 感谢 [nizitao](https://github.com/nizitao) 通过 [PR #26](https://github.com/tswawa/WechatVibe/pull/26) 贡献重复分词优化，并在 [PR #33](https://github.com/tswawa/WechatVibe/pull/33) 中继续整理改进建议。本版采用此前 #26 中的编码缓存、共享状态编码及等价文本处理，减少重复分词计算。
+- 感谢 [wzzzzzzzh](https://github.com/wzzzzzzzh) 通过 [PR #27](https://github.com/tswawa/WechatVibe/pull/27)、[PR #28](https://github.com/tswawa/WechatVibe/pull/28)、[Issue #30](https://github.com/tswawa/WechatVibe/issues/30) 和 [PR #32](https://github.com/tswawa/WechatVibe/pull/32) 贡献换行整理、账号查询提速及读取诊断。本版以等价实现采用扫描预算调整方案，改善部分较大微信进程因旧预算不足而持续未就绪的问题。
+- 感谢 [silicon-sbt](https://github.com/silicon-sbt) 通过 [PR #31](https://github.com/tswawa/WechatVibe/pull/31) 提供累计分析状态异常的定位、最小复现和回归测试，帮助修复情绪证据缺失导致的分析中断，并提供读取问题的独立核对与测试反馈。
+- 感谢 [Berge520](https://github.com/Berge520) 通过 [Issue #24](https://github.com/tswawa/WechatVibe/issues/24) 反馈会话管理与分析恢复问题。
+
+</details>

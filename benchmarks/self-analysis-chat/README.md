@@ -1,6 +1,6 @@
 # 中文私聊情境检索 benchmark
 
-固定中文聊天合成集，对比 BGE-small-zh-v1.5、BGE-base-zh-v1.5、Qwen3-Embedding-0.6B 的词项、纯语义与混合检索。最终结果见 `docs/self-analysis-benchmark-2026-10-18.md`。
+固定中文聊天合成集及评测脚本，对比 BGE-small-zh-v1.5、BGE-base-zh-v1.5、Qwen3-Embedding-0.6B 的词项、纯语义与混合检索。测量结果在运行者本机生成。
 
 ## 评测对象
 
@@ -45,7 +45,7 @@ python benchmarks/self-analysis-chat/memory.py
 
 内存采集包括完整的受控进程树与 Windows 虚拟环境启动器/控制台辅助进程。首版仅采 `Popen.pid` 漏掉实际 Python 子进程，已废弃并重测；[measurement-amendments.json](measurement-amendments.json)记录唯一测量修复的前后哈希。原 `dataset-lock.json` 保留评分前源码身份，该修复不改变数据、检索成绩、编码性能或决策规则。核验 `memory.py` 时应同时核对修订记录，其余锁定源码保持一致。
 
-本次可核对结果保存在 [results/](results/)，包括完整指标、逐查询排名、配对差异、延迟、内存、扫描与运行清单。模型权重、原始向量及逐批日志留在 `.local/`。
+生成的指标、逐查询排名、延迟、内存和运行清单可能包含机器环境，`results/` 已列入 Git 忽略与公开构建排除范围，不能提交。模型权重、原始向量及逐批日志同样留在本机 `.local/`。
 
 ## 文件
 
