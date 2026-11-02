@@ -104,6 +104,11 @@ def render_uninstall_include(files: list[str]) -> str:
 
 
 def installer_config(generated: dict, output: Path, include: Path) -> dict:
+    from msvc_runtime import specification
+    license_path = ROOT / 'licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf'
+    license_row = next(row for row in specification(ROOT)['files'] if row['name'] == license_path.name)
+    if license_path.stat().st_size != license_row['bytes'] or clean.digest(license_path) != license_row['sha256']:
+        raise ValueError('Microsoft runtime license differs from the pinned original RTF')
     config = json.loads(json.dumps(generated))
     if (config.get('appId') != 'com.local.knowyourfriends.real-client' or
             config.get('extraMetadata', {}).get('name') != 'know-your-friends' or
@@ -129,6 +134,7 @@ def installer_config(generated: dict, output: Path, include: Path) -> dict:
         'shortcutName': '知己微信助手',
         'artifactName': ARTIFACT,
         'include': str(include),
+        'license': str(ROOT / 'licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf'),
     }
     return config
 

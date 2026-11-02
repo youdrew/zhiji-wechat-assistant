@@ -59,11 +59,18 @@ def specification(root=ROOT):
     return value
 
 
-def checked_runtime(folder, spec):
+def checked_runtime(folder, spec, *, additional_files=()):
     folder = Path(folder)
     if not folder.is_dir() or linked(folder):
         raise ValueError("judge runtime directory is missing or linked")
     expected = {row["name"]: row for row in spec["files"]}
+    for row in additional_files:
+        if (not isinstance(row, dict) or row.get("name") in expected or
+                not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", row.get("name", "")) or
+                type(row.get("bytes")) is not int or row["bytes"] <= 0 or
+                not re.fullmatch(r"[a-f0-9]{64}", row.get("sha256", ""))):
+            raise ValueError("invalid additional judge runtime dependency")
+        expected[row["name"]] = row
     found = {item.name: item for item in folder.iterdir()}
     if set(found) != set(expected) | {"manifest.json"} or any(not item.is_file() or linked(item) for item in found.values()):
         raise ValueError("judge runtime inventory differs")

@@ -73,6 +73,7 @@ class RetrievalRuntimeGateTests(unittest.TestCase):
             "stage_python_stdlib": {"version": "3.14"}, "stage_python_packages": {"packages": []},
             "stage_node_runtime": {"version": "v24.11.1", "license": "fixture"},
             "stage_node_packages": {"packages": []}, "verify_staged_sdk_imports": None,
+            "stage_msvc_dependencies": {"version": "synthetic"},
             "verify_staged_reader_imports": None,
             "verify_staged_ffmpeg_imports": None,
             "verify_staged_user_site_disabled": None,
@@ -106,8 +107,8 @@ class RetrievalRuntimeGateTests(unittest.TestCase):
     def test_successful_gate_runs_after_dependency_copy_and_before_manifest(self):
         calls = self.prepare_main(lambda: None)
         self.assertEqual(stage.main(["--output", str(self.client)]), 0)
-        self.assertEqual(calls[:10], ["stage_python_stdlib", "stage_python_packages", "stage_node_runtime",
-                                     "stage_node_packages", "verify_staged_sdk_imports",
+        self.assertEqual(calls[:11], ["stage_python_stdlib", "stage_python_packages", "stage_node_runtime",
+                                     "stage_node_packages", "stage_msvc_dependencies", "verify_staged_sdk_imports",
                                      "verify_staged_retrieval_imports", "verify_staged_reader_imports", "verify_staged_ffmpeg_imports", "verify_staged_user_site_disabled",
                                      "stage_advisor_engine"])
         self.assertTrue((self.root / "runtime-manifest.json").is_file())

@@ -41,7 +41,10 @@ Agent 使用 OpenCode `v1.18.34` 的官方 SDK 和独立 Windows 引擎。来源
 | TypeScript / `@types/node` | 7.0.2 / 26.6.2 | Apache-2.0 / MIT；仅开发期使用，安装包内许可证 |
 | Node.js | 24.11.1 | Node.js 及其第三方条款；源码保留 [完整许可证](licenses/node-LICENSE-24.11.1.txt)，便携版复制到 `resources/client/runtime/node/LICENSE` |
 | Python | 3.14 | PSF License；便携版复制基础运行时的 `LICENSE.txt` |
+| Microsoft Visual C++ Runtime | 14.44.35211.0，Windows x64 release | 微软专有组件；保留[原始运行库许可](licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf)及[独立声明](licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md)，不适用本项目 Apache-2.0；来源与应用私有部署见[交付说明](docs/windows-runtime-distribution.md) |
 | `wechatauto-replica` | 1.2.2.6 | Apache-2.0；安装发行包 `wechatauto_replica-1.2.2.6.dist-info/licenses/LICENSE` |
+
+`pywin32` wheel 随附的 `pythonwin/mfc140u.dll`（14.44.35211.0）同属 Microsoft release 组件，按上述微软条款提供；`pywin32` 自身的 PSF 许可不替代该 DLL 的微软条款。[VS2022 REDIST 列表](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)列明 MFC release 再分发范围。
 
 完整 Python 版本集合见 [python-requirements.lock.txt](python-requirements.lock.txt)，Node 直接及传递版本见 [package-lock.json](package-lock.json)。读取层的来源说明见 [native-reader/THIRD_PARTY_NOTICES.md](native-reader/THIRD_PARTY_NOTICES.md)。便携构建只复制所需的 Python 包与 Node 包闭包，并保留包内实际附带的许可文件；它不复制整个开发环境。
 
