@@ -1,6 +1,6 @@
 {
   "name": "know-your-friends",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "type": "module",
   "description": "知己微信助手 · Zhiji WeChat Assistant 本地优先的微信聊天理解与关系记忆助手",
