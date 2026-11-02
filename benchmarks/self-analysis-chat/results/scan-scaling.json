@@ -1,0 +1,1109 @@
+[
+  {
+    "modelId": "BAAI/bge-small-zh-v1.5",
+    "dimensions": 512,
+    "size": 480,
+    "sqlitePopulateMs": 13.249100011307746,
+    "databaseBytes": 2183168,
+    "peakRssBytes": 51826688,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 2.4474999809172004,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 2.480100025422871,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 2.365699998335913,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 2.2453000128734857,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 2.433199988445267,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 2.5070999981835485,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 2.2379999863915145,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 2.3092000046744943,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 2.3024000111036003,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 2.2566999832633883,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 2.527299977373332,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 2.3467999999411404,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 2.2819000005256385,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 2.3469999723602086,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 2.195999986724928,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 2.2000999888405204,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "BAAI/bge-small-zh-v1.5",
+    "dimensions": 512,
+    "size": 5000,
+    "sqlitePopulateMs": 122.14309998671524,
+    "databaseBytes": 21716992,
+    "peakRssBytes": 54304768,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 27.8956999827642,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 26.985000004060566,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 27.000500005669892,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 25.410200003534555,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 25.8138999924995,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 25.01849998952821,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 26.468099997146055,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 26.848799985600635,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 26.07189997797832,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 26.827900001080707,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 25.08659998420626,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 25.786199985304847,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 25.452899979427457,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 25.986399996327236,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 25.398600002517924,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 28.1222999910824,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "BAAI/bge-small-zh-v1.5",
+    "dimensions": 512,
+    "size": 50000,
+    "sqlitePopulateMs": 1360.9309000021312,
+    "databaseBytes": 216752128,
+    "peakRssBytes": 54358016,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 276.01099997991696,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 266.71369999530725,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 272.38260000012815,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 270.5204999947455,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 279.2747000057716,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 267.7055000094697,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 268.63109998521395,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 278.3789999957662,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 272.09479999146424,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 276.12880000378937,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 291.3929999922402,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 276.72109997365624,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 339.18380000977777,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 299.45689998567104,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 290.13989999657497,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 264.55900000291876,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "BAAI/bge-base-zh-v1.5",
+    "dimensions": 768,
+    "size": 480,
+    "sqlitePopulateMs": 12.259900016942993,
+    "databaseBytes": 2183168,
+    "peakRssBytes": 54345728,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 2.994399983435869,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 3.114499995717779,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 3.056799992918968,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 2.819100016495213,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 3.2694999827072024,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 2.9138000099919736,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 2.952100010588765,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 3.2235999824479222,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 3.3819999953266233,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 3.305899997940287,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 3.2011999865062535,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 3.208300011465326,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 3.1461000035051256,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 3.190299990819767,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 3.1058999884407967,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 3.0925000028219074,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "BAAI/bge-base-zh-v1.5",
+    "dimensions": 768,
+    "size": 5000,
+    "sqlitePopulateMs": 126.0885999945458,
+    "databaseBytes": 21716992,
+    "peakRssBytes": 57532416,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 32.25879999808967,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 32.613800023682415,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 31.819900003029034,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 33.97179997409694,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 33.19819999160245,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 39.264699997147545,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 31.349599972600117,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 32.64240000862628,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 34.074499999405816,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 31.18930000346154,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 33.48300000652671,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 30.302800005301833,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 30.782800022279844,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 30.939699994632974,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 30.668399995192885,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 32.68720000050962,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "BAAI/bge-base-zh-v1.5",
+    "dimensions": 768,
+    "size": 50000,
+    "sqlitePopulateMs": 1392.867499991553,
+    "databaseBytes": 216752128,
+    "peakRssBytes": 58318848,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 313.9643000031356,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 312.9299000138417,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 311.4413000002969,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 308.42509999638423,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 328.6087999877054,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 315.56399998953566,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 315.2964999899268,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 328.0609000066761,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 314.0316999924835,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 313.7614000006579,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 372.4588999757543,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 337.8725999791641,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 322.7974000037648,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 306.9852000044193,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 337.58229998056777,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 381.3013999897521,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "Qwen/Qwen3-Embedding-0.6B",
+    "dimensions": 1024,
+    "size": 480,
+    "sqlitePopulateMs": 13.199999986682087,
+    "databaseBytes": 2428928,
+    "peakRssBytes": 56979456,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 3.9689000113867223,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 3.3420000108890235,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 3.6379999946802855,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 3.8874000019859523,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 3.7219999940134585,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 3.707600000780076,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 3.470199997536838,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 3.6308999988250434,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 3.550499997800216,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 3.605200006859377,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 3.309299994725734,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 3.388600016478449,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 3.3090999932028353,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 3.1473000126425177,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 3.192400006810203,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 3.166899987263605,
+        "scanned": 480,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "Qwen/Qwen3-Embedding-0.6B",
+    "dimensions": 1024,
+    "size": 5000,
+    "sqlitePopulateMs": 136.06429999344982,
+    "databaseBytes": 24240128,
+    "peakRssBytes": 61210624,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 36.75259998999536,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 34.926499996799976,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 36.52880000299774,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 36.193199979607016,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 37.91859999182634,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 36.83709999313578,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 36.5872000111267,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 37.03129998757504,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 38.06130000157282,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 36.01820001495071,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 36.56410000985488,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 35.617200017441064,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 42.45349997654557,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 37.54359998856671,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 36.99990001041442,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 36.60630001104437,
+        "scanned": 5000,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  },
+  {
+    "modelId": "Qwen/Qwen3-Embedding-0.6B",
+    "dimensions": 1024,
+    "size": 50000,
+    "sqlitePopulateMs": 1419.3611000082456,
+    "databaseBytes": 241983488,
+    "peakRssBytes": 61800448,
+    "memoryDefinition": "whole isolated Python scanner working set; includes NumPy and SQLite, excludes encoder",
+    "measurements": [
+      {
+        "queryIndex": 51,
+        "elapsedMs": 328.1407000031322,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 84,
+        "elapsedMs": 325.35660002031364,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 16,
+        "elapsedMs": 333.4622000111267,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 117,
+        "elapsedMs": 330.69969998905435,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 128,
+        "elapsedMs": 328.5700000124052,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 139,
+        "elapsedMs": 324.09629999892786,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 29,
+        "elapsedMs": 330.5664999934379,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 56,
+        "elapsedMs": 325.13189999735914,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 14,
+        "elapsedMs": 325.945300020976,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 158,
+        "elapsedMs": 327.82659999793395,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 69,
+        "elapsedMs": 334.27530000335537,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 65,
+        "elapsedMs": 339.7012000204995,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 147,
+        "elapsedMs": 345.6474000122398,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 47,
+        "elapsedMs": 335.1607999939006,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 138,
+        "elapsedMs": 382.385200005956,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      },
+      {
+        "queryIndex": 130,
+        "elapsedMs": 344.0591999969911,
+        "scanned": 50000,
+        "partial": false,
+        "candidatesKept": 64
+      }
+    ]
+  }
+]

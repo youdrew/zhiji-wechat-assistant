@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 
-CUSTOM_ROOT_ENV = "WECHATVIBE_DATA_ROOT"
+CUSTOM_ROOT_ENV = "KYF_DATA_ROOT"
 _MISSING = object()
 _CONFIG_LIMIT = 32_768
 
@@ -91,6 +91,21 @@ class DataRootSource:
             os.replace(temporary, self.config)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def stored_path(self):
+        """The configured data-root path without any directory discovery.
+
+        Cheap enough for per-call identity fingerprints; returns None when unset
+        or when the configuration cannot be read.
+        """
+        with self.lock:
+            try:
+                value = self._stored_path()
+            except (OSError, ValueError):
+                return None
+            if value is _MISSING:
+                return os.environ.get(CUSTOM_ROOT_ENV) or None
+            return value
 
     def status(self):
         with self.lock:

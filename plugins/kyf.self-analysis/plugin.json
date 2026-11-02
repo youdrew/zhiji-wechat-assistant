@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "id": "kyf.self-analysis",
+  "name": "自我剖析",
+  "version": "0.9.0",
+  "description": "统一同步本人聊天，增量更新资料、标签、性格倾向、性格时间线、三观、三观时间线和表达知识库；保留人工修正与原文依据",
+  "author": "Know Your Friends",
+  "core": { "api": [1] },
+  "runtime": { "type": "python", "entry": "backend/main.py" },
+  "events": ["message.new"],
+  "contributes": {
+    "settings": {
+      "schema": 1,
+      "groups": [{
+        "id": "analysis", "title": "自我剖析",
+        "fields": [
+          { "key": "analysisDepth", "title": "分析深度", "type": "select", "default": "deep",
+            "options": [{ "value": "basic", "label": "基础" }, { "value": "standard", "label": "标准" },
+                        { "value": "deep", "label": "深度" }] },
+          { "key": "analysisGrain", "title": "分析时间颗粒度", "type": "select", "default": "6",
+            "options": [{ "value": "3", "label": "3 个月" }, { "value": "6", "label": "6 个月" }, { "value": "12", "label": "1 年" },
+                        { "value": "24", "label": "2 年" }, { "value": "60", "label": "5 年" }] }
+        ]
+      }, {
+        "id": "trial", "title": "聊天试用",
+        "fields": [
+          { "key": "replyDepth", "title": "回答检索深度", "type": "select", "default": "auto",
+            "options": [{ "value": "auto", "label": "自动（先判断再回）" }, { "value": "basic", "label": "基础" },
+                        { "value": "standard", "label": "标准" }, { "value": "deep", "label": "深度" }] }
+        ]
+      }]
+    },
+    "nav": [{ "id": "self-analysis", "label": "自我剖析", "page": "ui/index.html", "icon": "self" }]
+  }
+}

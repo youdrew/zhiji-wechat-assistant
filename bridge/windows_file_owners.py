@@ -6,6 +6,9 @@ import os
 from ctypes import wintypes
 from functools import lru_cache
 
+INITIAL_PROCESS_CAPACITY = 64
+MAX_PROCESS_CAPACITY = 4096
+
 
 class _UniqueProcess(ctypes.Structure):
     _fields_ = [("pid", wintypes.DWORD), ("started", wintypes.FILETIME)]
@@ -51,20 +54,24 @@ def file_owners(paths):
         status = api.RmRegisterResources(session, len(paths), resources, 0, None, 0, None)
         if status:
             raise OSError(status, "file ownership resources could not be registered")
-        needed, count, reasons = wintypes.UINT(), wintypes.UINT(), wintypes.DWORD()
-        entries = None
-        # The process list can change between the sizing and data calls.
+        needed, count, reasons = wintypes.UINT(), wintypes.UINT(INITIAL_PROCESS_CAPACITY), wintypes.DWORD()
+        entries = (_ProcessInfo * INITIAL_PROCESS_CAPACITY)()
+        # RmGetList refreshes ownership on every call, including a size-only
+        # query. Start with a bounded buffer to avoid an extra complete scan.
+        # A growing owner population still requires a new query, never reuse.
         for _attempt in range(4):
             status = api.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), entries,
                                    ctypes.byref(reasons))
             if status == 0:
+                if count.value > len(entries) or needed.value > len(entries):
+                    raise OSError(234, "file ownership result exceeded capacity")
                 return tuple((entry.process.pid,
                               ((entry.process.started.dwHighDateTime << 32) |
                                entry.process.started.dwLowDateTime) / 10_000_000 - 11_644_473_600)
-                             for entry in (entries[:count.value] if entries is not None else ()))
-            if status != 234 or not 0 < needed.value <= 4096:
+                             for entry in entries[:count.value])
+            if status != 234 or not len(entries) < needed.value <= MAX_PROCESS_CAPACITY:
                 raise OSError(status, "file ownership query failed")
-            count = wintypes.UINT(needed.value)
+            count = wintypes.UINT(min(MAX_PROCESS_CAPACITY, max(len(entries) * 2, needed.value)))
             entries = (_ProcessInfo * count.value)()
         raise OSError(234, "file ownership changed repeatedly")
     finally:

@@ -44,7 +44,7 @@ CONFIG_PATH_KEYS = (
     "dataDir", "data_dir", "fileSavePath", "savePath", "path", "defaultFileSavePath"
 )
 DATA_ROOT_NAMES = ("xwechat_files", "WeChat Files", "xwechat_files_data")
-CUSTOM_ROOT_ENV = "WECHATVIBE_DATA_ROOT"
+CUSTOM_ROOT_ENV = "KYF_DATA_ROOT"
 TEXT_CONFIG_PATH = re.compile(r"[A-Za-z]:[\\/][^\s\x00-\x1f\"']+")
 
 

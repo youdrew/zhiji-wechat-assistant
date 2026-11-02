@@ -1,6 +1,6 @@
 # 本机微信读取层：第三方来源
 
-`wr/*.py` 是 WechatVibe 自行实现的只读读取层，由 `bridge/live_source.py` 导入。当前 WechatVibe 便携版把这些 Python 源文件与锁定 Python 3.14 运行时放在 `resources/client/`；这里不使用旧 PyInstaller 读取器可执行文件。
+`wr/*.py` 是 WechatVibe 自行实现的只读读取层，由 `bridge/live_source.py` 导入。当前便携版把这些 Python 源文件与锁定 Python 3.14 运行时放在 `resources/client/`；这里不使用旧 PyInstaller 读取器可执行文件。
 
 | 组件 | 用途 | 许可证 |
 | --- | --- | --- |

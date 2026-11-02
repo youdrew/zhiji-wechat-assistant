@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>自我剖析</title>
+  <link rel="stylesheet" href="/plugin-sdk/web/persona-charts.css">
+  <link rel="stylesheet" href="page.css">
+</head>
+<body>
+  <main class="page">
+    <header class="page-header">
+      <div class="who"><span class="avatar" aria-hidden="true">我</span><div class="who-text"><h1>自我剖析</h1><p id="account" class="account">正在读取当前账号…</p></div></div>
+      <div class="run-control">
+        <button id="analysisStatus" type="button" class="status-link" aria-controls="analysisPanel" aria-expanded="false"><span id="analysisMessage" role="status">读取状态…</span></button>
+        <button id="analysisPause" type="button" hidden>暂停</button>
+        <div id="analysisSplit" class="split"><button id="analysisRun" type="button" class="primary" disabled>开始分析</button><button id="analysisMenuToggle" type="button" class="primary split-toggle" aria-label="选择分析内容和深度" aria-haspopup="true" aria-expanded="false" aria-controls="analysisMenu" disabled><span aria-hidden="true">▾</span></button></div>
+        <div id="analysisMenu" class="popover analysis-menu" hidden>
+          <fieldset class="analysis-outputs"><legend>分析内容</legend><label><input id="analysisOutput-profile" type="checkbox" checked disabled>本人资料</label><label><input id="analysisOutput-tags" type="checkbox" checked disabled>标签</label><label><input id="analysisOutput-timeline" type="checkbox" checked disabled>时间线</label><label><input id="analysisOutput-persona" type="checkbox" checked disabled>性格</label><label><input id="analysisOutput-periods" type="checkbox" disabled>性格时间线</label><label><input id="analysisOutput-worldview" type="checkbox" disabled>三观时间线</label><label><input id="analysisOutput-values" type="checkbox" checked disabled>三观</label><label><input id="analysisOutput-library" type="checkbox" checked disabled>表达知识库</label></fieldset>
+          <div class="depth-row"><span>分析深度</span><button id="analysisDepthSettings" type="button" class="link" title="在插件设置中更改">深度</button></div>
+          <div id="analysisModelHint" class="hint" hidden><span>尚未配置回复模型，只能整理表达知识库。</span><button id="analysisModelSettings" type="button" class="link">去设置</button></div>
+        </div>
+        <section id="analysisPanel" class="popover analysis-panel" aria-label="分析进度" hidden>
+          <div class="panel-head"><h2>分析进度</h2><button id="analysisPanelClose" type="button" class="plain" aria-label="关闭">×</button></div>
+          <progress id="analysisProgress" aria-label="当前阶段进度" hidden></progress><ol id="analysisSteps" class="analysis-steps" aria-label="分析步骤"></ol>
+          <details id="judgeShadowPanel"><summary>判断评估</summary><button id="judgeShadowRefresh" type="button" class="plain">读取</button><p id="judgeShadowSummary" class="help" role="status" hidden></p></details>
+        </section>
+      </div>
+    </header>
+    <div class="global-messages"><div id="notice" class="notice" role="status" hidden></div><div id="error" class="notice error" role="alert" hidden></div></div>
+    <nav class="tabs" role="tablist" aria-label="自我剖析栏目">
+      <button id="tab-profile" type="button" role="tab" aria-selected="true" aria-controls="panel-profile" tabindex="0">本人资料</button>
+      <button id="tab-tags" type="button" role="tab" aria-selected="false" aria-controls="panel-tags" tabindex="-1">标签</button>
+      <button id="tab-timeline" type="button" role="tab" aria-selected="false" aria-controls="panel-timeline" tabindex="-1">时间线</button>
+      <button id="tab-persona" type="button" role="tab" aria-selected="false" aria-controls="panel-persona" tabindex="-1">性格分析</button>
+      <button id="tab-values" type="button" role="tab" aria-selected="false" aria-controls="panel-values" tabindex="-1">三观分析</button>
+      <button id="tab-build" type="button" role="tab" aria-selected="false" aria-controls="panel-build" tabindex="-1">表达知识库</button>
+      <button id="tab-trial" type="button" role="tab" aria-selected="false" aria-controls="panel-trial" tabindex="-1">聊天试用</button>
+    </nav>
+    <div id="tabContent" class="tab-content">
+      <section id="panel-profile" class="tab-panel" role="tabpanel" aria-labelledby="tab-profile" tabindex="0">
+        <div class="profile-fields">
+          <div><label for="background">背景与自述</label><textarea id="background" rows="8" maxlength="4000" placeholder="身份、性格、兴趣、相处偏好" disabled></textarea></div>
+          <div><label for="style">表达偏好</label><textarea id="style" rows="8" maxlength="4000" placeholder="回复长短、语气、常用说法，或想改进的地方" disabled></textarea></div>
+        </div>
+        <div id="profileError" class="notice error" role="alert" hidden></div>
+        <div id="latestProfile" class="latest-profile" hidden><h3>最新保存的资料</h3><h4>背景与自述</h4><p id="latestBackground" class="preserve"></p><h4>表达偏好</h4><p id="latestStyle" class="preserve"></p></div>
+        <div class="actions"><button id="draftProfile" type="button" hidden>统一分析</button><button id="pauseDraft" type="button" hidden>暂停分析</button><button id="saveProfile" type="button" class="primary" disabled>保存</button><button id="reloadProfile" type="button" hidden>读取最新资料</button><span id="profileMessage" class="help" role="status"></span></div>
+        <progress id="draftProgress" aria-label="初稿生成进度" hidden></progress>
+        <section id="draftCoverage" class="draft-coverage" aria-label="本地累计覆盖范围" hidden><h3 id="draftCoverageTitle">本地累计覆盖范围</h3><p id="draftReadCoverage" class="help"></p><p id="draftModelCoverage" class="help"></p><p id="draftBatchCoverage" class="help"></p><p id="draftGaps" class="help" hidden></p><p class="help">显示截至最近同步的本地累计快照，包含已有文字与分析。无法恢复本机已缺失的聊天；图片、语音等非文字不参与本人资料分析。</p></section>
+        <div id="draftPanel" class="latest-profile" hidden><h3>AI 初稿</h3><div id="draftBackgroundBlock"><h4>背景与自述</h4><p id="draftBackground" class="preserve"></p><button id="useDraftBackground" type="button">替换</button></div><div id="draftStyleBlock"><h4>表达偏好</h4><p id="draftStyle" class="preserve"></p><button id="useDraftStyle" type="button">替换</button></div><div class="actions"><button id="closeDraft" type="button">关闭</button></div></div>
+      </section>
+      <section id="panel-tags" class="tab-panel split-panel" role="tabpanel" aria-labelledby="tab-tags" tabindex="0" hidden>
+        <section class="pane" aria-labelledby="tagsTitle">
+          <header class="pane-head"><h2 id="tagsTitle">我的标签</h2><span class="head-actions"><button id="addTag" type="button" class="plain" disabled>添加</button><button id="tagsRun" type="button" hidden>统一分析</button></span></header>
+          <div id="tagForm" class="tag-form" hidden><label class="sr-only" for="tagName">标签名称</label><input id="tagName" maxlength="20" placeholder="标签名称"><label class="sr-only" for="tagCategory">类别</label><select id="tagCategory"></select><button id="saveTag" type="button" class="primary">添加</button><button id="cancelTag" type="button">取消</button></div>
+          <div id="tagsStatus" class="pane-status" hidden><progress id="tagsProgress" aria-label="标签分析进度" hidden></progress><p id="tagsMessage" class="help" role="status"></p></div>
+          <div id="tagModelHint" class="hint" hidden><span>尚未配置回复模型</span><button id="tagModelSettings" type="button" class="link">去设置</button></div>
+          <p class="help tag-guide">“仅提及”“偶尔参与”不代表兴趣，消息数量仅作统计。</p>
+          <p id="tagsReview" class="help tag-review" role="status" hidden>旧标签尚未区分提及与兴趣，请从顶部开始分析复核；你的确认、删除和添加会保留。</p>
+          <div id="tagList" class="tag-list"></div>
+          <div id="tagsEmpty" class="pane-empty" hidden><p id="tagsEmptyText">从顶部开始分析，区分聊天中的提及、参与、兴趣与个人特征</p><button id="tagsStart" type="button" hidden>统一分析</button></div>
+        </section>
+        <section class="pane" aria-labelledby="tagTitle">
+          <header class="pane-head"><h2 id="tagTitle">依据</h2><span id="tagActions" class="head-actions" hidden><button id="confirmTag" type="button" class="plain">确认</button><button id="deleteTag" type="button" class="plain danger">删除</button></span></header>
+          <p id="tagStats" class="help pane-line" hidden></p>
+          <div id="tagUndo" class="hint pane-line" hidden><span id="tagUndoText"></span><button id="undoTag" type="button" class="link">撤销</button></div>
+          <div id="tagEvidence" class="samples"></div>
+          <p id="tagDetailEmpty" class="chat-empty">选择一个标签，查看它来自哪些消息</p>
+        </section>
+      </section>
+      <section id="panel-timeline" class="tab-panel" role="tabpanel" aria-labelledby="tab-timeline" tabindex="0" hidden>
+        <div class="tl-top"><label class="tl-filter"><input id="timelineImportantOnly" type="checkbox">只看重要节点</label><button id="timelineAdd" type="button" class="plain" disabled>添加</button></div>
+        <div id="timelineAddForm" class="tl-form" hidden></div>
+        <div id="timelinePeriodBar" class="tl-period-bar" hidden></div>
+        <div id="timelineOverview" class="tl-overview"></div>
+        <div id="timelineTracks" class="tl-tracks" hidden></div>
+        <p id="timelineMessage" class="help" role="status" hidden></p>
+        <div id="timelineList" class="tl-list"></div>
+        <div id="timelineEmpty" class="pane-empty" hidden><p>从顶部开始分析，整理你在聊天中提到的经历和人生节点</p></div>
+      </section>
+      <section id="panel-persona" class="tab-panel" role="tabpanel" aria-labelledby="tab-persona" tabindex="0" hidden>
+        <div class="persona-status"><p id="personaMessage" class="help" role="status" hidden></p><button id="personaReload" type="button" class="plain" hidden>读取最新</button></div>
+        <div class="period-context"><p id="personaPeriodContext" class="help"></p><button id="personaPeriodSettings" type="button" class="plain">时间尺度设置</button></div>
+        <div id="personaPeriods" class="persona-charts"></div><div id="personaPeriodEdit"></div><p id="personaPeriodLine" class="help" hidden></p><div id="personaPeriodDetail" class="persona-list"></div>
+        <p id="personaChartContext" class="help period-context-line" hidden></p><div id="personaCharts" class="persona-charts"></div><div id="personaList" class="persona-list"></div>
+      </section>
+      <section id="panel-values" class="tab-panel" role="tabpanel" aria-labelledby="tab-values" tabindex="0" hidden>
+        <div class="persona-status"><p id="valuesMessage" class="help" role="status" hidden></p><button id="valuesReload" type="button" class="plain" hidden>读取最新</button></div>
+        <div class="period-context"><p id="valuesPeriodContext" class="help"></p><button id="valuesPeriodSettings" type="button" class="plain">时间尺度设置</button></div>
+        <div id="valuesPeriods" class="persona-charts"></div><div id="valuesPeriodEdit"></div><p id="valuesPeriodLine" class="help" hidden></p><div id="valuesPeriodDetail" class="persona-list"></div><div id="valuesPeriodViews" class="persona-list"></div>
+        <p id="valuesChartContext" class="help period-context-line" hidden></p><div id="valuesCharts" class="persona-charts"></div><div id="valuesChartList" class="persona-list"></div>
+        <details id="valuesHistory" class="opinion-history"><summary>全历史三观分析与依据</summary><div id="valuesList" class="persona-list values-items"></div></details>
+      </section>
+      <section id="panel-build" class="tab-panel" role="tabpanel" aria-labelledby="tab-build" tabindex="0" hidden>
+        <p class="help">由顶部统一分析整理，下面显示表达样本与本地检索进度。</p>
+        <dl class="metrics"><div><dt>发现私聊</dt><dd id="conversationCount">—</dd></div><div><dt>已整理私聊</dt><dd id="processedCount">—</dd></div><div><dt>已读消息</dt><dd id="messageCount">—</dd></div><div><dt>可用样本</dt><dd id="sampleCount">—</dd></div><div><dt>待重试</dt><dd id="failedCount">—</dd></div></dl>
+        <progress id="progress" aria-label="私聊整理进度" hidden></progress>
+        <p class="status-line"><span id="buildState" class="badge">待检查</span><span id="buildMessage" role="status"></span></p>
+        <p id="coverageMessage" class="help" hidden></p>
+        <div id="sourceHint" class="hint" hidden><span>聊天资料未连接</span><button id="sourceSettings" type="button" class="link">查看聊天连接</button></div>
+        <div class="semantic" aria-labelledby="semanticTitle">
+          <p class="status-line"><span id="semanticTitle" class="muted">语义检索</span><span id="semanticState" class="badge">待检查</span><span id="semanticSampleMessage" class="help" hidden></span></p>
+          <progress id="downloadProgress" aria-label="本机检索资源下载进度" hidden></progress><p id="downloadMessage" class="help" hidden></p>
+          <progress id="semanticProgress" aria-label="样本含义整理进度" hidden></progress>
+          <p id="semanticError" class="notice error" role="alert" hidden></p>
+        </div>
+        <section id="exclusionsPanel" class="section" aria-labelledby="exclusionTitle" hidden><h3 id="exclusionTitle">已排除的样本</h3><p id="exclusionMessage" class="help" role="status" hidden></p><div id="excludedSamples" class="samples"></div></section>
+        <section class="section" aria-label="清空知识库"><div class="actions"><button id="reset" type="button" class="danger" disabled>清空知识库</button></div><div id="resetConfirm" class="reset-confirm" hidden><p>清空本账号的样本、索引和建库进度？本人资料与微信聊天会保留。</p><div class="actions"><button id="confirmReset" type="button" class="danger">确认清空</button><button id="cancelReset" type="button">取消</button></div></div></section>
+      </section>
+      <section id="panel-trial" class="tab-panel split-panel" role="tabpanel" aria-labelledby="tab-trial" tabindex="0" hidden>
+        <section class="pane" aria-labelledby="searchTitle">
+          <header class="pane-head"><h2 id="searchTitle">历史回复</h2></header>
+          <div class="search-bar"><label class="sr-only" for="query">检索情境</label><textarea id="query" rows="2" maxlength="4000" placeholder="输入一个情境，检索你过去的回复" disabled></textarea><button id="search" type="button" disabled>检索</button></div>
+          <p id="searchMessage" class="help" role="status" hidden></p>
+          <div id="samples" class="samples"></div>
+        </section>
+        <section class="pane chat" aria-labelledby="chatTitle">
+          <header class="pane-head"><h2 id="chatTitle">模拟对话</h2><button id="clearTrial" type="button" class="plain" disabled>清空</button></header>
+          <div id="chatLog" class="chat-log" role="log" aria-live="polite"><p id="chatEmpty" class="chat-empty">以好友身份发消息，看看你会怎么回</p></div>
+          <div id="modelHint" class="hint" hidden><span>尚未配置回复模型</span><button id="modelSettings" type="button" class="link">去设置</button></div>
+          <div class="composer"><label class="sr-only" for="trialInput">以好友身份发消息</label><textarea id="trialInput" rows="3" maxlength="1000" placeholder="以好友的身份发消息，换行分条" disabled></textarea><div class="composer-bar"><span id="trialMessage" class="help" role="status"></span><button id="trialSend" type="button" class="primary" disabled>发送</button></div></div>
+        </section>
+      </section>
+    </div>
+  </main>
+  <script src="/plugin-sdk/web/kyf-host.js"></script>
+  <script src="/plugin-sdk/web/persona-charts.js"></script>
+  <script src="page.js"></script>
+</body>
+</html>

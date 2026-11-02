@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<!-- Modified by Know Your Friends, 2026-10-10: scoped sessions, history and compaction. -->
+<!-- Modified by Know Your Friends, 2026-10-11: thinking toggle. -->
+<!-- Modified by Know Your Friends, 2026-10-14: @ friend picker and the friends joined to the discussion. -->
+<!-- Moved from chatui/advisor-frame.html to plugins/kyf.advisor/ui/panel.html on 2026-10-13 (kyf.advisor plugin): the 聊天助手 panel page. -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>聊天助手</title>
+  <link rel="stylesheet" href="panel.css">
+  <link rel="stylesheet" href="timeline.css">
+</head>
+<body class="advisor-frame-body advisor-empty">
+  <header class="advisor-frame-top">
+    <div class="advisor-heading">
+      <div class="advisor-session-title" id="sessionTitle" title="开始新讨论">开始新讨论</div>
+      <div class="advisor-agent-control">
+      <button type="button" class="advisor-agent-name" id="btnAgentMenu" aria-expanded="false" aria-controls="agentMenu">
+        <span id="agentName">狗头军师</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="advisor-agent-menu" id="agentMenu" role="menu" hidden></div>
+      </div>
+    </div>
+    <nav class="advisor-session-actions" aria-label="会话操作">
+      <button type="button" class="advisor-icon-btn" id="btnHistory" title="历史会话" aria-label="历史会话" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.7 7M3 5v6h6m3-4v5l3 2"/></svg></button>
+      <button type="button" class="advisor-icon-btn" id="btnNewThread" title="新建会话" aria-label="新建会话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button type="button" class="advisor-icon-btn" id="btnMore" title="更多" aria-label="更多" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+    </nav>
+    <div class="advisor-popover advisor-more" id="moreMenu" role="menu" hidden>
+      <button type="button" class="advisor-menu-action" id="btnCompact" role="menuitem">压缩上下文</button>
+      <div class="advisor-menu-hint" id="compactHint"></div>
+    </div>
+  </header>
+
+  <section class="advisor-history" id="historyPanel" aria-label="历史会话" hidden>
+    <div class="advisor-history-top"><strong>历史会话</strong><button type="button" class="advisor-text-btn" id="btnCloseHistory">返回讨论</button></div>
+    <div class="advisor-history-state" id="historyState" role="status"></div>
+    <button type="button" class="advisor-text-btn" id="btnRetryHistory" hidden>重新加载</button>
+    <div id="historyList"></div>
+    <details class="advisor-other-history" id="otherHistory" hidden><summary>其他助手历史</summary><div id="otherHistoryList"></div></details>
+  </section>
+
+  <div class="advisor-readonly" id="readonlyNotice" hidden><span id="readonlyText"></span><button type="button" class="advisor-text-btn" id="btnReturnHistory" hidden>返回原讨论</button></div>
+
+  <main class="advisor-conversation">
+    <section class="advisor-welcome" id="advisorWelcome">
+      <h1 id="welcomeText">开始新讨论</h1>
+    </section>
+    <div class="advisor-timeline" id="advisorTimeline" role="log" aria-live="polite" hidden></div>
+  </main>
+
+  <div class="advisor-timeline-controls" id="timelineControls" hidden>
+    <button type="button" class="advisor-ctrl-btn retry" id="btnRetryRun" hidden>重试</button>
+  </div>
+
+  <footer class="advisor-input-area">
+    <section class="advisor-queue" id="queuePanel" aria-label="待处理消息" hidden>
+      <div class="advisor-queue-heading">
+        <button type="button" class="advisor-text-btn" id="btnQueueToggle" aria-expanded="false" aria-controls="queueList"><span id="queueCount">待处理 0</span><span aria-hidden="true"> ▾</span></button>
+        <span id="queueStatus"></span>
+        <button type="button" class="advisor-text-btn" id="btnQueuePause">暂停</button>
+      </div>
+      <div class="advisor-queue-list" id="queueList" hidden></div>
+      <div class="advisor-queue-editor" id="queueEditor" hidden>
+        <label for="queueEditInput">编辑待处理消息</label>
+        <textarea id="queueEditInput" maxlength="16000" rows="3"></textarea>
+        <div id="queueEditStatus" role="status"></div>
+        <div class="advisor-queue-edit-actions"><button type="button" class="advisor-text-btn" id="btnQueueCancel">取消</button><button type="button" class="advisor-text-btn" id="btnQueueSave">保存</button></div>
+      </div>
+      <div class="advisor-queue-feedback"><span id="queueError" role="status"></span><button type="button" class="advisor-text-btn" id="btnQueueRetry" hidden>重试确认</button></div>
+    </section>
+    <div class="advisor-command-menu advisor-popover" id="commandMenu" role="listbox" aria-label="快捷命令" hidden></div>
+    <div class="advisor-command-menu advisor-popover" id="mentionMenu" role="listbox" aria-label="选择好友" hidden></div>
+    <div class="advisor-editing" id="editBar" hidden><span id="editLabel">修改上一个问题</span><button type="button" class="advisor-text-btn" id="btnCancelEdit">取消</button><button type="button" class="advisor-text-btn" id="btnCopyHeldDraft" hidden>复制保留草稿</button></div>
+    <div class="advisor-participants" id="participantBar" aria-label="参与讨论的好友" hidden></div>
+    <textarea class="advisor-textarea" id="advisorInput" rows="3" maxlength="16000" aria-label="军师消息" placeholder="输入问题，@ 添加其他好友的上下文"></textarea>
+    <div class="advisor-input-bar">
+      <button type="button" class="advisor-think-btn" id="btnThinking" aria-pressed="true">深度思考</button>
+      <div class="advisor-usage-wrap"><button type="button" class="advisor-usage" id="usageButton" aria-expanded="false" hidden></button>
+        <div class="advisor-popover advisor-usage-details" id="usageDetails" hidden>
+          <div id="usageLast"></div><div id="usageWindow"></div><div id="usageCompaction" hidden></div>
+          <button type="button" class="advisor-menu-action" id="btnUsageCompact">压缩上下文</button>
+        </div>
+      </div>
+      <button type="button" class="advisor-send-btn" id="btnAdvisorSend" title="发送" aria-label="发送">
+        <span id="sendLabel">发送</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-7 7 7-7 7 7"/></svg>
+      </button>
+      <button type="button" class="advisor-send-btn advisor-stop-btn" id="btnStopRun" title="停止生成" aria-label="停止生成" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+      </button>
+    </div>
+  </footer>
+
+  <div class="advisor-popover advisor-history-context" id="historyContext" role="menu" hidden>
+    <button type="button" class="advisor-menu-action" id="btnRenameThread" role="menuitem">改名</button>
+    <button type="button" class="advisor-menu-action" id="btnDeleteThread" role="menuitem">删除</button>
+    <div class="advisor-menu-hint" id="deleteHint"></div>
+  </div>
+  <dialog class="advisor-session-dialog" id="sessionDialog">
+    <form method="dialog" id="sessionDialogForm"><h2 id="sessionDialogTitle"></h2><p id="sessionDialogText"></p>
+      <input id="sessionTitleInput" maxlength="120" aria-label="会话标题" hidden>
+      <div class="advisor-dialog-actions"><button type="button" class="advisor-ctrl-btn" id="btnCancelDialog">取消</button><button type="button" class="advisor-ctrl-btn" id="btnConfirmDialog">确定</button></div>
+    </form>
+  </dialog>
+
+  <script src="/plugin-sdk/web/kyf-host.js"></script>
+  <script src="advisor-ui-bundle.js"></script>
+  <script src="panel-frame.js"></script>
+  <script src="panel-controller.js"></script>
+</body>
+</html>

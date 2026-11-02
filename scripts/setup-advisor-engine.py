@@ -50,7 +50,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="advisor-engine-install-", dir=parent) as temporary:
         work = Path(temporary)
         archive = work / ARCHIVE
-        request = urllib.request.Request(URL, headers={"User-Agent": "WechatVibe-Advisor-setup"})
+        request = urllib.request.Request(URL, headers={"User-Agent": "KnowYourFriends-Advisor-setup"})
         with urllib.request.urlopen(request, timeout=120) as response, archive.open("wb") as output:
             shutil.copyfileobj(response, output)
         if digest(archive) != ARCHIVE_SHA256:

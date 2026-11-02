@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<!-- Modified by Know Your Friends, 2026-10-11: distinguish panel collapse from window close. -->
+<!-- Moved from chatui/advisor-window.html to chatui/plugin-panel.html on 2026-10-13: the docked host of any chat-toolbar plugin page. -->
+<!-- Modified 2026-10-22: the host of one friend's chat-toolbar plugin page in its own window. -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>插件面板</title>
+  <link rel="stylesheet" href="plugin-panel.css">
+</head>
+<body>
+  <div id="pluginPanelFrame" class="plugin-panel-body"></div>
+  <script src="plugin-frame.js"></script>
+  <script src="plugin-panel.js"></script>
+</body>
+</html>

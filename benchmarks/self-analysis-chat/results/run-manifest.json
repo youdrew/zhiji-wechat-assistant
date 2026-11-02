@@ -1,0 +1,503 @@
+{
+  "datasetSha256": "a5e0fbcd962b37d5321741e684aaafd79e39ea0ff92fa06f682c0abaa00d9013",
+  "protocolSha256": "a23a8b9d59d3da58cab9d25dba0f29c2ec8763fe06c7edc79b41b70e90a2dea0",
+  "startedAtUtc": "2026-10-18T09:14:51.320576+00:00",
+  "completedAtUtc": "2026-10-18T09:23:30.661391+00:00",
+  "qualityManifest": {
+    "protocol": "self-analysis-chat-v1",
+    "createdAtUtc": "2026-10-18T09:24:27.569189+00:00",
+    "datasetId": "zh-chat-retrieval-20261018-v1",
+    "datasetSha256": "a5e0fbcd962b37d5321741e684aaafd79e39ea0ff92fa06f682c0abaa00d9013",
+    "seed": 20261018,
+    "queryRepresentation": "raw",
+    "selectionEligible": true,
+    "bootstrapIterations": 10000,
+    "primaryMetric": "test nDCG@4",
+    "primaryK": 4,
+    "diagnosticK": 10,
+    "parameters": {
+      "lexicalCharWeight": 0.22,
+      "lexicalOtherWeight": 1,
+      "lexicalSqlCandidates": 500,
+      "routeTopK": 64,
+      "semanticMinCosine": 0.2,
+      "rrfConstant": 60,
+      "contactCap": 2,
+      "verificationWindow": 16,
+      "dedup": "production normalized reply"
+    },
+    "productionFiles": {
+      "self_samples.py": "8be099199228f45fe20c5b77b60d47dab53dd960a9517db1ac71a66667450c7e",
+      "self_retrieval.py": "704ea9d6f57fabb5350b2e898d4b43bebdfc737d3f9eaf94a060919dfe2bfc84",
+      "self_semantic.py": "8ceb6f1edc816b1c9b83e528923afaa4d37ac51f18cd98a286e3a0ca6924581a"
+    },
+    "vectors": {
+      "bge-small-zh-v1.5": {
+        "fileSha256": "6bc404d6d2c7b78781d450f1aef75207efbd740740fab9c33ae60be4d8c53ee4",
+        "metadata": {
+          "modelId": "BAAI/bge-small-zh-v1.5",
+          "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+          "dimensions": 512,
+          "datasetSha256": "a5e0fbcd962b37d5321741e684aaafd79e39ea0ff92fa06f682c0abaa00d9013",
+          "precision": "FP32",
+          "runtime": {
+            "modelId": "BAAI/bge-small-zh-v1.5",
+            "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+            "dimensions": 512,
+            "loadMs": 218.29520000000002,
+            "verifyMs": 69.52340000000001,
+            "maxTokens": 512,
+            "threads": 2,
+            "batchSize": 8,
+            "versions": {
+              "node": "24.11.1",
+              "onnxruntime": "1.30.0",
+              "tokenizers": "0.2.0"
+            },
+            "hardware": {
+              "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+              "logicalCpus": 24,
+              "ramBytes": 102747942912,
+              "platform": "win32",
+              "architecture": "x64"
+            }
+          },
+          "queryRepresentation": "raw"
+        }
+      },
+      "bge-base-zh-v1.5": {
+        "fileSha256": "14359836bda3525fd3f827126c40c4ffea3dfabde42f261ca58a2ea0fc43edc6",
+        "metadata": {
+          "modelId": "BAAI/bge-base-zh-v1.5",
+          "revision": "ms-xenova-9a0864f6-fp32-cls-tail512-v1",
+          "dimensions": 768,
+          "datasetSha256": "a5e0fbcd962b37d5321741e684aaafd79e39ea0ff92fa06f682c0abaa00d9013",
+          "precision": "FP32",
+          "runtime": {
+            "modelId": "BAAI/bge-base-zh-v1.5",
+            "revision": "ms-xenova-9a0864f6-fp32-cls-tail512-v1",
+            "dimensions": 768,
+            "loadMs": 765.3634,
+            "verifyMs": 273.5274,
+            "maxTokens": 512,
+            "threads": 2,
+            "batchSize": 8,
+            "versions": {
+              "node": "24.11.1",
+              "onnxruntime": "1.30.0",
+              "tokenizers": "0.2.0"
+            },
+            "hardware": {
+              "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+              "logicalCpus": 24,
+              "ramBytes": 102747942912,
+              "platform": "win32",
+              "architecture": "x64"
+            }
+          },
+          "queryRepresentation": "raw"
+        }
+      },
+      "qwen3-embedding-0.6b": {
+        "fileSha256": "b2afd27a43cc8b4899b1d85af2fb2f5ce9ac8cfcfe53cc1bef01aca14b000cc3",
+        "metadata": {
+          "modelId": "Qwen/Qwen3-Embedding-0.6B",
+          "revision": "ms-onnx-community-69da7161-fp32-last-tail512-v1",
+          "dimensions": 1024,
+          "datasetSha256": "a5e0fbcd962b37d5321741e684aaafd79e39ea0ff92fa06f682c0abaa00d9013",
+          "precision": "FP32",
+          "runtime": {
+            "modelId": "Qwen/Qwen3-Embedding-0.6B",
+            "revision": "ms-onnx-community-69da7161-fp32-last-tail512-v1",
+            "dimensions": 1024,
+            "loadMs": 3363.1427000000003,
+            "verifyMs": 1560.5376999999999,
+            "maxTokens": 512,
+            "threads": 2,
+            "batchSize": 8,
+            "versions": {
+              "node": "24.11.1",
+              "onnxruntime": "1.30.0",
+              "tokenizers": "0.2.0"
+            },
+            "hardware": {
+              "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+              "logicalCpus": 24,
+              "ramBytes": 102747942912,
+              "platform": "win32",
+              "architecture": "x64"
+            }
+          },
+          "queryRepresentation": "raw"
+        }
+      }
+    },
+    "rankingEnvironment": "in-memory SQLite lexical + RAM NumPy semantic; no inference/network/fresh verification"
+  },
+  "measurementAmendments": [
+    {
+      "file": "memory.py",
+      "oldSha256": "ea9b1b0f63702bf64aa50e64a09a5e2e3c859774e27e732d78d0175837d7e009",
+      "reason": "Windows venv python.exe launcher spawns actual Python child and console helper. Sampling only Popen.pid undercounted the ranking worker. Need owned-process-tree sum, no changes to data, rankings, model encodings, primary timings, thresholds or selection policy.",
+      "amendedAtUtc": "2026-10-18T09:29:03.435220+00:00",
+      "newSha256": "a52fe36883b8c79d9dc334fd95671e96dc05a752a9eda051746d56d1e444153b",
+      "dataAndPrimaryMetricsUnchanged": true,
+      "invalidOutputLocalArchive": "method-memory-launcher-only-invalid.json",
+      "replacementOutput": "method-memory.json"
+    }
+  ],
+  "decision": {
+    "defaultModel": "bge-small-zh-v1.5",
+    "retrieval": "hybrid",
+    "reason": "Neither heavier model reaches the preregistered +0.03 hybrid test nDCG@4 replacement threshold; base has a small advantage and Qwen is within the practical tie band. Small hybrid improves over lexical.",
+    "heavyDeltas": [
+      {
+        "split": "test",
+        "category": "all",
+        "left": "bge-base-zh-v1.5/hybrid",
+        "right": "bge-small-zh-v1.5/hybrid",
+        "metric": "nDCG@4",
+        "delta": 0.022254153222895576,
+        "low95": 5.745249948216213e-05,
+        "high95": 0.043432856441058744,
+        "groups": 30,
+        "queries": 120,
+        "iterations": 10000,
+        "caution": null
+      },
+      {
+        "split": "test",
+        "category": "all",
+        "left": "qwen3-embedding-0.6b/hybrid",
+        "right": "bge-small-zh-v1.5/hybrid",
+        "metric": "nDCG@4",
+        "delta": 0.018954346413961987,
+        "low95": -0.01109153378909678,
+        "high95": 0.04510215880301555,
+        "groups": 30,
+        "queries": 120,
+        "iterations": 10000,
+        "caution": null
+      }
+    ],
+    "smallVsLexical": {
+      "split": "test",
+      "category": "all",
+      "left": "bge-small-zh-v1.5/hybrid",
+      "right": "lexical",
+      "metric": "nDCG@4",
+      "delta": 0.0418777238855886,
+      "low95": 0.018260670184219865,
+      "high95": 0.06526503752011324,
+      "groups": 30,
+      "queries": 120,
+      "iterations": 10000,
+      "caution": null
+    }
+  },
+  "runs": [
+    {
+      "model": "bge-small-zh-v1.5",
+      "run": 0,
+      "cpuPercentBefore": 13.7,
+      "load": {
+        "modelId": "BAAI/bge-small-zh-v1.5",
+        "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+        "dimensions": 512,
+        "loadMs": 218.29520000000002,
+        "verifyMs": 69.52340000000001,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 221.01489998749457,
+      "corpusWallMs": 3297.614999988582,
+      "peakRssBytes": 225132544,
+      "peakPrivateBytes": 226930688,
+      "totalWallMs": 7568.051699985517
+    },
+    {
+      "model": "bge-base-zh-v1.5",
+      "run": 0,
+      "cpuPercentBefore": 6.8,
+      "load": {
+        "modelId": "BAAI/bge-base-zh-v1.5",
+        "revision": "ms-xenova-9a0864f6-fp32-cls-tail512-v1",
+        "dimensions": 768,
+        "loadMs": 765.3634,
+        "verifyMs": 273.5274,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 806.5432000148576,
+      "corpusWallMs": 26552.12089998531,
+      "peakRssBytes": 561979392,
+      "peakPrivateBytes": 574464000,
+      "totalWallMs": 36342.51499999664
+    },
+    {
+      "model": "qwen3-embedding-0.6b",
+      "run": 0,
+      "cpuPercentBefore": 13.4,
+      "load": {
+        "modelId": "Qwen/Qwen3-Embedding-0.6B",
+        "revision": "ms-onnx-community-69da7161-fp32-last-tail512-v1",
+        "dimensions": 1024,
+        "loadMs": 3363.1427000000003,
+        "verifyMs": 1560.5376999999999,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 3411.041200015461,
+      "corpusWallMs": 67072.70439999411,
+      "peakRssBytes": 2185371648,
+      "peakPrivateBytes": 2373160960,
+      "totalWallMs": 111630.06540000788
+    },
+    {
+      "model": "qwen3-embedding-0.6b",
+      "run": 1,
+      "cpuPercentBefore": 8.5,
+      "load": {
+        "modelId": "Qwen/Qwen3-Embedding-0.6B",
+        "revision": "ms-onnx-community-69da7161-fp32-last-tail512-v1",
+        "dimensions": 1024,
+        "loadMs": 3410.1635,
+        "verifyMs": 1569.452,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 3452.1868999872822,
+      "corpusWallMs": 66776.13199999905,
+      "peakRssBytes": 2196312064,
+      "peakPrivateBytes": 2375700480,
+      "totalWallMs": 110858.82409999613
+    },
+    {
+      "model": "bge-small-zh-v1.5",
+      "run": 1,
+      "cpuPercentBefore": 13.5,
+      "load": {
+        "modelId": "BAAI/bge-small-zh-v1.5",
+        "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+        "dimensions": 512,
+        "loadMs": 225.26760000000002,
+        "verifyMs": 70.6103,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 266.2109000084456,
+      "corpusWallMs": 2898.8506000023335,
+      "peakRssBytes": 223510528,
+      "peakPrivateBytes": 226738176,
+      "totalWallMs": 4728.119100007461
+    },
+    {
+      "model": "bge-base-zh-v1.5",
+      "run": 1,
+      "cpuPercentBefore": 10.5,
+      "load": {
+        "modelId": "BAAI/bge-base-zh-v1.5",
+        "revision": "ms-xenova-9a0864f6-fp32-cls-tail512-v1",
+        "dimensions": 768,
+        "loadMs": 763.5319999999999,
+        "verifyMs": 279.8937,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 809.6921999822371,
+      "corpusWallMs": 17784.475599997677,
+      "peakRssBytes": 564232192,
+      "peakPrivateBytes": 584839168,
+      "totalWallMs": 27686.837799992645
+    },
+    {
+      "model": "bge-base-zh-v1.5",
+      "run": 2,
+      "cpuPercentBefore": 12.8,
+      "load": {
+        "modelId": "BAAI/bge-base-zh-v1.5",
+        "revision": "ms-xenova-9a0864f6-fp32-cls-tail512-v1",
+        "dimensions": 768,
+        "loadMs": 769.4103,
+        "verifyMs": 275.1946,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 813.9988000039011,
+      "corpusWallMs": 21307.781500014244,
+      "peakRssBytes": 564060160,
+      "peakPrivateBytes": 584269824,
+      "totalWallMs": 31713.663200003793
+    },
+    {
+      "model": "qwen3-embedding-0.6b",
+      "run": 2,
+      "cpuPercentBefore": 10.2,
+      "load": {
+        "modelId": "Qwen/Qwen3-Embedding-0.6B",
+        "revision": "ms-onnx-community-69da7161-fp32-last-tail512-v1",
+        "dimensions": 1024,
+        "loadMs": 3480.0611,
+        "verifyMs": 1641.2614,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 3519.0125000081025,
+      "corpusWallMs": 67742.8338000027,
+      "peakRssBytes": 2173775872,
+      "peakPrivateBytes": 2347962368,
+      "totalWallMs": 112536.10579998349
+    },
+    {
+      "model": "bge-small-zh-v1.5",
+      "run": 2,
+      "cpuPercentBefore": 17.9,
+      "load": {
+        "modelId": "BAAI/bge-small-zh-v1.5",
+        "revision": "ms-xenova-313386ad-fp32-cls-tail512-v1",
+        "dimensions": 512,
+        "loadMs": 233.9975,
+        "verifyMs": 79.4043,
+        "maxTokens": 512,
+        "threads": 2,
+        "batchSize": 8,
+        "versions": {
+          "node": "24.11.1",
+          "onnxruntime": "1.30.0",
+          "tokenizers": "0.2.0"
+        },
+        "hardware": {
+          "cpu": "13th Gen Intel(R) Core(TM) i7-13700K",
+          "logicalCpus": 24,
+          "ramBytes": 102747942912,
+          "platform": "win32",
+          "architecture": "x64"
+        }
+      },
+      "loadWallMs": 275.91180001036264,
+      "corpusWallMs": 2972.658600017894,
+      "peakRssBytes": 226586624,
+      "peakPrivateBytes": 221339648,
+      "totalWallMs": 4848.150300007546
+    }
+  ],
+  "artifacts": {
+    "all-results.md": "3503ce8996679909476db82cd2a7459e63e892a35c7657c9fb3b5ce671770671",
+    "cosine-floor.csv": "3bbf601b8a90fb4a200f337d36ffd24e13174559f51851a4a700d107e1e3fbfb",
+    "errors.md": "0c0ce41f61c847a97c1ddbdf211aa7ae5f0bfd0d025f50bdfb679a85b2ffa657",
+    "latency-and-resources.json": "a6cccde71204f034d3922a801b0f8551ff94abb2d4a181e5a5e441a42b396031",
+    "latency-per-query.csv": "9e06a0967c3aa6ba77e7bf8aedaddbf5ef7b8fb163806746996bedb9d5e6c5ce",
+    "method-memory.json": "bdad8493a61a3080da787536cb96579aaf18dce572695b9b0dbae5aca6a95795",
+    "paired-differences-role-explicit.csv": "677ed59d9bfc06a2c206535a78c9357a2bcba95c90d381ef3c57a3ae90d7a04c",
+    "paired-differences.csv": "e79fb244d0e566e96ce38ccaa3937baccd24a138a2763be2aaaf9fa0e4fb4032",
+    "per-query-role-explicit.csv": "2705f0f9b05e702258c853cd905916dafc48f5ccfcebc4780021b66f06152f37",
+    "per-query.csv": "9d0e33b8629a88c845d67d7aaf2a9834a0bd128598969dc7331f6879af3fbae4",
+    "quality-role-explicit.csv": "364d40542c27aedbab4ff94fa09e54931316ca99f92abadc185c06578282106b",
+    "quality.csv": "40b18e12540447eda32687224962a659ceed1c4746113dd641f62862d3fec72e",
+    "scan-scaling.json": "5df2843fc27c3e3834d6f6d96dda25b71114fad787725eae5eef574fd6afc2bb"
+  }
+}

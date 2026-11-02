@@ -1,14 +1,15 @@
 {
-  "appId": "com.local.wechatvibe.real-client",
-  "productName": "WechatVibe",
+  "appId": "com.local.knowyourfriends.real-client",
+  "productName": "知己微信助手",
   "directories": {
     "output": "__CLEAN_BUILD_OUTPUT__"
   },
   "electronDist": "__ELECTRON_DIST__",
   "extraMetadata": {
-    "name": "wechatvibe",
-    "author": "tswawa",
-    "description": "WechatVibe local chat analysis and portraits",
+    "name": "know-your-friends",
+    "author": "youdrew",
+    "kyfUpdatesEnabled": false,
+    "description": "Zhiji WeChat Assistant local-first chat and relationship memory",
     "main": "scripts/desktop-main.cjs"
   },
   "files": [
@@ -16,13 +17,26 @@
     "scripts/real-client-shell.cjs",
     "scripts/real-client-preload.cjs",
     "scripts/real-client-recovery.cjs",
+    "scripts/settings-window.cjs",
+    "scripts/self-analysis-window.cjs",
+    "scripts/self-analysis-preload.cjs",
     "scripts/real-client-update.cjs",
     "scripts/real-client-update-proxy.cjs",
-    "scripts/real-client-model.cjs",
     "scripts/real-client-update-controller.cjs",
     "scripts/real-client-update-helper.cjs",
-    "scripts/advisor-companion.cjs",
-    "scripts/advisor-preload.cjs",
+    "scripts/plugin-windows.cjs",
+    "scripts/plugin-panel-preload.cjs",
+    "scripts/model-traces-host.cjs",
+    "scripts/model-traces-window.cjs",
+    "scripts/model-traces-preload.cjs",
+    "scripts/image-preview.cjs",
+    "scripts/chat-link-host.cjs",
+    "scripts/friend-windows.cjs",
+    "scripts/friend-preload.cjs",
+    "scripts/history-windows.cjs",
+    "scripts/history-preload.cjs",
+    "scripts/external-import-windows.cjs",
+    "scripts/external-import-preload.cjs",
     "scripts/update-signing.pub",
     "package.json",
     "!node_modules/**"
@@ -41,7 +55,7 @@
   ],
   "win": {
     "target": ["dir"],
-    "icon": "chatui/assets/wechatvibe-icon.ico",
-    "executableName": "WechatVibe"
+    "icon": "chatui/assets/app-icon.ico",
+    "executableName": "KnowYourFriends"
   }
 }

@@ -1,0 +1,9 @@
+/* Modified by Know Your Friends, 2026-10-11: a distinct collapse icon aligned with session controls. */
+/* Moved from chatui/advisor-window.css to chatui/plugin-panel.css on 2026-10-13 (generic plugin panel host). */
+/* Modified 2026-10-22: the host fills its own window, which the system frame closes. */
+html, body { width: 100%; height: 100%; padding: 0; margin: 0; background: #171717; overflow: hidden; }
+body[data-theme="light"] { background: #f7f8fa; }
+.plugin-panel-body { width: 100%; height: 100%; box-sizing: border-box; }
+.plugin-panel-frame { display: block; box-sizing: border-box; width: 100%; height: 100%; border: 0; background: transparent; }
+.plugin-panel-empty { padding: 72px 24px; text-align: center; font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; color: #969696; }
+.plugin-panel-empty button { display: block; margin: 10px auto 0; padding: 5px 12px; border: 1px solid #484848; border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }

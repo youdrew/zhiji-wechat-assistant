@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "id": "kyf.message-insights",
+  "name": "分析与建议",
+  "version": "0.2.0",
+  "description": "为开启的好友的每条新消息生成解读和三条回复建议；结果默认收起，不会自动发送",
+  "author": "Know Your Friends",
+  "core": { "api": [1] },
+  "runtime": { "type": "python", "entry": "backend/main.py" },
+  "events": ["message.new"],
+  "contributes": {
+    "settings": {
+      "schema": 1,
+      "description": "仅对你在聊天中手动开启的好友生效，仍为每条消息生成三条可复制建议；不会自动发送。",
+      "groups": [{
+        "id": "replies", "title": "回复建议",
+        "fields": [{ "key": "replyStyle", "title": "默认回复语气", "type": "select", "default": "natural",
+          "description": "后续排队的消息与重试采用这个偏好，已排队的任务和已有结果保留。始终尊重最近对话、表达习惯与对方边界。",
+          "options": [{ "value": "natural", "label": "自然口语" }, { "value": "brief", "label": "简短直接" }, { "value": "polite", "label": "礼貌温和" }]
+        }]
+      }]
+    },
+    "chatHeader": [{ "id": "insights", "label": "分析与建议", "kind": "toggle" }],
+    "messageAnnotations": true
+  }
+}

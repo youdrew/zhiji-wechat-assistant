@@ -6,13 +6,17 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'real-client-recovery.cjs'), 'utf8');
+const { pythonFlags } = require('./real-client-recovery.cjs');
+const ROOT = path.join(__dirname, 'synthetic root');
+const LAUNCHER = path.join(ROOT, 'scripts', 'start-real-client.py');
+const BUNDLED_PYTHON = path.join(ROOT, 'runtime', 'python', 'python.exe');
 
-function fixture(markerPresent, healthMode = 'offline') {
+function fixture(markerPresent, healthMode = 'offline', python = 'python') {
   const calls = [];
   let tick;
   let recovered = 0;
   const fakeFs = {
-    existsSync: target => target.endsWith('no-auto-recovery.json') ? markerPresent : false,
+    existsSync: target => target.endsWith('no-auto-recovery.json') ? markerPresent : target === python,
   };
   const instanceId = 'a'.repeat(64);
   const fakeHttp = {
@@ -42,13 +46,13 @@ function fixture(markerPresent, healthMode = 'offline') {
     module,
     require: name => ({ 'node:child_process': fakeChild, 'node:fs': fakeFs,
       'node:http': fakeHttp, 'node:path': path })[name],
-    process: { env: { WECHATVIBE_PYTHON: 'python' } },
+    process: { env: { KYF_PYTHON: python } },
     URL,
     setInterval: callback => { tick = callback; return { unref() {} }; },
     clearInterval: () => {},
   });
   const stop = module.exports.monitorBridge({
-    root: path.join(__dirname, 'synthetic root'),
+    root: ROOT,
     url: 'http://127.0.0.1:54321',
     instanceId,
     isOpen: () => true,
@@ -81,10 +85,23 @@ async function main() {
   const available = fixture(false);
   await flush();
   assert.equal(available.calls.length, 1);
+  assert.deepEqual(Array.from(available.calls[0].args), [LAUNCHER, '--no-open', '--recovery', '--json']);
   available.calls[0].done(null, '{"ok":true,"created":true}');
   await flush();
   assert.equal(available.recovered(), 1);
   available.stop();
+
+  // Only the bundled runtime runs with -s, so it never loads the user's own Python packages.
+  const bundled = fixture(false, 'offline', BUNDLED_PYTHON);
+  await flush();
+  assert.equal(bundled.calls.length, 1);
+  assert.deepEqual(Array.from(bundled.calls[0].args), ['-s', LAUNCHER, '--no-open', '--recovery', '--json']);
+  bundled.stop();
+  assert.deepEqual(pythonFlags(ROOT, BUNDLED_PYTHON.toUpperCase()), ['-s']);
+  assert.deepEqual(pythonFlags(ROOT, path.join(ROOT, 'runtime', 'python', '..', 'python', 'python.exe')), ['-s']);
+  assert.deepEqual(pythonFlags(ROOT, path.join(ROOT, '.venv', 'Scripts', 'python.exe')), []);
+  assert.deepEqual(pythonFlags(ROOT, path.join(__dirname, 'other root', 'runtime', 'python', 'python.exe')), []);
+  assert.deepEqual(pythonFlags(ROOT, 'python'), []);
 
   const reused = fixture(false);
   await flush();

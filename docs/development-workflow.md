@@ -1,8 +1,8 @@
 # 知己微信助手 · Zhiji WeChat Assistant 开发与公开发布流程
 
-本流程适用于知己微信助手 · Zhiji WeChat Assistant 的维护者与外部贡献者。公开仓库为 [youdrew/zhiji-wechat-assistant](https://github.com/youdrew/zhiji-wechat-assistant)，`main` 保存已审核的公开版本。
+本流程适用于知己微信助手 · Zhiji WeChat Assistant 的维护者与外部贡献者。公开仓库为 [youdrew/zhiji-wechat-assistant](https://github.com/youdrew/zhiji-wechat-assistant)，`main` 保存已审核的公开版本。历史名称与内部兼容标识的处理见[品牌与兼容约定](branding.md)。
 
-更新日期：2026-10-22（Asia/Tokyo）。
+更新日期：2026-10-22（品牌与仓库入口更新；原流程日期为 2026-10-09，Asia/Taipei）。
 
 ## 分支与 Pull Request
 
@@ -28,10 +28,10 @@
 
 ## 本地验证
 
-按照 [README 的源码运行步骤](../README.md#源码运行)安装指定 Node.js、Python 与项目依赖。在当前 PowerShell 中选择项目 Python：
+按照[源码运行步骤](getting-started.md#从源码运行)安装指定 Node.js、Python 与项目依赖。在当前 PowerShell 中选择项目 Python：
 
 ```powershell
-$env:WECHATVIBE_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+$env:KYF_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
 npm.cmd run typecheck
 npm.cmd run build:advisor-ui
 npm.cmd test
@@ -40,7 +40,6 @@ npm.cmd test
 - 优先使用合成会话与临时目录复现问题。
 - 修改前端源文件时，核对生成的界面 bundle 与源码是否一致。
 - `npm.cmd test` 汇总类型检查、Node、桌面脚本与 Python 回归；如报告依赖缺失或环境跳过，应如实记录，不能写成已经验证。
-- `npm.cmd run test:model` 会实际加载本地 Laya，需先安装模型；它不属于没有模型时的最小检查。
 - 合成测试通过不等于已验证所有微信版本、真实账号数据或模型服务商。真实环境测试应单独说明范围，公开报告仅保留脱敏结果。
 
 ## 公开内容检查
@@ -57,9 +56,11 @@ npm.cmd test
 
 ## 产品发布与上游同步
 
-当前提供源码开发版。继承的上游标签用于溯源，不代表 Zhiji WeChat Assistant 已发布同名产品版本。
+2.0.0 是本项目首个免费开源安装版本。继承的上游标签用于溯源，不代表知己微信助手已发布同名产品版本。
 
-建立独立安装包发布前，需要明确应用标识、产物命名、更新地址、签名与校验方式，并测试安装、升级、回退及数据保留。完成这些工作前，不把上游更新入口写成 Zhiji WeChat Assistant 的更新能力。
+`npm.cmd run build:installer` 从全新的白名单 staging 构建 Windows x64 用户级安装器，内置运行环境；安装器只删除其安装的文件，运行后生成的本机资料保留在原目录。产物保存在被忽略的 `.local/portable-builds/`，不得提交到代码仓库。版本由 `package.json` 与 `package-lock.json` 同步维护。
+
+首版明确关闭应用内自动更新，后续到[官方发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases)下载并重装；自有更新签名、自动升级与回退链路需另行验收。公开发行前核对产物 SHA-256、程序签名状态、第三方二进制及对应源码交付，并完成安装、重装、卸载保留数据的检查。应用标识、内部产物名与数据目录继续保持兼容。构建成功不等于已经上传或发布。
 
 关注 [WechatVibe](https://github.com/tswawa/WechatVibe) 的改进与兼容性修复。引入上游变更时保留来源，评估与当前公开版本的差异，并通过单独 PR 审核。项目来源和上游贡献者署名不因独立维护而移除。
 

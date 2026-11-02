@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP 管理</title>
+  <link rel="stylesheet" href="mcp.css">
+  <script src="/plugin-sdk/web/kyf-host.js" defer></script>
+  <script src="mcp.js" defer></script>
+</head>
+<body class="mcp-page">
+  <!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+  <main id="viewAdmin" class="mcp-view">
+    <header class="mcp-header">
+      <div class="mcp-title">
+        <h1>MCP 管理</h1>
+        <span id="statusLine" class="mcp-status" role="status"></span>
+      </div>
+      <div class="mcp-header-actions">
+        <button type="button" id="btnDisconnect" class="mcp-plain">断开所有连接</button>
+        <button type="button" id="btnSafety" class="mcp-plain">安全与数据说明</button>
+        <button type="button" id="btnRefresh" class="mcp-plain">刷新</button>
+      </div>
+    </header>
+
+    <section class="mcp-card" aria-labelledby="masterTitle">
+      <div class="mcp-row">
+        <div class="mcp-row-main">
+          <h2 id="masterTitle">总开关</h2>
+          <p id="masterNote" class="mcp-note">关闭后所有客户端立即断开，且不能新建连接。</p>
+        </div>
+        <button type="button" id="masterSwitch" class="mcp-switch" role="switch" aria-checked="true"
+                aria-label="MCP 总开关"></button>
+      </div>
+      <div id="masterOffBanner" class="mcp-banner" hidden>MCP 已关闭。所有客户端已断开；重新打开后客户端需重新配对连接。</div>
+    </section>
+
+    <section class="mcp-card" aria-labelledby="clientsTitle">
+      <div class="mcp-bar">
+        <h2 id="clientsTitle">客户端</h2>
+        <span class="mcp-spacer"></span>
+        <button type="button" id="btnCreate" class="mcp-primary">配对新客户端</button>
+      </div>
+      <div id="profileList" class="mcp-profiles"></div>
+    </section>
+
+    <section class="mcp-card" aria-labelledby="callsTitle">
+      <div class="mcp-bar">
+        <h2 id="callsTitle">最近调用</h2>
+        <span class="mcp-spacer"></span>
+        <span class="mcp-note">只记录时间、客户端、动作与结果，不含聊天正文。</span>
+      </div>
+      <table id="callsTable" class="mcp-table" hidden>
+        <thead>
+          <tr><th>时间</th><th>客户端</th><th>动作</th><th>账号</th><th>结果</th><th>耗时</th></tr>
+        </thead>
+        <tbody id="callsBody"></tbody>
+      </table>
+      <p id="callsEmpty" class="mcp-empty" hidden>暂无调用记录。</p>
+    </section>
+
+    <p class="mcp-footer-note">连接配置、授权模式与联系人授权只能在本页更改；MCP 工具不能修改自己的授权。</p>
+  </main>
+
+  <section id="viewSafety" class="mcp-view" hidden>
+    <header class="mcp-header">
+      <div class="mcp-title">
+        <button type="button" id="btnSafetyBack" class="mcp-plain">← 返回管理</button>
+        <h1>安全与数据说明</h1>
+      </div>
+    </header>
+    <div class="mcp-card mcp-prose">
+      <h2>数据流向</h2>
+      <p>外部 AI 客户端通过 MCP 读取到的资料，会先进入该客户端。该客户端随后可能把它配置的模型服务商处理这些内容，
+        处理过程发生在本机之外。本页的开关与授权只约束知己这一侧提供什么，不约束外部客户端之后如何使用或转发。</p>
+      <p>已经提供给外部模型的内容无法收回。撤销授权或删除客户端只阻止后续读取。</p>
+      <h2>提示注入</h2>
+      <p>聊天内容来自联系人，其中可能包含刻意构造的文字，试图诱导外部 AI 客户端去调用工具（例如读取更多资料或发送消息）。
+        知己侧的授权检查不受这些文字影响，但外部客户端是否遵循自身安全策略取决于该客户端。</p>
+      <h2>本机进程边界</h2>
+      <p>同一 Windows 用户下的进程原则上可以读取该用户可访问的本机文件。MCP 的配对与授权约束的是受支持的 MCP
+        调用与误用，不提供操作系统级的恶意程序隔离。</p>
+      <h2>凭据与确认</h2>
+      <p>客户端凭据只在创建或重新生成时展示一次，之后不再回显；知己只保存校验值，不保存明文。</p>
+      <p>已保存模型密钥的明文不能通过 MCP 读取或导出。删除整个账号、清空本机数据等高影响删除，每次都需要在本机确认界面单独确认。</p>
+    </div>
+  </main>
+
+  <div id="mcpToast" class="mcp-toast" role="status" hidden></div>
+</body>
+</html>

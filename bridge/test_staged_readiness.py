@@ -17,7 +17,9 @@ import live_source
 from account_api import AccountAPI
 from conversation_selection import ConversationSelectionStore
 from live_source import ActiveSelection, LiveWeChatFactory, SessionOnlyWeChatDB
-from real_backend import Backend, MessagesUnavailableError, WeChatSource
+from backend_contracts import AccountUnavailableError, MessagesUnavailableError
+from backend_service import Backend
+from wechat_source import WeChatSource
 from real_http import make_handler
 
 
@@ -109,7 +111,7 @@ class StagedReadinessTests(unittest.TestCase):
                          ("peer", 0, "hello", 100, "peer", "Peer", 100, 0))
             conn.commit()
 
-    def test_exact_anchors_allow_sessions_http_200_but_block_message_and_analysis(self):
+    def test_exact_anchors_allow_sessions_http_200_but_block_messages(self):
         session, contact, _message = self.files
         self.scan_keys = {rel: self.keys[rel] for rel in (session, contact)}
         factory = self.factory()
@@ -122,10 +124,7 @@ class StagedReadinessTests(unittest.TestCase):
             reader._message_dbs()
         self.make_anchor_sqlite()
         source = self.source(factory)
-        store_calls = []
-        backend = Backend(source, analyzer=SimpleNamespace(model={"state": "ready"}),
-                          store_factory=lambda *_args: store_calls.append(True),
-                          selection_store=ConversationSelectionStore(self.root / "results"))
+        backend = Backend(source, selection_store=ConversationSelectionStore(self.root / "results"))
         self.addCleanup(backend.shutdown)
         accounts = AccountAPI(backend, self.root / "results", Path(reader.workdir).parent,
                               self.root / "stable")
@@ -143,8 +142,7 @@ class StagedReadinessTests(unittest.TestCase):
                 self.assertEqual(status, 200, selection)
                 self.assertEqual(selection, {"account": self.account, "initialized": False,
                                              "selectedSessions": []})
-                for endpoint in ("/api/messages?user=peer", "/api/analysis?user=peer",
-                                 "/api/profile?user=peer", "/api/history?account=synthetic_a&user=peer",
+                for endpoint in ("/api/messages?user=peer", "/api/history?account=synthetic_a&user=peer",
                                  "/api/history/search?account=synthetic_a&user=peer&q=hello"):
                     with self.subTest(endpoint=endpoint):
                         status, data = self.http_get(server, endpoint)
@@ -156,7 +154,6 @@ class StagedReadinessTests(unittest.TestCase):
                              lambda: source.media("peer", "0" * 64)):
                     with self.assertRaises(MessagesUnavailableError):
                         read()
-                self.assertEqual(store_calls, [])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -248,6 +245,104 @@ class StagedReadinessTests(unittest.TestCase):
             with source.request_scope():
                 self.assertTrue(source.sessions()["messagesReady"])
 
+    def test_pending_polls_preserve_final_ownership_query_but_explicit_invalidation_rejects_it(self):
+        # A scan's final ownership check can overlap a foreground startup poll.
+        # All pages, keys, process identities, and ownership answers here are synthetic.
+        self.addCleanup(live_source.reset_ownership_cache)
+        for action in ("db", "verified_identity", "partial_verified_identity", "explicit_invalidation"):
+            with self.subTest(action=action):
+                live_source.reset_ownership_cache()
+                # Each case starts before any scan has saved keys to the stable cache.
+                self.stable.unlink(missing_ok=True)
+                factory = self.factory()
+                source = WeChatSource()
+                source.factory = factory
+                source.active_account_locator = lambda: self.selection
+                if action == "partial_verified_identity":
+                    session, contact, _message = self.files
+                    self.scan_keys = {session: self.keys[session], contact: self.keys[contact]}
+                    self.scan_then_read(factory)
+                    self.assertFalse(source._db(fresh=True).messages_ready)
+                    source.verified_identity(messages=False)
+                    advisor_generation = source.advisor_binding_generation
+                    self.assertIsNotNone(source._advisor_binding)
+                    next(iter(factory.slots.values())).retry_at = 0
+                scanned = threading.Event()
+                ownership_entered = threading.Event()
+                release_ownership = threading.Event()
+                scan_completed = threading.Event()
+                log = io.StringIO()
+
+                def scan(_pid, _pages, _metrics):
+                    scanned.set()
+                    return dict(self.keys)
+
+                def owners(_paths):
+                    ownership_entered.set()
+                    if not release_ownership.wait(3):
+                        raise AssertionError("synthetic ownership query was not released")
+                    return self.selection.processes
+
+                def snapshot():
+                    if scanned.is_set():
+                        live_source._owned_processes(["synthetic-startup.db"], fresh=True)
+                    return self.selection
+
+                original_scan = factory._scan
+
+                def tracked_scan(*args):
+                    try:
+                        original_scan(*args)
+                    finally:
+                        scan_completed.set()
+
+                factory._scan = tracked_scan
+                with patch("live_source.active_account_snapshot", side_effect=snapshot), \
+                        patch("live_source.file_owners", side_effect=owners) as query, \
+                        patch("live_source._scan_config_cipher_keys", side_effect=scan), \
+                        redirect_stderr(log):
+                    try:
+                        if action == "partial_verified_identity":
+                            self.assertFalse(source._db(fresh=True).messages_ready)
+                        else:
+                            with self.assertRaises(AccountUnavailableError):
+                                source._db(fresh=True)
+                        self.assertTrue(ownership_entered.wait(2))
+                        generation = live_source._ownership_generation
+                        if action == "explicit_invalidation":
+                            source.invalidate_advisor_identity()
+                            self.assertEqual(live_source._ownership_generation, generation + 1)
+                        elif action == "partial_verified_identity":
+                            with self.assertRaises(MessagesUnavailableError):
+                                source.verified_identity(messages=True)
+                            self.assertEqual(live_source._ownership_generation, generation)
+                            self.assertIsNone(source._advisor_binding)
+                            self.assertGreater(source.advisor_binding_generation, advisor_generation)
+                        else:
+                            with self.assertRaises(AccountUnavailableError):
+                                if action == "db":
+                                    source._db(fresh=True)
+                                else:
+                                    source.verified_identity()
+                            self.assertEqual(live_source._ownership_generation, generation)
+                        self.assertFalse(scan_completed.is_set())
+                    finally:
+                        release_ownership.set()
+                        self.assertTrue(scan_completed.wait(3), "background scan did not finish")
+                query.assert_called_once()
+                status = factory.preparation_status(self.account)
+                if action == "explicit_invalidation":
+                    self.assertEqual((status["state"], status["reason"], status["matched"]),
+                                     ("failed", "final_identity_error", 0))
+                    self.assertIn("无法核对当前微信账号", status["message"])
+                    self.assertNotIn("凭据尚未完整", status["message"])
+                else:
+                    self.assertEqual((status["state"], status["reason"], status["matched"]),
+                                     ("ready", "ready", len(self.keys)))
+                    self.assertTrue(source._db(fresh=True).messages_ready)
+                for key in self.keys.values():
+                    self.assertNotIn(key.hex(), log.getvalue())
+
     def test_account_and_page_change_invalidate_pinned_reader(self):
         session, contact, message = self.files
         self.scan_keys = dict(self.keys)
@@ -270,23 +365,20 @@ class StagedReadinessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "未就绪"):
                 source.require_messages_ready()
 
-    def test_new_unkeyed_message_shard_blocks_saved_analysis_before_store_access(self):
+    def test_new_unkeyed_message_shard_blocks_message_reads(self):
         self.scan_keys = dict(self.keys)
         factory = self.factory()
         self.scan_then_read(factory)
         source = self.source(factory)
         source.require_messages_ready()
-        store_calls = []
-        backend = Backend(source, analyzer=SimpleNamespace(model={"state": "ready"}),
-                          store_factory=lambda *_args: store_calls.append(True))
+        backend = Backend(source)
         self.addCleanup(backend.shutdown)
         self.add_database("message", "message_1.db", 4)
         with patch("live_source.threading.Thread", ImmediateThread), redirect_stderr(self.log):
             with self.assertRaisesRegex(RuntimeError, "未就绪"):
-                backend.analysis("peer")
+                backend.messages("peer", 1)
             with self.assertRaises(MessagesUnavailableError):
-                backend.analysis("peer")
-        self.assertEqual(store_calls, [])
+                backend.messages("peer", 1)
 
     def test_zero_message_shards_does_not_complete_history_baseline(self):
         session, contact, message = self.files

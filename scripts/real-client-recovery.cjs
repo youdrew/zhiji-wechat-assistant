@@ -4,6 +4,13 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 
+// -s keeps the bundled runtime from loading packages from the user's own Python;
+// a development interpreter keeps its usual user site.
+function pythonFlags(root, python) {
+  const bundled = path.join(root, 'runtime', 'python', 'python.exe');
+  return path.resolve(python).toLowerCase() === path.resolve(bundled).toLowerCase() ? ['-s'] : [];
+}
+
 function launcherCreatedBridge(stdout) {
   if (typeof stdout !== 'string') return false;
   for (const line of stdout.split(/\r?\n/)) {
@@ -20,7 +27,7 @@ function launcherCreatedBridge(stdout) {
 function monitorBridge({ root, url, instanceId, isOpen, onRecovered }) {
   const port = Number(new URL(url).port);
   const bundledPython = path.join(root, 'runtime', 'python', 'python.exe');
-  const python = process.env.WECHATVIBE_PYTHON || (fs.existsSync(bundledPython) ? bundledPython : 'python');
+  const python = process.env.KYF_PYTHON || (fs.existsSync(bundledPython) ? bundledPython : 'python');
   const launcher = path.join(root, 'scripts', 'start-real-client.py');
   const noAutoRecovery = path.join(root, '.local', 'real-client-runtime', 'no-auto-recovery.json');
   let checking = false;
@@ -68,7 +75,7 @@ function monitorBridge({ root, url, instanceId, isOpen, onRecovered }) {
     // never stops another process or creates a duplicate bridge.
     recoveryDone = new Promise(resolve => {
       try {
-        execFile(python, [launcher, '--no-open', '--recovery', '--json'],
+        execFile(python, [...pythonFlags(root, python), launcher, '--no-open', '--recovery', '--json'],
           { cwd: root, windowsHide: true, timeout: 60000,
             env: { ...process.env, CHATUI_PORT: String(port) } }, (error, stdout) => {
             recovering = false;
@@ -93,4 +100,4 @@ function monitorBridge({ root, url, instanceId, isOpen, onRecovered }) {
   return () => { stopped = true; clearInterval(timer); return recoveryDone; };
 }
 
-module.exports = { monitorBridge };
+module.exports = { monitorBridge, pythonFlags };

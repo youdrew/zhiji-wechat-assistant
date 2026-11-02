@@ -1,6 +1,7 @@
 """Read-only WeChat adapter: account identity, snapshots, messages, and media.
 
 No inference scheduling or analysis-cache writes belong in this module.
+Modified by Know Your Friends, 2026-10-10: safe live startup diagnostics.
 """
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -18,11 +20,15 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 from backend_contracts import (
-    AccountChangedError, AccountUnavailableError, MAX_IMAGE_BYTES, MAX_ISSUED_IMAGES,
+    AccountChangedError, AccountPreparationPending, AccountUnavailableError, MAX_ISSUED_IMAGES,
     MessageWindow, MessageWindowBatch, MessagesUnavailableError,
     PROFILE_METADATA_CACHE_LIMIT, QUOTED_REPLY_TYPE, ROOT, SESSION_PREVIEWS, SYSTEM_NAMES,
 )
 from history_browser import encode_cursor
+from media_assets import (
+    LocalMedia, MediaUnavailable, clear_owned_media, media_kind, media_metadata, sticker_identity,
+)
+from message_links import link_metadata
 
 # Official accounts, service notifications and fold placeholders carry no conversation
 # worth analysing or listing, so a whole-account sidebar leaves them out. Real contacts,
@@ -34,6 +40,70 @@ SERVICE_ACCOUNT_IDS = frozenset({
 })
 SERVICE_ACCOUNT_SUFFIXES = frozenset({"placeholder_foldgroup", "weclaw", "kefu.openim"})
 ADVISOR_IDENTITY_LEASE_SECONDS = 2.0
+
+
+class _SourceLock:
+    """Reentrant source lock that remembers when each thread asked for its outermost hold.
+
+    Know Your Friends, 2026-10-23 (Apache-2.0): the first reader check of a hold
+    may share an ownership query that started after that request. None of this
+    thread's source reads can be newer than the request, so queued callers share
+    one Windows query instead of each paying for their own.
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._local = threading.local()
+
+    def acquire(self, blocking=True, timeout=-1):
+        local = self._local
+        depth = getattr(local, "depth", 0)
+        requested = time.monotonic()
+        if not self._lock.acquire(blocking, timeout):
+            return False
+        if depth == 0:
+            local.requested, local.resolved = requested, False
+        local.depth = depth + 1
+        return True
+
+    def release(self):
+        self._local.depth -= 1
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+
+    def _is_owned(self):
+        return self._lock._is_owned()
+
+    def first_check_since(self):
+        """The request time for this hold's first reader check, then None for later (post-read) checks."""
+        local = self._local
+        if getattr(local, "depth", 0) and not local.resolved:
+            local.resolved = True
+            return local.requested
+        return None
+
+
+def _wechat_process_running():
+    """Read process names only; an incomplete query cannot prove WeChat is closed."""
+    try:
+        import psutil
+        unknown = False
+        for process in psutil.process_iter(["name"]):
+            name = process.info.get("name")
+            if not isinstance(name, str) or not name:
+                unknown = True
+            elif name.lower() in ("weixin.exe", "wechat.exe"):
+                return True
+        return None if unknown else False
+    except Exception:
+        # Optional dependency, permissions and process-query failures are not login state.
+        return None
 
 
 def is_service_account(user):
@@ -112,7 +182,8 @@ def message_id(account, user, shard, row):
 
 
 class WeChatSource:
-    def __init__(self, factory=None, classifier=None, media_factory=None, active_account_locator=None):
+    def __init__(self, factory=None, classifier=None, media_factory=None, active_account_locator=None,
+                 media_storage_root=None):
         self.factory = factory
         self.classifier = classifier
         self.media_factory = media_factory
@@ -126,7 +197,8 @@ class WeChatSource:
             self.active_account_locator = active_account_snapshot
         else:
             self.active_account_locator = active_account_locator or active_account_dir
-        self.lock = threading.RLock()
+        self.lock = _SourceLock()
+        self._proved_at = None
         self.closed = False
         self.db = None
         self._account_dir = None
@@ -142,21 +214,47 @@ class WeChatSource:
         self.profile_metadata_cache = OrderedDict()
         self.profile_overview_counts_cache = OrderedDict()
         self.media_reason = threading.local()
+        self._local_media_state = None
+        self._media_storage_root = Path(media_storage_root) if media_storage_root else ROOT / ".local" / "media-data"
+        self._media_engines = {}
+        self._blocked_media_accounts = set()
 
-    def _release_db(self):
-        self.invalidate_advisor_identity()
+    def preparation_status(self, account=None):
+        """Explain an unavailable live account without starting ownership or DB scans."""
+        running = _wechat_process_running() if self.live_account else None
+        if running is False:
+            return {"reason": "wechat_not_running", "state": "unavailable",
+                    "message": "未检测到正在运行的微信，请先打开电脑版微信并登录。"}
+        status = getattr(self.factory, "preparation_status", None)
+        if callable(status):
+            try:
+                result = status(account)
+            except Exception:
+                result = None
+            if isinstance(result, dict) and result:
+                return result.copy()
+        if not self.live_account:
+            return None
+        message = ("微信已运行，但暂时无法确认当前账号，请确认电脑版微信已完成登录。"
+                   if running is True else
+                   "暂时无法确认当前微信账号，请确认电脑版微信已打开并完成登录。")
+        return {"reason": "active_account_unavailable", "state": "unavailable", "message": message}
+
+    def _release_db(self, *, reset_ownership=True):
+        self.invalidate_advisor_identity(reset_ownership=reset_ownership)
         self.db = None
         self._account_dir = None
         self._active_checked_at = 0.0
         self._self_username = None
         self.issued_images.clear()
         self.window_images.clear()
+        self._local_media_state = None
         self.profile_metadata_cache.clear()
 
-    def _active_selection(self, *, fresh=True):
+    def _active_selection(self, *, fresh=True, since=None):
         from live_source import active_account_snapshot
         if self.live_account and self.active_account_locator is active_account_snapshot:
-            return self.active_account_locator(fresh=fresh)
+            return self.active_account_locator(fresh=fresh, **({"since": since} if since is not None else {}))
         return self.active_account_locator()
 
     def _ordinary_db(self):
@@ -236,6 +334,10 @@ class WeChatSource:
 
     def _db(self, fresh=False, reuse_ownership=False):
         with self.lock:
+            # Only a hold's first check may share a query started after the hold was
+            # requested; a later check in the same hold follows reads and stays strict.
+            since = self.lock.first_check_since() if isinstance(self.lock, _SourceLock) else None
+            self._proved_at = None
             if self.closed:
                 raise AccountUnavailableError()
             if not self.dynamic_account and self.db is not None:
@@ -245,7 +347,8 @@ class WeChatSource:
                         time.monotonic() - self._active_checked_at < 0.5):
                     return self.db
                 try:
-                    selection = self._active_selection(fresh=not reuse_ownership)
+                    selection = self._active_selection(fresh=not reuse_ownership, since=since)
+                    self._proved_at = getattr(selection, "proved_at", None)
                     location = (selection.account_dir if self.live_account and selection is not None
                                 else Path(selection).resolve() if selection is not None else None)
                 except Exception as exc:
@@ -332,7 +435,9 @@ class WeChatSource:
                         raise AccountUnavailableError()
                     page_token = _token(selection, pages, anchors_only=not db.messages_ready)
             except Exception as exc:
-                self._release_db()
+                # Waiting for the scanner is not an account change. Invalidating its
+                # in-flight ownership check here would discard fully prepared keys.
+                self._release_db(reset_ownership=not isinstance(exc, AccountPreparationPending))
                 if self.dynamic_account:
                     raise AccountUnavailableError() from exc
                 raise
@@ -353,6 +458,7 @@ class WeChatSource:
         with self.lock:
             try:
                 db = self._db(fresh=True)
+                proved_at = self._proved_at
                 ready = not self.live_account or bool(db.messages_ready)
                 if messages and not ready:
                     raise MessagesUnavailableError()
@@ -360,27 +466,37 @@ class WeChatSource:
                 if not account or not getattr(db, "workdir", None):
                     raise RuntimeError("WeChat account/workdir unavailable")
                 workdir = Path(db.workdir).resolve()
-            except Exception:
-                self.invalidate_advisor_identity()
+            except Exception as exc:
+                # A session-only reader still proves the current account. Message
+                # readiness polling must not cancel its background scan's final check.
+                pending = (isinstance(exc, MessagesUnavailableError) or
+                           isinstance(exc, AccountUnavailableError) and
+                           isinstance(exc.__cause__, AccountPreparationPending))
+                self.invalidate_advisor_identity(reset_ownership=not pending)
                 raise
-            self._remember_advisor_binding(db, account, workdir, ready)
+            self._remember_advisor_binding(db, account, workdir, ready, proved_at)
             return account, workdir
 
-    def _remember_advisor_binding(self, db, account, workdir, ready):
+    def _remember_advisor_binding(self, db, account, workdir, ready, proved_at=None):
+        # A shared ownership answer starts the lease when it finished, never later,
+        # so sharing a query cannot stretch how long one proof is trusted.
+        now = time.monotonic()
+        stamp = now if proved_at is None else min(now, proved_at)
         with self._advisor_identity_lock:
             if not self.closed and self.db is db:
                 previous = self._advisor_binding
                 if previous is None or previous[:4] != (account, workdir, db, ready):
                     self._advisor_binding_generation += 1
-                self._advisor_binding = (account, workdir, db, ready, time.monotonic())
+                self._advisor_binding = (account, workdir, db, ready, stamp)
 
-    def invalidate_advisor_identity(self):
+    def invalidate_advisor_identity(self, *, reset_ownership=True):
         """Invalidate the Advisor lease before releasing or reconfiguring this reader."""
         with self._advisor_identity_lock:
             self._advisor_binding = None
             self._advisor_binding_generation += 1
-        from live_source import reset_ownership_cache
-        reset_ownership_cache()
+        if reset_ownership:
+            from live_source import reset_ownership_cache
+            reset_ownership_cache()
 
     @property
     def advisor_binding_generation(self):
@@ -410,6 +526,13 @@ class WeChatSource:
         cached = self._leased_advisor_identity(messages)
         if cached is not None:
             return cached
+        # Modified by Know Your Friends, 2026-10-10: fixed lock order.
+        # Lock order is single-flight lock, then source lock. A caller already
+        # holding the reentrant source lock (context import) verifies directly;
+        # taking the single-flight lock here would deadlock against a thread
+        # that holds it and waits for the source lock in verified_identity.
+        if self.lock._is_owned():
+            return self.verified_identity(messages=messages)
         # Single-flight expired bindings without holding the small lease lock during I/O.
         with self._advisor_verification_lock:
             cached = self._leased_advisor_identity(messages)
@@ -498,6 +621,7 @@ class WeChatSource:
                                           "lastMsgSubType": sub_type,
                                           "pinned": bool(is_top) if is_top in (0, 1) else None,
                                           "lastSender": sender_name or sender or "",
+                                          "lastMessageFromSelf": sender == self_user if isinstance(sender, str) and sender else None,
                                           "isGroup": user.endswith("@chatroom")})
                 finally:
                     conn.close()
@@ -506,6 +630,83 @@ class WeChatSource:
                 raise AccountChangedError()
             return {"self": {"username": self_user, **self_contact}, "sessions": items,
                     "account": str(db.account), "messagesReady": bool(getattr(db, "messages_ready", True))}
+
+    def history_conversations(self):
+        """Discover message-backed private and group chats, including hidden/unselected ones.
+
+        SessionTable is a UI view, not an inventory of retained history. Resolve
+        actual Msg tables through Name2Id and contact metadata instead; report
+        unreadable shards and unresolved table names rather than claiming coverage.
+        No message body is read by this discovery operation. Each chat carries
+        ``latest``, its newest row position in the same form as ``history_highwater``,
+        so a caller can tell an unchanged chat without preparing it.
+        """
+        with self.lock:
+            db = self._ordinary_db()
+            if self.live_account and not db.messages_ready:
+                raise MessagesUnavailableError()
+            contacts = self._contacts(db)
+            own_user = self.self_user(db)
+            names = set(contacts)
+            shards, failed, readable = [], [], 0
+            for rel, _path, _size in db._db_files:
+                normalized = rel.replace("\\", "/")
+                if not re.fullmatch(r"message/message_\d+\.db", normalized):
+                    continue
+                connection = None
+                try:
+                    connection = db._open(rel)
+                    tables = {row[0] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")
+                        if isinstance(row[0], str) and re.fullmatch(r"Msg_[0-9a-fA-F]{32}", row[0])}
+                    names.update(row[0] for row in connection.execute("SELECT user_name FROM Name2Id")
+                                 if isinstance(row[0], str))
+                    # Positions are named by snapshot file, exactly like history highwaters.
+                    shard = Path(connection.execute("PRAGMA database_list").fetchone()[2]).name
+                    if not re.fullmatch(r"message__message_\d+\.db", shard):
+                        shard = None
+                    nonempty = {}
+                    for table in tables:
+                        try:
+                            row = connection.execute(f'SELECT sort_seq,local_id FROM "{table}" '
+                                                     "ORDER BY sort_seq DESC,local_id DESC LIMIT 1").fetchone()
+                        except sqlite3.OperationalError:
+                            row = connection.execute(f'SELECT NULL,NULL FROM "{table}" LIMIT 1').fetchone()
+                        if row is not None:
+                            nonempty[table.lower()] = ((int(row[0]), shard, int(row[1])) if shard and
+                                                       type(row[0]) is int and type(row[1]) is int else None)
+                    shards.append((normalized, nonempty))
+                    readable += 1
+                except (AccountChangedError, AccountUnavailableError, MessagesUnavailableError):
+                    raise
+                except Exception:
+                    failed.append({"shard": normalized, "error": "unreadable"})
+                finally:
+                    if connection is not None:
+                        connection.close()
+            mapping = {"msg_" + hashlib.md5(user.encode("utf-8")).hexdigest(): user for user in names
+                       if user and len(user) <= 128 and not re.search(r"[\x00-\x1f/\\]", user)}
+            found, latest, unresolved = set(), {}, 0
+            for _rel, tables in shards:
+                for table, position in tables.items():
+                    user = mapping.get(table)
+                    if user is None:
+                        unresolved += 1
+                    elif user != own_user and user != "filehelper" and not is_service_account(user):
+                        found.add(user)
+                        # Newest across shards in history-page order; unknown in any shard stays unknown.
+                        previous = latest.get(user, ())
+                        latest[user] = None if position is None or previous is None else max(previous, position)
+            if failed:
+                latest = {}  # an unreadable shard may hold a newer row
+            if self._db(fresh=True) is not db:
+                raise AccountChangedError()
+            return {"account": str(db.account), "conversations": [
+                {"user": user, "name": contact_display(contacts, user)["name"], "isGroup": user.endswith("@chatroom"),
+                 "latest": list(latest[user]) if latest.get(user) else None}
+                for user in sorted(found)], "coverage": {
+                    "state": "partial" if failed or unresolved or not readable else "complete",
+                    "readableShards": readable, "failedShards": failed, "unresolvedTables": unresolved}}
 
     def _shard_rows(self, db, user, limit, offset=0):
         found = db._msg_conns(user)
@@ -591,12 +792,15 @@ class WeChatSource:
         kind_name, kind, text = self._classified_content(db, local_type, content, compressed)
         if kind == "system":
             return None
+        # Modified by Know Your Friends, 2026-10-09: distinguish verified senders
+        # from display-only fallbacks before triggering automatic suggestions.
         sender = senders.get(int(sender_id or 0), "")
+        sender_resolved = bool(sender)
         if not sender and not user.endswith("@chatroom"):
             sender = user
         contact = contact_display(contacts, sender)
         timestamp = int(created or 0)
-        return {"id": message_id(str(db.account), user, shard,
+        message = {"id": message_id(str(db.account), user, shard,
                                  {"local_id": local_id, "sort_seq": seq, "server_id": server_id}),
                 "historyCursor": encode_cursor(str(db.account), user, (int(seq), shard, int(local_id))),
                 "side": "self" if sender and sender == own_user else "other", "text": text,
@@ -604,7 +808,25 @@ class WeChatSource:
                 "time": timestamp * 1000 if timestamp < 10_000_000_000 else timestamp,
                 "type": kind_name, "senderId": sender, "senderName": contact["name"],
                 "senderAvatar": contact["avatar"], "senderAvatarCandidates": contact["avatarCandidates"],
-                "_sort": [int(seq), shard, int(local_id)]}
+                "_sort": [int(seq), shard, int(local_id)], "_senderResolved": sender_resolved}
+        if isinstance(local_type, int) and local_type & 0xFFFFFFFF == 49:
+            _name, decoded = self._decoded_content(db, local_type, content, compressed)
+            link = link_metadata(local_type, decoded)
+            if link is not None:
+                message["link"] = link
+                message["kind"] = "other"
+                message["text"] = link["title"] or text
+        # Modified by Know Your Friends, 2026-10-10: retain local-media metadata,
+        # while keeping the legacy text/image/other contract for existing analysis.
+        if media_kind(local_type):
+            _name, decoded = self._decoded_content(db, local_type, content, compressed)
+            message["media"] = media_metadata(local_type, decoded)
+            key = (str(db.account), user, message["id"])
+            self.issued_images[key] = tuple(message["_sort"]) + (server_id,)
+            self.issued_images.move_to_end(key)
+            if len(self.issued_images) > MAX_ISSUED_IMAGES:
+                self.issued_images.popitem(last=False)
+        return message
 
     def messages(self, user, limit, offset=0):
         with self.lock:
@@ -619,7 +841,7 @@ class WeChatSource:
                 message = self._render_row(db, user, item, contacts, own_user)
                 if message:
                     result.append(message)
-                    if message["kind"] == "image" and item[0][1] == 3:
+                    if message.get("media") or message["kind"] == "image" and item[0][1] == 3:
                         key = (str(db.account), user, message["id"])
                         self.issued_images[key] = tuple(message["_sort"]) + (item[0][6],)
                         self.issued_images.move_to_end(key)
@@ -673,17 +895,18 @@ class WeChatSource:
                     message = self._render_row(db, user, item, contacts, own_user)
                     if message:
                         windows[user].append(message)
-                        if message["kind"] == "image" and item[0][1] == 3:
+                        if message.get("media") or message["kind"] == "image" and item[0][1] == 3:
                             images[user][message["id"]] = tuple(message["_sort"]) + (item[0][6],)
             if self._db(fresh=True) is not db:
                 raise AccountChangedError()
+            proved_at = self._proved_at
             # Each prepared conversation retains only the image capabilities belonging to
             # its current window, so preloading later chats cannot evict earlier images.
             for user in users:
                 self.window_images[(str(db.account), user)] = images[user]
             batch = MessageWindowBatch(windows, has_more_before)
             batch.verified_scope = (str(db.account), str(Path(db.workdir).resolve()))
-            self._remember_advisor_binding(db, batch.verified_scope[0], Path(batch.verified_scope[1]), True)
+            self._remember_advisor_binding(db, batch.verified_scope[0], Path(batch.verified_scope[1]), True, proved_at)
             return batch
 
     def texts_for_refs(self, user, refs, with_ids=False):
@@ -739,25 +962,81 @@ class WeChatSource:
                 raise AccountChangedError()
             return texts
 
-    def media(self, user, stable_id):
+    def sticker_details(self, user, refs):
+        """Identity, store pack and caption of sticker messages, by their stored shard and local id.
+
+        Added by Know Your Friends, 2026-10-14 (Apache-2.0). Returns ``{stable_id: {"id", "pack"?,
+        "caption"?, "packName"?}}`` for the refs that are sticker messages with a readable content MD5.
+        """
         self.require_messages_ready()
-        self.media_reason.value = None
-        def unavailable(reason):
-            self.media_reason.value = reason
-            return None
+        if not refs:
+            return {}
+        found = {}
+        with self.lock:
+            db = self._db(fresh=True)
+            by_shard = {}
+            for shard, local_id, stable_id in refs:
+                by_shard.setdefault(shard, {}).setdefault(int(local_id), set()).add(stable_id)
+            table = "Msg_" + hashlib.md5(user.encode("utf-8")).hexdigest()
+            for rel, _path, _size in db._db_files:
+                shard = rel.replace(os.sep, "__")
+                selected = by_shard.get(shard)
+                if not selected:
+                    continue
+                conn = db._open(rel)
+                try:
+                    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                                        (table,)).fetchone():
+                        continue
+                    ids = list(selected)
+                    for start in range(0, len(ids), 400):
+                        batch = ids[start:start + 400]
+                        rows = conn.execute(
+                            f"SELECT local_id,local_type,message_content,compress_content,server_id,sort_seq "
+                            f"FROM {table} WHERE local_id IN ({','.join('?' for _ in batch)})", batch)
+                        for local_id, local_type, content, compressed, server_id, sort_seq in rows:
+                            stable_id = message_id(str(db.account), user, shard,
+                                                   {"local_id": local_id, "sort_seq": sort_seq, "server_id": server_id})
+                            if stable_id not in selected.get(int(local_id), ()) or media_kind(local_type) != "sticker":
+                                continue
+                            _name, decoded = self._decoded_content(db, local_type, content, compressed)
+                            identity = sticker_identity(decoded)
+                            if identity is not None:
+                                found[stable_id] = identity
+                finally:
+                    conn.close()
+        if found:
+            # The account's emoticon index names installed store stickers; its absence only means no text.
+            try:
+                with self._local_media(db).operation() as store:
+                    captions, names = store.sticker_texts(list(found.values()))
+            except MediaUnavailable:
+                captions, names = {}, {}
+            for identity in found.values():
+                if captions.get(identity["id"]):
+                    identity["caption"] = captions[identity["id"]]
+                if names.get(identity.get("pack")):
+                    identity["packName"] = names[identity["pack"]]
+        self._verify_media_reader(db)
+        return found
+
+    def _verified_media_row(self, user, stable_id, expected_account=None):
+        self.require_messages_ready()
         if not isinstance(stable_id, str) or not re.fullmatch(r"[0-9a-f]{64}", stable_id):
-            return unavailable("invalid-id")
+            raise MediaUnavailable("invalid-id")
         with self.lock:
             db = self._db(fresh=True)
             account = str(db.account)
+            if expected_account is not None and account != expected_account:
+                raise AccountChangedError()
             issued = (self.issued_images.get((account, user, stable_id)) or
                       self.window_images.get((account, user), {}).get(stable_id))
             if issued is None:
-                return unavailable("not-issued")
+                raise MediaUnavailable("not-issued")
             seq, shard, local_id, server_id = issued
             if stable_id != message_id(account, user, shard,
-                                       {"local_id": local_id, "sort_seq": seq, "server_id": server_id}):
-                return unavailable("identity-mismatch")
+                    {"local_id": local_id, "sort_seq": seq, "server_id": server_id}):
+                raise MediaUnavailable("identity-mismatch")
             found = db._msg_conns(user)
             row = None
             try:
@@ -768,69 +1047,125 @@ class WeChatSource:
                     if Path(path).name != shard:
                         continue
                     matches = conn.execute(
-                        f"SELECT local_type,create_time,message_content,packed_info_data FROM {table} "
-                        "WHERE local_id=? AND sort_seq=? AND server_id=? LIMIT 2",
-                        (local_id, seq, server_id),
-                    ).fetchall()
-                    if len(matches) == 1 and matches[0][0] == 3:
-                        _, created, content, packed = matches[0]
-                        row = {"local_type": 3, "create_time": created,
-                               "content": content, "packed_info": packed}
+                        f"SELECT local_type,create_time,message_content,packed_info_data,compress_content FROM {table} "
+                        "WHERE local_id=? AND sort_seq=? AND server_id=? LIMIT 2", (local_id, seq, server_id)).fetchall()
+                    if len(matches) == 1 and media_kind(matches[0][0]):
+                        local_type, created, content, packed, compressed = matches[0]
+                        _name, decoded = self._decoded_content(db, local_type, content, compressed)
+                        row = {"local_type": local_type, "create_time": created, "content": content,
+                               "packed_info": packed, "compress_content": compressed,
+                               "decoded_content": decoded, "server_id": server_id}
                     break
             finally:
                 for conn in {id(conn): conn for conn, _ in found}.values():
                     conn.close()
-        if row is None:
-            return unavailable("row-unavailable")
-        try:
-            if self.media_factory is None:
-                from wechatauto.media import MediaDownloader
-                downloader = MediaDownloader(db)
-            else:
-                downloader = self.media_factory(db)
-            md5 = downloader._img_md5(row)
-            if not md5 or not re.fullmatch(r"[0-9a-f]{32}", md5):
-                return unavailable("metadata-unavailable")
-            dat_path = (downloader._find_dat(user, md5, row["create_time"]) or
-                        downloader._find_dat(user, md5, row["create_time"], thumbnail=True))
-            base = (Path(db.account_dir) / "msg" / "attach" /
-                    hashlib.md5(user.encode("utf-8")).hexdigest()).resolve()
-            if (not dat_path or Path(dat_path).name not in (md5 + ".dat", md5 + "_t.dat") or
-                    not Path(dat_path).resolve().is_relative_to(base)):
-                return unavailable("local-file-unavailable")
-            if Path(dat_path).stat().st_size > MAX_IMAGE_BYTES:
-                return unavailable("image-too-large")
-            with open(dat_path, "rb") as file:
-                magic = file.read(6)
-            aes_key = xor_key = None
-            if magic == b"\x07\x08\x56\x32\x08\x07":
-                derived = downloader._derive_cfg_key()
-                if derived:
-                    aes_key, xor_key = derived
+            if row is None:
+                raise MediaUnavailable("row-unavailable")
+            return db, row
+
+    def _local_media(self, db):
+        # Only the short reader/config lookup holds the source lock. Decoding and
+        # transcoding run outside it so they do not block live message polling.
+        with self.lock:
+            account = str(db.account)
+            if account in self._blocked_media_accounts:
+                raise MediaUnavailable("account-clearing")
+            key = (db, str(db.account), getattr(db, "workdir", None))
+            if self._local_media_state is None or self._local_media_state[0] != key:
+                if self.media_factory is None:
+                    from wechatauto.media import MediaDownloader
+                    downloader = MediaDownloader(db)
                 else:
-                    aes_key = downloader._load_persisted_key()
-                    if not aes_key:
-                        return unavailable("local-key-unavailable")
-                    xor_key = downloader._derive_xor_key(dat_path)
-            data = downloader.decrypt_image(dat_path, aes_key=aes_key, xor_key=xor_key)
-        except (OSError, ValueError, RuntimeError):
-            return unavailable("decode-failed")
-        if not isinstance(data, bytes) or len(data) > MAX_IMAGE_BYTES:
-            return unavailable("image-too-large")
-        if data.startswith(b"\xff\xd8\xff"):
-            mime = "image/jpeg"
-        elif data.startswith(b"\x89PNG\r\n\x1a\n"):
-            mime = "image/png"
-        elif data.startswith((b"GIF87a", b"GIF89a")):
-            mime = "image/gif"
-        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-            mime = "image/webp"
-        else:
-            return unavailable("unsupported-format")
+                    downloader = self.media_factory(db)
+                store = LocalMedia(db, downloader, self._media_account_root(account))
+                self._media_engines.setdefault(account, set()).add(store)
+                self._local_media_state = (key, store)
+            return self._local_media_state[1]
+
+    def _media_account_root(self, account):
+        return self._media_storage_root / hashlib.sha256(account.encode("utf-8")).hexdigest()
+
+    def clear_media_account(self, account):
+        with self.lock:
+            self._blocked_media_accounts.add(account)
+            stores = list(self._media_engines.get(account, ()))
+        for store in stores:
+            store.close()
+        clear_owned_media(self._media_account_root(account))
+        with self.lock:
+            self._media_engines.pop(account, None)
+            if self._local_media_state and self._local_media_state[0][1] == account:
+                self._local_media_state = None
+
+    def resume_media_after_failed_clear(self, account):
+        with self.lock:
+            self._blocked_media_accounts.discard(account)
+            if self._local_media_state and self._local_media_state[0][1] == account:
+                self._local_media_state = None
+
+    def _verify_media_reader(self, db):
         with self.lock:
             if self._db(fresh=True) is not db:
                 raise AccountChangedError()
-        return data, mime
+
+    def media_asset(self, user, stable_id, variant="original", expected_account=None):
+        self.media_reason.value = None
+        try:
+            db, row = self._verified_media_row(user, stable_id, expected_account)
+            with self._local_media(db).operation() as store:
+                asset = store.resolve(user, stable_id, row, variant)
+        except MediaUnavailable as exc:
+            self.media_reason.value = str(exc)
+            return None
+        except (OSError, ValueError):
+            self.media_reason.value = "decode-failed"
+            return None
+        except RuntimeError as exc:
+            if isinstance(exc, (AccountChangedError, AccountUnavailableError, MessagesUnavailableError)):
+                raise
+            self.media_reason.value = "decode-failed"
+            return None
+        self._verify_media_reader(db)
+        return asset
+
+    def media(self, user, stable_id):
+        """Compatibility for image consumers; HTTP uses streamed media_asset."""
+        asset = self.media_asset(user, stable_id)
+        return (asset.read(), asset.mime) if asset else None
+
+    def media_analysis(self, user, stable_id, cancel=None, frames=1):
+        try:
+            db, row = self._verified_media_row(user, stable_id)
+            metadata = media_metadata(row["local_type"], row["decoded_content"])
+            with self._local_media(db).operation() as store:
+                result = store.analysis(user, stable_id, row, metadata, cancel, frames=frames)
+        except MediaUnavailable as exc:
+            return {"items": [], "error": str(exc)}
+        except (OSError, ValueError):
+            return {"items": [], "error": "decode-failed"}
+        except RuntimeError as exc:
+            if isinstance(exc, (AccountChangedError, AccountUnavailableError, MessagesUnavailableError)):
+                raise
+            return {"items": [], "error": "decode-failed"}
+        self._verify_media_reader(db)
+        return result
+
+    def media_settings(self, expected_account, change=None, clear=False):
+        with self.lock:
+            db = self._db(fresh=True)
+            if str(db.account) != expected_account:
+                raise AccountChangedError()
+        with self._local_media(db).operation() as store:
+            result = store.clear_cache() if clear else store.settings(change)
+        self._verify_media_reader(db)
+        return result
+
+    def media_archive(self, expected_account, user, stable_id):
+        db, row = self._verified_media_row(user, stable_id, expected_account)
+        with self._local_media(db).operation() as store:
+            result = store.archive(user, stable_id, row)
+        self._verify_media_reader(db)
+        return result
 
     def history_highwater(self, user):
         with self.lock:
@@ -895,6 +1230,95 @@ class WeChatSource:
             next_after = (int(last_record[7]), last_shard, int(last_record[0]))
             messages = [self._render_row(db, user, item, contacts, own_user) for item in page]
             return [message for message in messages if message], next_after
+
+    def history_verify_rows(self, user, positions):
+        """Re-read one contact's exact evidence locators in a fresh batch."""
+        return self.history_verify_rows_many([{"user": user, "positions": positions}])[user]
+
+    def history_verify_rows_many(self, groups):
+        """Re-read evidence across contacts, opening each requested shard once.
+
+        Nothing is cached between calls: edits/deletions are checked against a
+        current snapshot, and account verification brackets the entire batch.
+        Display names/avatars are omitted: evidence hashes use the immutable
+        sender ID, side, kind, text and exact sort locator, never display data.
+        """
+        if not isinstance(groups, list) or len(groups) > 16:
+            raise ValueError("invalid history groups")
+        requested, by_shard, total = {}, {}, 0
+        for group in groups:
+            if not isinstance(group, dict) or set(group) != {"user", "positions"}:
+                raise ValueError("invalid history group")
+            user, positions = group["user"], group["positions"]
+            if (not isinstance(user, str) or not 1 <= len(user) <= 256 or user in requested or
+                    not isinstance(positions, list)):
+                raise ValueError("invalid history locators")
+            total += len(positions)
+            if total > 500:
+                raise ValueError("invalid history locators")
+            requested[user] = set()
+            for position in positions:
+                if (not isinstance(position, (list, tuple)) or len(position) != 3 or
+                        type(position[0]) is not int or not 0 <= position[0] <= 2**63 - 1 or
+                        type(position[2]) is not int or not 0 <= position[2] <= 2**63 - 1 or
+                        not isinstance(position[1], str) or
+                        not re.fullmatch(r"message__message_\d+\.db", position[1])):
+                    raise ValueError("invalid history locator")
+                requested[user].add(tuple(position))
+                by_shard.setdefault(position[1], {}).setdefault(user, set()).add(position[2])
+        found = {user: {} for user in requested}
+        if not by_shard:
+            return found
+        with self.lock:
+            # Like message windows: a bounded-reuse reader before the reads and a strict
+            # check after them, which is what proves the batch came from this account.
+            db = self._ordinary_db()
+            if self.live_account and not db.messages_ready:
+                raise MessagesUnavailableError()
+            identity = str(db.account), str(Path(db.workdir).resolve())
+            inventory = {}
+            for rel, _path, _size in db._db_files:
+                normalized = rel.replace("\\", "/")
+                if re.fullmatch(r"message/message_\d+\.db", normalized):
+                    shard = normalized.replace("/", "__")
+                    if shard in by_shard:
+                        inventory[shard] = rel
+            own_user = self.self_user(db)
+            tables = {user: "Msg_" + hashlib.md5(user.encode("utf-8")).hexdigest() for user in requested}
+            for shard, rel in inventory.items():
+                conn = db._open(rel)
+                try:
+                    actual = Path(conn.execute("PRAGMA database_list").fetchone()[2]).name
+                    if actual != shard:
+                        raise ValueError("unidentified message shard")
+                    available = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    users = [user for user in by_shard[shard] if tables[user] in available]
+                    if not users:
+                        continue
+                    senders = {int(row[0]): row[1] for row in conn.execute("SELECT rowid,user_name FROM Name2Id")}
+                    for user in users:
+                        local_ids = sorted(by_shard[shard][user])
+                        marks = ",".join("?" for _ in local_ids)
+                        rows = conn.execute(
+                            f"SELECT local_id,local_type,real_sender_id,create_time,message_content,compress_content,"
+                            f"server_id,sort_seq FROM {tables[user]} WHERE local_id IN ({marks})", local_ids)
+                        for row in rows:
+                            position = int(row[7]), shard, int(row[0])
+                            if position not in requested[user]:
+                                continue
+                            message = self._render_row(db, user, (row, shard, senders), {}, own_user)
+                            if message:
+                                if position in found[user]:
+                                    raise ValueError("ambiguous history locator")
+                                found[user][position] = message
+                finally:
+                    conn.close()
+            if self._db(fresh=True) is not db or identity != (str(db.account), str(Path(db.workdir).resolve())):
+                raise AccountChangedError()
+            # This post-read check is as strong as a verified identity; callers'
+            # following scope checks reuse it instead of querying Windows again.
+            self._remember_advisor_binding(db, identity[0], Path(identity[1]), True, self._proved_at)
+            return found
 
     def history_revision(self, user):
         """Opaque metadata revision for history change detection; never read message text."""

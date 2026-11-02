@@ -4,9 +4,9 @@
 
 ## 使用方法
 
-1. 下载 `WechatVibe-diagnose.bat`，放到 `WechatVibe.exe` 所在目录。
+1. 下载 `KnowYourFriends-diagnose.bat`，放到 `KnowYourFriends.exe` 所在目录。
 2. 先复现一次启动错误并关闭错误弹窗，再双击诊断 BAT。
-3. 等待结束，将同目录新生成的 `WechatVibe-startup-report-日期-编号.txt` 发给维护者。目录不可写时，会尝试保存到 Windows 临时目录，并在窗口中显示位置。
+3. 等待结束，将同目录新生成的 `KnowYourFriends-startup-report-日期-编号.txt` 发给维护者。目录不可写时，会尝试保存到 Windows 临时目录，并在窗口中显示位置。
 
 每次运行生成独立报告，不覆盖以前的结果。不必发送聊天截图、整个 `.local` 目录或原始日志。
 
@@ -25,4 +25,4 @@
 
 诊断报告用于区分文件、依赖、目录及启动环境问题，不会自动修复，也不代表应用已能正常启动。缺少某个可选依赖不一定是当前启动故障的原因，需要结合错误摘要判断。
 
-工具跳过含目录重解析点的运行环境与日志路径，避免诊断扩散到其他目录。源码保存在 `scripts/diagnose-startup.bat`；向用户提供时，将其复制为 `WechatVibe-diagnose.bat`，无需附带其他脚本。后续运行环境或目录结构变化时，应同时更新此工具。
+工具跳过含目录重解析点的运行环境与日志路径，避免诊断扩散到其他目录。源码保存在 `scripts/diagnose-startup.bat`；向用户提供时，将其复制为 `KnowYourFriends-diagnose.bat`，无需附带其他脚本。后续运行环境或目录结构变化时，应同时更新此工具。

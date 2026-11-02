@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- Know Your Friends, Apache-2.0: separate local model-call viewer. -->
+<html lang="zh-CN" class="model-traces-window">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>模型调用 · 知己微信助手</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="model-traces.css">
+</head>
+<body>
+  <section id="modelTracesStartup" class="model-traces-startup">
+    <p id="modelTracesStartupStatus" role="status">正在读取模型调用…</p>
+    <button id="modelTracesStartupRetry" type="button" hidden>重新加载</button>
+  </section>
+  <nav id="modelCallsNavigation" class="model-calls-tabs" role="tablist" aria-label="模型调用功能" hidden>
+    <button id="modelCallsStatsTab" type="button" role="tab" aria-controls="modelUsagePanel" aria-selected="true" tabindex="0">用量统计</button>
+    <button id="modelCallsRecordsTab" type="button" role="tab" aria-controls="modelUsagePanel" aria-selected="false" tabindex="-1">调用记录</button>
+  </nav>
+  <div id="modelCallsContent" hidden></div>
+  <script src="model-traces.js"></script>
+  <script src="/plugin-sdk/web/time-trend.js"></script>
+  <script src="model-usage.js"></script>
+  <script src="model-traces-window.js"></script>
+</body>
+</html>

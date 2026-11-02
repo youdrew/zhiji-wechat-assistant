@@ -1,22 +1,29 @@
 <!DOCTYPE html>
+<!-- Modified by Know Your Friends, 2026-10-16 (Apache-2.0): model generation timeout control. -->
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WechatVibe</title>
-  <link rel="icon" type="image/png" href="/assets/wechatvibe-icon.png">
+  <title>知己微信助手</title>
+  <link rel="icon" type="image/png" href="/assets/app-icon.png">
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="advisor.css">
+  <link rel="stylesheet" href="plugin-host.css">
+  <link rel="stylesheet" href="message-analysis.css">
+  <link rel="stylesheet" href="media.css">
+  <link rel="stylesheet" href="history-panel.css">
+  <link rel="stylesheet" href="model-traces.css">
+  <link rel="stylesheet" href="plugin-settings.css">
+  <link rel="stylesheet" href="settings-window.css">
 </head>
 <body>
 
 <div class="startup-overlay" id="startupOverlay" role="status" aria-live="polite" hidden>
   <div class="startup-card">
-    <div class="startup-brand"><img src="/assets/wechatvibe-icon.png" alt=""><strong>WechatVibe</strong></div>
+    <div class="startup-brand"><img src="/assets/app-icon.png" alt=""><strong>知己微信助手</strong></div>
     <div class="startup-steps" aria-hidden="true">
       <div class="startup-step active" data-step="account">连接当前微信账号</div>
       <div class="startup-step" data-step="sessions">读取会话列表</div>
-      <div class="startup-step" data-step="messages">准备全部会话消息</div>
+      <div class="startup-step" data-step="messages">准备当前聊天记录</div>
     </div>
     <div class="startup-status" id="startupStatus">正在连接当前微信账号…</div>
     <div class="startup-actions">
@@ -37,7 +44,7 @@
       <img id="selfAvatar" alt="" class="user-avatar">
     </div>
 
-    <!-- Main Navigation Icons (仅保留：聊天、人物画像) -->
+    <!-- Main Navigation Icons: chat, then the nav pages plugins contribute (plugin-slots.js) -->
     <div class="nav-icons-main">
       <!-- Chat (Active) -->
       <div class="nav-item active" title="聊天" data-tab="chat" id="navChat">
@@ -45,26 +52,15 @@
           <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/>
         </svg>
       </div>
-
-      <!-- Persona / 人格画像 (AI) -->
-      <div class="nav-item" title="人物画像" data-tab="persona" id="navPersona">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 2a5 5 0 0 1 5 5v1a5 5 0 0 1-10 0V7a5 5 0 0 1 5-5zm0 12c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4zm7.5-9.5l.94 2.06 2.06.94-2.06.94-.94 2.06-.94-2.06-2.06-.94 2.06-.94.94-2.06z"/>
-        </svg>
-      </div>
-
-      <!-- Assistant repository -->
-      <div class="nav-item" title="助手仓库" aria-label="助手仓库" data-tab="advisor" id="navAdvisor">
-        <svg viewBox="0 0 24 24" class="advisor-nav-icon" aria-hidden="true">
-          <rect x="4" y="7" width="16" height="13" rx="3"/>
-          <path d="M12 3v4M9 12v2m6-2v2M9 17h6M1 12h3m16 0h3"/>
-        </svg>
-      </div>
     </div>
 
     <!-- Bottom Action Icons (仅保留三个横杠：设置) -->
     <div class="nav-icons-bottom">
       <button type="button" class="nav-update-notice" id="btnUpdateNotice" hidden title="更新" aria-label="更新">更新</button>
+      <!-- Modified 2026-10-13: global model calls (usage for all friends) open in their own window. -->
+      <button type="button" class="nav-item" title="模型调用" aria-label="模型调用" id="btnModelTraces">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 10h3v9H5zm5.5-5h3v14h-3zM16 13h3v6h-3z"/></svg>
+      </button>
       <div class="nav-item" title="设置" id="btnSettings">
         <svg viewBox="0 0 24 24">
           <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
@@ -74,7 +70,8 @@
   </aside>
 
   <!-- ================= COLUMN 2: MIDDLE SESSION LIST ================= -->
-  <section class="session-pane">
+  <section class="session-pane" id="sessionPane">
+    <div class="session-resize-handle" id="sessionResizeHandle" role="separator" aria-orientation="vertical" aria-label="调整会话列表宽度" aria-controls="sessionPane" tabindex="0" title="拖动调整会话列表宽度，双击恢复默认"></div>
     <!-- Top Search Header -->
     <div class="search-header">
       <div class="search-box">
@@ -95,15 +92,6 @@
       <div class="ui-state">正在读取会话…</div>
     </div>
 
-    <!-- Overall local background-analysis progress -->
-    <div class="sweep-progress" id="sweepProgress" hidden>
-      <div class="sweep-progress-head">
-        <span class="sweep-progress-label" id="sweepProgressLabel">后台分析</span>
-        <span class="sweep-progress-value" id="sweepProgressValue"></span>
-      </div>
-      <div class="sweep-progress-bar">
-        <div class="sweep-progress-fill" id="sweepProgressFill"></div>
-      </div>
   </section>
 
   <!-- ================= COLUMN 3: RIGHT MAIN CHAT PANE ================= -->
@@ -114,272 +102,107 @@
     <header class="chat-header">
       <div class="chat-title-group">
         <h2 class="chat-title" id="chatTitle">聊天</h2>
-        <span class="chat-status-pill" id="chatStatusPill" style="display:none">
-          <span class="header-mood-label" id="headerMoodLabel"></span>
-          <span class="kaomoji-pill-icon" id="headerMoodKaomoji"></span>
-        </span>
-        <span class="analysis-status" id="analysisStatus"></span>
+        <!-- Modified by Know Your Friends: opt-in analysis stays beside its source message. -->
+        <button type="button" id="btnMessageAnalysis" class="message-analysis-toggle" role="switch" aria-checked="false" aria-describedby="messageAnalysisMigration" hidden disabled><span class="message-analysis-switch" aria-hidden="true"></span><span>分析与建议</span></button>
+        <button type="button" id="messageAnalysisStatus" class="message-analysis-status" hidden></button>
+        <span id="messageAnalysisMigration" class="message-analysis-migration" hidden><span id="messageAnalysisMigrationText"></span> <button type="button" id="btnDisableLegacyAnalysis" class="message-analysis-action">知道了</button></span>
       </div>
       <div class="chat-history-actions">
-        <button type="button" class="chat-history-action" id="btnReturnLatest" hidden>返回最新</button>
+        <button type="button" class="chat-history-action" id="btnExternalImport" hidden>外部聊天</button>
+        <!-- Plugins contribute contact-window buttons here, before 聊天记录 (plugin-slots.js). -->
         <button type="button" class="chat-history-action" id="btnChatHistory" aria-expanded="false" aria-controls="historySearchPanel">聊天记录</button>
       </div>
     </header>
 
+    <section class="database-loading" id="databaseLoading" aria-label="数据库加载状态" data-state="loading">
+      <div class="database-loading-head">
+        <strong id="databaseLoadingTitle">正在读取微信数据库</strong>
+        <button type="button" class="database-loading-retry" id="databaseLoadingRetry" hidden>重试</button>
+      </div>
+      <div class="database-loading-steps" aria-hidden="true">
+        <span data-step="account" class="active">连接微信</span><span data-step="sessions">读取会话</span><span data-step="messages">准备聊天记录</span>
+      </div>
+      <div class="database-loading-track" id="databaseLoadingProgress" role="progressbar" aria-label="微信数据库读取进度" aria-describedby="databaseLoadingStatus"><span></span></div>
+      <p id="databaseLoadingStatus" role="status" aria-live="polite">正在连接当前微信账号…</p>
+    </section>
+
     <!-- Chat Main Area (Messages Scroll Area) -->
     <div class="chat-main-area" id="chatMainArea">
+      <!-- Modified by Know Your Friends, 2026-10-11 (Apache-2.0): automatic history paging. -->
       <div class="history-navigation" id="historyNavigation" hidden>
-        <button type="button" class="history-nav-button" id="btnHistoryEarlier">加载更早</button>
-        <span class="history-nav-status" id="historyNavStatus"></span>
-        <button type="button" class="history-nav-button" id="btnHistoryNewer" hidden>加载较新</button>
+        <span class="history-nav-status" id="historyNavStatus" role="status"></span>
+        <button type="button" class="history-nav-button" id="btnHistoryRetry" hidden>重试</button>
       </div>
-      <div class="chat-messages" id="chatMessages">
+      <div class="chat-messages" id="chatMessages" tabindex="0" aria-label="聊天消息">
         <!-- Rendered dynamically by app.js -->
       </div>
-      <aside class="history-search-panel" id="historySearchPanel" aria-label="聊天记录" hidden>
-        <div class="history-panel-head">
-          <strong>聊天记录</strong>
-          <button type="button" class="history-panel-close" id="btnCloseHistorySearch" aria-label="关闭聊天记录">×</button>
-        </div>
-        <form id="historySearchForm" class="history-search-form">
-          <input type="search" id="historyKeyword" placeholder="关键词" aria-label="关键词">
-          <input type="date" id="historyDate" aria-label="日期">
-          <div class="history-search-actions">
-            <button type="submit" id="btnRunHistorySearch">搜索</button>
-            <button type="button" id="btnCancelHistorySearch" hidden>取消</button>
-          </div>
-        </form>
-        <div class="history-search-status" id="historySearchStatus" role="status"></div>
-        <div class="history-search-results" id="historySearchResults"></div>
-        <div class="history-search-pages">
-          <button type="button" id="btnHistoryPrevResults" hidden>上一页</button>
-          <button type="button" id="btnHistoryNextResults" hidden>下一页</button>
-        </div>
-      </aside>
+      <button type="button" class="chat-return-latest" id="btnReturnLatest" title="返回最新" aria-label="返回最新" aria-controls="chatMessages" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-6-6 6 6 6-6"/></svg>
+      </button>
     </div>
 
-    <!-- Chat Input Area -->
-    <div class="chat-input-pane">
-      <section class="reply-prediction" id="replyPrediction" aria-live="polite" hidden>
-        <div class="reply-prediction-head">
-          <strong>可能的回应</strong>
-          <button type="button" class="reply-prediction-close" id="btnClosePrediction" aria-label="关闭预测">×</button>
-        </div>
-        <div class="reply-prediction-body" id="replyPredictionBody"></div>
-      </section>
-      <!-- Input Toolbar -->
-      <div class="input-toolbar">
-        <div class="toolbar-left">
-          <!-- Emoji Smiley -->
-          <div class="tool-btn" id="btnEmoji" title="表情" aria-label="表情">
-            <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>
-          </div>
+    <!-- Modified by Know Your Friends, 2026-10-14 (Apache-2.0): resizable draft composer. -->
+    <div class="chat-input-pane" id="chatInputPane">
+      <div class="chat-input-resize-handle" id="chatInputResizeHandle" role="separator" aria-orientation="horizontal" aria-label="调整草稿输入区高度" aria-controls="chatInputPane" tabindex="0" title="拖动调整输入区高度，双击恢复默认"></div>
 
-          <!-- Send File -->
-          <div class="tool-btn disabled" id="btnFile" title="不支持附件" aria-disabled="true">
-            <svg viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/></svg>
-          </div>
-
-          <!-- Screenshot -->
-          <div class="tool-btn split disabled" id="btnScreenshot" title="不支持截图" aria-disabled="true">
-            <svg viewBox="0 0 24 24"><path d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm0 12c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3h-3z"/></svg>
-            <svg class="arrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-          </div>
-
-          <!-- Text Action Buttons on the right of icons -->
-          <button class="toolbar-text-btn active" id="btnToggleIntent" title="识别当前聊天消息">意图识别</button>
-          <button class="toolbar-text-btn" id="btnToolbarPersona" title="切换到当前聊天对象的人格画像">人物画像</button>
-          <button class="toolbar-text-btn" id="btnToolbarAdvisor" type="button">聊天助手</button>
-          <button class="toolbar-text-btn" id="btnRetryAnalysis" title="重新分析当前会话" hidden>分析失败 · 重试</button>
-          <button class="toolbar-text-btn" id="btnResetConversationAnalysis" type="button" disabled>重置会话分析</button>
-        </div>
-      </div>
-
-      <!-- Textarea Wrap -->
       <div class="input-textarea-wrap">
-        <textarea id="chatInput" class="chat-textarea" placeholder="草稿仅用于复制，不会发送到微信"></textarea>
+        <textarea id="chatInput" class="chat-textarea" aria-label="聊天草稿" placeholder="草稿按账号和好友分别保留；Enter 复制" disabled></textarea>
       </div>
 
-      <!-- Bottom Action Row -->
+      <!-- Tools and draft action stay below the editable text. -->
       <div class="input-bottom-bar">
-        <span class="shortcut-hint">Enter 复制草稿，Shift+Enter 换行 · 不发送</span>
-        <button class="btn-send" id="btnSend">复制草稿</button>
+        <!-- Input Toolbar -->
+        <div class="input-toolbar">
+          <div class="toolbar-left" id="chatToolbar">
+            <!-- Emoji Smiley -->
+            <div class="tool-btn" id="btnEmoji" title="表情" aria-label="表情">
+              <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>
+            </div>
+
+            <!-- Text buttons of chat-toolbar plugin panels follow the icons (plugin-slots.js) -->
+          </div>
+        </div>
+
+        <!-- Emoji & Kaomoji Popover stays anchored above the bottom toolbar. -->
+        <div class="emoji-popover" id="emojiPopover">
+          <div class="emoji-popover-tabs">
+            <span class="popover-tab active" data-tab="emoji">Emoji</span>
+            <span class="popover-tab" data-tab="kaomoji">颜文字 (心情)</span>
+          </div>
+          <div class="emoji-grid active" id="emojiGrid">
+            <span class="emoji-btn">🦀</span>
+            <span class="emoji-btn">🐶</span>
+            <span class="emoji-btn">🐱</span>
+            <span class="emoji-btn">😂</span>
+            <span class="emoji-btn">🤣</span>
+            <span class="emoji-btn">👍</span>
+            <span class="emoji-btn">❤️</span>
+            <span class="emoji-btn">🔥</span>
+            <span class="emoji-btn">😭</span>
+            <span class="emoji-btn">🙏</span>
+            <span class="emoji-btn">😎</span>
+            <span class="emoji-btn">🤔</span>
+            <span class="emoji-btn">🎉</span>
+            <span class="emoji-btn">✨</span>
+            <span class="emoji-btn">👏</span>
+            <span class="emoji-btn">🍺</span>
+            <span class="emoji-btn">🌙</span>
+            <span class="emoji-btn">🚀</span>
+          </div>
+          <div class="kaomoji-grid" id="kaomojiGrid"></div>
+        </div>
       </div>
     </div>
-  </div><!-- /chatView -->
 
-    <!-- VIEW 2: PERSONA PORTRAIT DASHBOARD (人格画像) -->
-    <div class="pane-view" id="personaView">
-      <!-- Persona Header -->
-      <header class="persona-header">
-        <div class="persona-header-left">
-          <div class="persona-nav-title">
-            <svg viewBox="0 0 24 24">
-              <path d="M12 2a5 5 0 0 1 5 5v1a5 5 0 0 1-10 0V7a5 5 0 0 1 5-5zm0 12c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4zm7.5-9.5l.94 2.06 2.06.94-2.06.94-.94 2.06-.94-2.06-2.06-.94 2.06-.94.94-2.06z"/>
-            </svg>
-            <span id="personaHeaderTitle">人物画像分析</span>
-            <span class="portrait-source-badge" id="portraitSourceBadge">本地 Laya</span>
-          </div>
 
-          <!-- Group Member Tabs (仅在群聊时展示，供在群聊内切换成员画像) -->
-          <div class="group-member-tabs" id="groupMemberTabs" style="display:none;"></div>
-        </div>
-
-        <div class="persona-header-right">
-          <button class="btn-back-chat" id="btnBackToChat" title="返回会话聊天界面">
-            <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-            <span>返回聊天</span>
-          </button>
-
-        </div>
-      </header>
-
-      <!-- Scrollable Persona Dashboard Content -->
-      <div class="persona-dashboard" id="personaDashboard">
-        <!-- 1. System Status Strip -->
-        <div class="persona-status-strip">
-          <div class="status-item">
-            <span class="status-dot-pulse"></span>
-            <span><span id="stripMessageLabel">消息：</span><strong id="stripDbPath">待读取</strong></span>
-          </div>
-          <div class="status-item">
-            <span><span id="stripTextLabel">文本：</span><strong id="stripMsgCount">待读取</strong></span>
-          </div>
-          <div class="status-item" id="stripConfidenceItem" style="display:none">
-           <span><span id="stripAnalysisLabel">已分析：</span><strong id="stripConfidence"></strong></span>
-        </div>
-          <div class="status-item" id="stripStatusItem" style="display:none">
-            <span>状态：<strong id="stripStatusText"></strong></span>
-          </div>
-          <button class="ui-retry" id="btnRetryProfile" type="button" hidden>重试分析</button>
-          <button class="ui-retry" id="btnResetPortrait" type="button" disabled>重置画像</button>
-        </div>
-
-        <!-- 2. Hero Profile Card -->
-        <div class="persona-hero-card">
-          <div class="hero-left">
-            <div class="hero-avatar-wrap">
-              <span class="hero-avatar" id="heroAvatar"></span>
-            </div>
-            <div class="hero-info">
-              <div class="hero-name-row">
-                <h3 class="hero-name" id="heroName">待读取</h3>
-                <span class="chat-subtitle-badge" id="heroRelationBadge">待分析</span>
-              </div>
-              <p class="hero-archetype" id="heroArchetype" style="display:none"></p>
-              <div class="hero-mbti-row" id="heroMbtiRow" hidden>
-                <span class="hero-mbti-label">人格属性 · 聊天推测</span>
-                <span class="hero-mbti-state" id="heroMbti"></span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Hero Right Box: Dynamic for 1-on-1 (Game-like Favorability) OR Group (Group Activity Dynamics) -->
-          <div class="hero-metric-box" id="heroMetricBox">
-            <!-- Dynamically populated by app.js -->
-          </div>
-        </div>
-
-        <!-- 3. Grid Row 1: Chat-based preference evidence and unsupported traits -->
-        <div class="persona-grid">
-          <!-- Card A: MBTI 4-Dimension Scales -->
-          <div class="persona-card" id="mbtiCard">
-            <div class="card-header">
-              <span class="card-title">
-                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-                MBTI · 聊天推测
-              </span>
-              <span class="card-badge" id="mbtiScaleBadge">尚未生成</span>
-            </div>
-            <div class="mbti-scales-list" id="mbtiScalesList"></div>
-            <div class="mbti-theory-sources" id="mbtiSources"></div>
-          </div>
-
-          <!-- Card B: Six Trait Dimensions -->
-          <div class="persona-card" id="radarCard">
-            <div class="card-header">
-              <span class="card-title">
-                <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-                互动风格
-              </span>
-              <span class="card-badge" id="radarBadge">聊天表现</span>
-            </div>
-            <div class="radar-container" id="radarContainer"></div>
-          </div>
-        </div>
-
-        <!-- 4. Grid Row 2: Linguistic Fingerprint & AI Contextual Summary -->
-        <div class="persona-grid">
-          <!-- Card C: Linguistic Style & Catchphrases -->
-          <div class="persona-card">
-            <div class="card-header">
-              <span class="card-title">
-                <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
-                <span id="tagCardTitle">高频词</span>
-              </span>
-              <span class="card-badge" id="tagCardBadge">词频统计 Top 6</span>
-            </div>
-            <div class="tag-cloud" id="tagCloud">
-              <!-- Dynamically rendered -->
-            </div>
-          </div>
-
-          <!-- Card D: AI Deep Analysis Summary -->
-          <div class="persona-card" id="summaryCard">
-            <div class="card-header">
-              <span class="card-title">
-                <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
-                画像摘要
-              </span>
-              <span class="card-badge" id="summaryBadge">基于聊天汇总</span>
-            </div>
-            <p class="bot-summary-text" id="botSummaryText">
-              <!-- Dynamically rendered -->
-            </p>
-            <div class="api-portrait-details" id="apiPortraitDetails" hidden></div>
-            <div class="api-portrait-status" id="apiPortraitStatus" role="status" hidden></div>
-            <button type="button" class="ui-retry" id="btnRetryApiPortrait" hidden>重试 API 画像</button>
-          </div>
-        </div>
-
-      </div><!-- /persona-dashboard -->
-    </div><!-- /personaView -->
-    <!-- VIEW 3: ASSISTANT REPOSITORY VIEW -->
-    <div class="pane-view" id="advisorRepoView">
-      <div class="advisor-repo-container" id="advisorRepoContainer"></div>
-    </div>
+    </div><!-- /chatView -->
+    <!-- VIEW 2: NAV PAGES OF PLUGINS (sandboxed frames, plugin-slots.js) -->
+    <div class="pane-view" id="pluginNavView"></div>
   </main>
 
+  <!-- Independent history dialog is also available when running in a browser. -->
+  <dialog class="history-dialog" id="historySearchPanel" aria-label="聊天记录"></dialog>
   <!-- ================= POPUPS & MODALS ================= -->
-  <!-- Emoji & Kaomoji Popover -->
-  <div class="emoji-popover" id="emojiPopover">
-    <div class="emoji-popover-tabs">
-      <span class="popover-tab active" data-tab="emoji">Emoji</span>
-      <span class="popover-tab" data-tab="kaomoji">颜文字 (心情)</span>
-    </div>
-    <div class="emoji-grid active" id="emojiGrid">
-      <span class="emoji-btn">🦀</span>
-      <span class="emoji-btn">🐶</span>
-      <span class="emoji-btn">🐱</span>
-      <span class="emoji-btn">😂</span>
-      <span class="emoji-btn">🤣</span>
-      <span class="emoji-btn">👍</span>
-      <span class="emoji-btn">❤️</span>
-      <span class="emoji-btn">🔥</span>
-      <span class="emoji-btn">😭</span>
-      <span class="emoji-btn">🙏</span>
-      <span class="emoji-btn">😎</span>
-      <span class="emoji-btn">🤔</span>
-      <span class="emoji-btn">🎉</span>
-      <span class="emoji-btn">✨</span>
-      <span class="emoji-btn">👏</span>
-      <span class="emoji-btn">🍺</span>
-      <span class="emoji-btn">🌙</span>
-      <span class="emoji-btn">🚀</span>
-    </div>
-    <div class="kaomoji-grid" id="kaomojiGrid"></div>
-  </div>
-
   <!-- Toast Notification -->
   <div class="toast-msg" id="toastMsg"></div>
 
@@ -393,6 +216,14 @@
         <div class="settings-tab-btn active" data-tab="general">
           <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
           <span>通用设置</span>
+        </div>
+        <div class="settings-tab-btn" data-tab="models">
+          <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;" aria-hidden="true"><path d="M9 3h2v2h2V3h2v2h2a2 2 0 0 1 2 2v2h2v2h-2v2h2v2h-2v2a2 2 0 0 1-2 2h-2v2h-2v-2h-2v2H9v-2H7a2 2 0 0 1-2-2v-2H3v-2h2v-2H3V9h2V7a2 2 0 0 1 2-2h2V3Zm-2 4v10h10V7H7Zm2 2h6v6H9V9Z"/></svg>
+          <span>模型设置</span>
+        </div>
+        <div class="settings-tab-btn" data-tab="plugins">
+          <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4c-1.1 0-2 .9-2 2v3.8h1.5a2.7 2.7 0 0 1 0 5.4H2V20c0 1.1.9 2 2 2h3.8v-1.5a2.7 2.7 0 0 1 5.4 0V22H17c1.1 0 2-.9 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"/></svg>
+          <span>插件</span>
         </div>
         <div class="settings-tab-btn" data-tab="about">
           <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
@@ -422,108 +253,6 @@
             </select>
           </div>
           <div class="settings-row">
-            <label for="selectModelSource">模型来源</label>
-            <div class="model-source-choice">
-              <span id="modelSourceActive" role="status">待读取</span>
-              <select id="selectModelSource" aria-label="模型来源" disabled>
-                <option value="local">本地部署</option>
-                <option value="api">API 接入</option>
-              </select>
-            </div>
-          </div>
-          <section class="model-source-panel" id="localModelSettings">
-            <div class="settings-row">
-              <span>本地模型</span>
-              <span class="model-source-value">Laya</span>
-            </div>
-            <div class="settings-row">
-              <label for="selectRuntimeProvider">模型设备</label>
-              <div class="runtime-control">
-                <span id="runtimeStatus" role="status">待读取</span>
-                <select id="selectRuntimeProvider" aria-label="模型设备" disabled>
-                  <option value="cpu">CPU</option>
-                  <option value="gpu">GPU</option>
-                </select>
-              </div>
-            </div>
-            <div class="settings-row">
-              <span>模型文件</span>
-              <span id="localModelStatus" role="status">检测中…</span>
-            </div>
-            <div class="local-model-control">
-              <button type="button" class="settings-action-btn" id="btnDownloadLocalModel">下载模型</button>
-              <button type="button" class="settings-action-btn" id="btnChooseLocalModelDir">选择目录</button>
-            </div>
-            <div class="local-model-progress" id="localModelDownloadProgress" role="status" hidden></div>
-            <div class="model-source-actions" id="localModelActions" hidden>
-              <button type="button" class="settings-action-btn" id="btnActivateLocal">启用本地模型</button>
-            </div>
-            <div class="settings-row settings-row-wide">
-              <span>本地分析并行数</span>
-              <span class="worker-stepper">
-                <button type="button" class="settings-action-btn" id="btnWorkerMinus" aria-label="减少并行数">−</button>
-                <strong id="workerLimitValue">—</strong>
-                <button type="button" class="settings-action-btn" id="btnWorkerPlus" aria-label="增加并行数">+</button>
-                <button type="button" class="settings-action-btn" id="btnToggleElasticWorkers">跟随负载</button>
-              </span>
-            </div>
-            <div class="settings-row worker-hint-row">
-              <span id="workerLimitHint" class="model-source-status" role="status"></span>
-            </div>
-            <div class="settings-row settings-row-wide">
-              <span>后台分析已添加的会话</span>
-              <button type="button" class="settings-action-btn" id="btnToggleBackgroundAnalyze">已关闭</button>
-            </div>
-          </section>
-          <section class="model-source-panel api-model-settings" id="apiModelSettings" hidden>
-            <div class="settings-row">
-              <label for="selectApiProtocol">接口协议</label>
-              <select id="selectApiProtocol">
-                <option value="anthropic">Anthropic 兼容</option>
-                <option value="responses">Responses 兼容</option>
-                <option value="chat_completions">Completions（旧版）</option>
-                <option value="gemini">Gemini 兼容</option>
-                <option value="ollama">Ollama 兼容</option>
-              </select>
-            </div>
-            <div class="model-source-field">
-              <label for="inputApiBaseUrl">Base URL</label>
-              <input id="inputApiBaseUrl" type="text" inputmode="url" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="model-source-field">
-              <label for="inputApiKey">API Key <span id="apiKeySaved" hidden>已保存</span></label>
-              <input id="inputApiKey" type="password" placeholder="留空沿用已保存密钥" autocomplete="new-password" spellcheck="false">
-            </div>
-            <div class="model-source-discovery">
-              <button type="button" class="settings-action-btn" id="btnFetchApiModels">获取模型列表</button>
-              <span id="apiModelCount" role="status"></span>
-            </div>
-            <div class="model-source-field">
-              <label for="selectApiModel">模型列表</label>
-              <select id="selectApiModel" aria-label="模型列表" disabled>
-                <option value="">获取列表后选择</option>
-              </select>
-            </div>
-            <div class="model-source-field">
-              <label for="inputApiModelId">模型 ID</label>
-              <input id="inputApiModelId" type="text" placeholder="可手动填写模型 ID" autocomplete="off" spellcheck="false">
-            </div>
-            <div class="model-source-field">
-              <label for="inputApiContextTokens">上下文大小（tokens）</label>
-              <input id="inputApiContextTokens" type="number" min="4096" max="1000000" step="1" placeholder="接口未提供时填写，例如 128000" inputmode="numeric">
-            </div>
-            <div class="model-source-actions">
-              <button type="button" class="settings-action-btn" id="btnTestApiModel">测试连接</button>
-              <button type="button" class="settings-action-btn model-source-primary" id="btnActivateApi">保存并启用</button>
-              <button type="button" class="settings-danger-btn" id="btnClearApiKey" hidden>清除密钥</button>
-            </div>
-            <div id="apiModelTestStatus" class="model-source-status" role="status"></div>
-          </section>
-          <div class="model-source-status-row">
-            <div id="modelSourceStatus" class="model-source-status" role="status"></div>
-            <button type="button" class="settings-action-btn" id="btnReloadModelSource" hidden>重新读取</button>
-          </div>
-          <div class="settings-row">
             <span>信息列表</span>
             <button type="button" class="settings-action-btn" id="btnManageConversations">管理会话</button>
           </div>
@@ -531,10 +260,19 @@
             <div class="conversation-manager-head">
               <strong id="conversationManagerCount">会话目录</strong>
               <input type="search" id="conversationSearch" placeholder="搜索会话" aria-label="搜索会话">
-              <button type="button" class="settings-action-btn" id="btnAddAllConversations">全部添加</button>
-              <button type="button" class="settings-action-btn" id="btnRemoveSelectedConversations" disabled>移除所选</button>
+            </div>
+            <div class="conversation-manager-selection">
+              <label class="conversation-manager-select-all"><input type="checkbox" class="conversation-manager-check" id="conversationSelectAll"><span id="conversationSelectAllLabel">全选已添加</span></label>
+              <button type="button" class="settings-action-btn" id="btnClearConversationSelection" disabled>取消选择</button>
+              <button type="button" class="settings-danger-btn" id="btnRemoveSelectedConversations" disabled>移除所选</button>
+              <span id="conversationSelectionSummary" role="status" aria-live="polite">已选 0 个</span>
             </div>
             <div class="conversation-manager-list" id="conversationManagerList"></div>
+            <div class="conversation-manager-add-actions">
+              <button type="button" class="settings-action-btn" id="btnAddAllConversations">添加全部未添加会话…</button>
+              <label class="conversation-manager-follow"><input type="checkbox" class="conversation-manager-check" id="conversationAutoFollow">自动添加以后新出现的会话</label>
+              <p class="conversation-manager-hint">添加会话后可参与分析。移除仅退出列表，聊天记录、已有画像和助手记录会保留。</p>
+            </div>
             <div id="conversationManagerStatus" class="model-source-status" role="status"></div>
           </section>
           <div class="settings-row">
@@ -550,6 +288,26 @@
             <button type="button" class="settings-action-btn model-source-primary" id="btnSaveDataRoot">保存</button>
             <button type="button" class="settings-action-btn" id="btnClearDataRoot">恢复自动</button>
           </div>
+          <section class="media-settings" aria-label="媒体保存设置">
+            <div class="settings-row">
+              <label for="mediaStorageMode">媒体保存</label>
+              <select id="mediaStorageMode" disabled>
+                <option value="archive">复制留存</option>
+                <option value="reference">引用微信文件</option>
+              </select>
+            </div>
+            <p id="mediaStorageHint" class="model-source-status">查看或分析时复制到本机；占用磁盘，清理缓存不删除留存。</p>
+            <div class="settings-row">
+              <label for="mediaCacheLimit">缓存上限</label>
+              <select id="mediaCacheLimit" disabled>
+                <option value="268435456">256 MB</option>
+                <option value="536870912">512 MB</option>
+                <option value="1073741824">1 GB</option>
+              </select>
+              <button type="button" class="settings-action-btn" id="btnClearMediaCache" disabled>清理缓存</button>
+            </div>
+            <div id="mediaStorageStatus" class="model-source-status" role="status" aria-live="polite"></div>
+          </section>
           <div class="settings-row">
             <span>管理账号</span>
             <div class="account-status-control">
@@ -583,64 +341,260 @@
               </div>
             </div>
           </section>
-          <div class="settings-row">
-            <span>分析缓存</span>
-            <button type="button" class="settings-action-btn" id="btnManageAnalysisCache">查看缓存</button>
-          </div>
-          <section class="analysis-cache-manager" id="analysisCacheManager" hidden>
-            <div class="analysis-cache-list" id="analysisCacheList"></div>
-            <div id="analysisCacheStatus" role="status" aria-live="polite"></div>
-            <div class="analysis-cache-confirm" id="analysisCacheConfirm" hidden>
-              <p id="analysisCacheQuestion"></p>
-              <div class="account-confirm-actions">
-                <button type="button" class="settings-action-btn" id="btnCancelAnalysisCacheClear">取消</button>
-                <button type="button" class="settings-danger-btn" id="btnConfirmAnalysisCacheClear">确认清除</button>
+        </div>
+
+        <!-- Modified 2026-10-16: centralize model connection, timeouts and diagnostics.
+             Modified 2026-11-01: multi-model home with role assignments and a detail page. -->
+        <div class="settings-panel" id="panelModels">
+          <div class="settings-title">模型设置</div>
+          <div id="modelHomeView">
+            <section class="model-traces-settings">
+              <div class="settings-row">
+                <label for="selectRoleMain">主模型</label>
+                <select id="selectRoleMain" disabled></select>
               </div>
+              <div class="settings-row">
+                <label for="selectRoleJudge">判断模型</label>
+                <select id="selectRoleJudge" disabled></select>
+              </div>
+              <div class="settings-row">
+                <label for="selectRoleImage">图片模型</label>
+                <select id="selectRoleImage" disabled></select>
+              </div>
+              <div id="modelRolesStatus" class="model-source-status" role="status" aria-live="polite"></div>
+            </section>
+            <section class="model-traces-settings">
+              <div id="modelListRows"></div>
+              <div class="settings-row">
+                <button type="button" class="settings-action-btn" id="btnAddModel">添加模型</button>
+              </div>
+            </section>
+            <section class="model-traces-settings">
+              <div class="settings-row">
+                <span>联网搜索</span>
+                <button type="button" class="settings-action-btn" id="btnOpenSearchSettings">关闭</button>
+              </div>
+            </section>
+            <div id="modelHomeStatus" class="model-source-status" role="status" aria-live="polite"></div>
+            <div class="settings-row"><span>开发者模式</span><button type="button" class="settings-action-btn" id="btnOpenDeveloperSettings">›</button></div>
+          </div>
+          <div id="developerSettingsView" hidden>
+            <div class="settings-row"><button type="button" class="settings-action-btn" id="btnBackDeveloperSettings">返回</button></div>
+            <section class="model-traces-settings" aria-labelledby="developerModeTitle">
+              <h3 id="developerModeTitle">开发者模式</h3>
+              <div class="settings-row"><label for="btnDeveloperMode">采集模型调用</label><button type="button" id="btnDeveloperMode" class="settings-action-btn" role="switch" aria-checked="false" disabled>读取中</button></div>
+              <p class="model-source-status">开启后，在本机记录模型请求、提示词、返回内容和错误，可在调用记录的详情中查看，可能包含聊天正文。覆盖本机各账号、窗口及后台任务，重启后恢复设置。API 密钥不会保存到记录中。</p>
+              <div class="settings-row"><label for="modelTraceRetention">记录保留</label><select id="modelTraceRetention" disabled><option value="1">最近 1 天</option><option value="7" selected>最近 7 天</option><option value="30">最近 30 天</option></select></div>
+              <div class="model-traces-health">
+                <p id="modelTraceStorage" class="model-source-status" role="status" aria-live="polite">正在读取采集状态…</p>
+                <p id="modelTraceError" class="model-traces-settings-error" role="alert" hidden></p>
+                <details id="modelTraceHistory" class="model-traces-history" hidden>
+                  <summary>采集中断历史 <span id="modelTraceHistoryCount" class="model-traces-history-count"></span></summary>
+                  <p class="model-traces-history-note">历史提示仅供排查，当前采集状态以上方显示为准。</p>
+                  <ol id="modelTraceHistoryList" class="model-traces-history-list" tabindex="0" aria-label="采集中断历史，最新记录在前"></ol>
+                </details>
+              </div>
+              <div class="local-model-control"><button type="button" class="settings-action-btn" id="btnViewModelTraces">查看调用记录</button><button type="button" class="settings-danger-btn" id="btnClearModelTraces">清空采集内容</button><button type="button" class="settings-action-btn" id="btnRetryModelTraces" hidden>重试保存</button></div>
+              <div id="modelTraceClearConfirm" class="account-delete-confirm" hidden><p>清空本机所有账号已采集的请求、响应与错误详情？调用记录和用量统计会保留，聊天与模型分析结果不受影响，正在执行的任务会继续。</p><button type="button" class="settings-action-btn" id="btnCancelClearModelTraces">取消</button><button type="button" class="settings-danger-btn" id="btnConfirmClearModelTraces">确认清空所有账号</button></div>
+            </section>
+          </div>
+          <div id="modelDetailView" hidden>
+            <div class="settings-row">
+              <button type="button" class="settings-action-btn" id="btnBackModelHome">返回</button>
+              <span id="modelDetailTitle">编辑模型</span>
+            </div>
+            <section class="model-source-panel api-model-settings" id="apiModelSettings">
+            <div class="settings-row">
+              <label for="selectApiProtocol">接口协议</label>
+              <select id="selectApiProtocol">
+                <option value="anthropic">Anthropic 兼容</option>
+                <option value="responses">Responses 兼容</option>
+                <option value="chat_completions">Completions（旧版）</option>
+                <option value="gemini">Gemini 兼容</option>
+                <option value="ollama">Ollama 兼容</option>
+              </select>
+            </div>
+            <div class="model-source-field">
+              <label for="inputApiBaseUrl">Base URL</label>
+              <input id="inputApiBaseUrl" type="text" inputmode="url" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="model-source-field">
+              <label for="inputApiKey">API Key <span id="apiKeySaved" hidden>已保存</span></label>
+              <div class="api-key-input-wrap">
+                <input id="inputApiKey" type="password" placeholder="按服务要求填写 API Key" autocomplete="new-password" spellcheck="false" aria-describedby="apiKeyStatus">
+                <button type="button" class="api-key-visibility" id="btnToggleApiKeyVisibility" title="显示 API Key" aria-label="显示 API Key" aria-pressed="false" aria-controls="inputApiKey" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="api-key-eye-slash" d="m3 3 18 18"/></svg>
+                </button>
+              </div>
+              <span id="apiKeyStatus" class="model-source-status" role="status" aria-live="polite"></span>
+            </div>
+            <div class="model-source-discovery">
+              <button type="button" class="settings-action-btn" id="btnFetchApiModels">获取模型列表</button>
+              <span id="apiModelCount" role="status"></span>
+            </div>
+            <div class="model-source-field">
+              <label for="selectApiModel">模型列表</label>
+              <select id="selectApiModel" aria-label="模型列表" disabled>
+                <option value="">获取列表后选择</option>
+              </select>
+            </div>
+            <div class="model-source-field">
+              <label for="inputApiModelId">模型 ID</label>
+              <input id="inputApiModelId" type="text" placeholder="可手动填写模型 ID" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="model-source-field">
+              <label for="inputApiConcurrency">同时请求数</label>
+              <input id="inputApiConcurrency" type="number" min="1" max="8" step="1" value="4" inputmode="numeric">
+            </div>
+            <details class="model-source-field" id="apiModelAdvanced">
+              <summary>高级</summary>
+              <div class="model-source-field">
+                <label for="inputApiContextTokens">上下文大小（tokens，可选）</label>
+                <input id="inputApiContextTokens" type="number" min="4096" max="1000000" step="1" placeholder="留空使用默认 32768，可按模型参数填写" inputmode="numeric">
+              </div>
+              <div class="model-source-field">
+                <label for="inputApiTimeoutMinutes">生成超时（分钟）</label>
+                <input id="inputApiTimeoutMinutes" type="number" min="1" max="180" step="1" value="60" placeholder="默认 60 分钟" inputmode="numeric">
+              </div>
+            </details>
+            <div class="model-source-actions">
+              <button type="button" class="settings-action-btn" id="btnTestApiModel">测试连接</button>
+              <button type="button" class="settings-action-btn model-source-primary" id="btnSaveApiModel">保存</button>
+              <button type="button" class="settings-danger-btn" id="btnDeleteApiModel" hidden>删除</button>
+            </div>
+            <div id="apiModelTestStatus" class="model-source-status" role="status"></div>
+          </section>
+          </div>
+          <div id="localJudgeView" hidden>
+            <div class="settings-row"><button type="button" class="settings-action-btn" id="btnBackLocalJudge">返回</button><span>本地判断模型</span></div>
+            <p id="localJudgeStatus" class="model-source-status" role="status" aria-live="polite"></p>
+            <progress id="localJudgeProgress" max="100" hidden aria-label="下载进度"></progress>
+            <div class="model-source-actions">
+              <button type="button" class="settings-action-btn" id="btnPrepareLocalJudge">下载（168 MB）</button>
+              <button type="button" class="settings-action-btn" id="btnCancelLocalJudge" hidden>取消</button>
+              <button type="button" class="settings-danger-btn" id="btnDeleteLocalJudge" hidden>删除</button>
+            </div>
+          </div>
+          <div id="searchSettingsView" hidden>
+            <div class="settings-row">
+              <button type="button" class="settings-action-btn" id="btnBackFromSearch">返回</button>
+              <span>联网搜索</span>
+            </div>
+            <section class="model-traces-settings" id="coreModelSettings" aria-labelledby="coreModelSettingsTitle">
+            <div class="model-source-panel">
+              <div class="model-source-field">
+                <label for="selectModelSearchSource">联网搜索来源</label>
+                <select id="selectModelSearchSource" aria-describedby="modelSearchHint" disabled>
+                  <option value="none">关闭</option>
+                  <option value="searxng">SearXNG</option>
+                </select>
+                <span id="modelSearchHint" class="model-source-status">默认关闭。启用后仅供支持联网的任务使用；资料摘要和讨论压缩仍不联网。</span>
+              </div>
+              <div id="coreSearchOptions" hidden>
+                <div class="model-source-field">
+                  <label for="inputModelSearxngUrl">SearXNG 地址</label>
+                  <input id="inputModelSearxngUrl" type="text" inputmode="url" value="http://127.0.0.1:8080" maxlength="512" autocomplete="off" spellcheck="false" disabled>
+                </div>
+                <div class="settings-row">
+                  <label for="inputModelSearchOpenPages">允许读取搜索结果网页</label>
+                  <input id="inputModelSearchOpenPages" type="checkbox" checked disabled>
+                </div>
+              </div>
+              <div class="model-source-actions">
+                <button type="button" class="settings-action-btn model-source-primary" id="btnSaveCoreModelSettings" disabled>保存</button>
+                <button type="button" class="settings-action-btn" id="btnReloadCoreModelSettings">重新读取</button>
+                <button type="button" class="settings-action-btn" id="btnUseLatestModelSettings" hidden>使用最新设置</button>
+              </div>
+              <div id="coreModelSettingsStatus" class="model-source-status" role="status" aria-live="polite">待读取</div>
             </div>
           </section>
+          </div>
+          <div class="model-source-status-row">
+            <div id="modelSourceStatus" class="model-source-status" role="status" aria-live="polite"></div>
+            <button type="button" class="settings-action-btn" id="btnReloadModelSource" hidden>重新读取</button>
+          </div>
+        </div>
+
+        <!-- Modified 2026-10-13: bundled and local development plugins. -->
+        <div class="settings-panel" id="panelPlugins">
+          <div id="pluginLeaveConfirm" class="plugin-leave-confirm" role="alertdialog" aria-labelledby="pluginLeaveTitle" hidden>
+            <p id="pluginLeaveTitle">还有未保存的更改</p>
+            <div class="plugin-config-buttons">
+              <button type="button" class="settings-action-btn model-source-primary" id="pluginLeaveSave">保存并离开</button>
+              <button type="button" class="settings-action-btn" id="pluginLeaveDiscard">放弃更改</button>
+              <button type="button" class="settings-action-btn" id="pluginLeaveStay">继续编辑</button>
+            </div>
+          </div>
+          <div id="pluginOverview" class="plugin-overview">
+            <div class="settings-title plugin-settings-title"><span>插件</span><button type="button" class="settings-action-btn" id="btnRescanPlugins">重新扫描</button></div>
+            <p class="model-source-status">每个插件可独立设置。内置插件默认启用；本机开发插件放在 .local/plugins，需要在这里启用。停用会停止任务，保留资料和设置。</p>
+            <div id="pluginStatus" class="model-source-status" role="status" aria-live="polite"></div>
+            <div class="plugin-list" id="pluginList"></div>
+          </div>
+          <section id="pluginDetail" class="plugin-detail" aria-label="插件设置" hidden></section>
         </div>
 
         <!-- Panel 2: About -->
         <div class="settings-panel" id="panelAbout">
-        <div class="settings-title about-title"><img src="/assets/wechatvibe-icon.png" alt="" class="about-brand-icon">关于 WechatVibe</div>
+        <div class="settings-title about-title"><img src="/assets/app-icon.png" alt="" class="about-brand-icon">关于 知己微信助手 · Zhiji WeChat Assistant</div>
         <div class="about-card">
-          <button type="button" class="about-row about-version-row" id="btnAboutVersion" aria-label="查看软件更新">
+          <button type="button" class="about-row about-version-row" id="btnAboutVersion" aria-label="当前版本" disabled>
             <span class="about-label">当前版本</span>
             <span class="about-version-value"><span class="about-val" id="aboutCurrentVersion">读取中</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></span>
           </button>
           <div class="about-row">
             <span class="about-label">作者</span>
-            <a class="about-val about-link user-select-all" href="https://github.com/tswawa" target="_blank" rel="noopener noreferrer">
+            <a class="about-val about-link user-select-all" href="https://github.com/youdrew" target="_blank" rel="noopener noreferrer">
               <svg class="about-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297a12 12 0 0 0-3.793 23.386c.6.111.82-.261.82-.577v-2.234c-3.338.726-4.043-1.416-4.043-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.09-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.108-.775.418-1.305.762-1.605-2.665-.304-5.466-1.333-5.466-5.932 0-1.311.469-2.381 1.236-3.221-.123-.303-.536-1.524.117-3.176 0 0 1.008-.323 3.301 1.23A11.535 11.535 0 0 1 12 6.386c1.02.005 2.047.138 3.006.404 2.291-1.553 3.297-1.23 3.297-1.23.655 1.652.242 2.873.12 3.176.77.84 1.235 1.91 1.235 3.221 0 4.61-2.805 5.625-5.476 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.216.694.824.576A12.001 12.001 0 0 0 12 .297z"/></svg>
-              <span>tswawa</span>
+              <span>youdrew</span>
             </a>
           </div>
           <div class="about-row">
-            <span class="about-label">B站</span>
-            <span class="about-val user-select-all">tswawa9595</span>
+            <span class="about-label">个人博客</span>
+            <a class="about-val about-link user-select-all" href="https://eugenepage.com/" target="_blank" rel="noopener noreferrer">Eugenepage.com</a>
           </div>
           <div class="about-row">
-            <span class="about-label">抖音</span>
-            <span class="about-val user-select-all">tswawa9595</span>
+            <span class="about-label">邮箱</span>
+            <a class="about-val about-link user-select-all" href="mailto:youdrewxuan@icloud.com">youdrewxuan@icloud.com</a>
           </div>
           <div class="about-row">
             <span class="about-label">GitHub 仓库</span>
-            <a class="about-val about-link user-select-all" href="https://github.com/tswawa/WechatVibe" target="_blank" rel="noopener noreferrer">
+            <a class="about-val about-link user-select-all" href="https://github.com/youdrew/zhiji-wechat-assistant" target="_blank" rel="noopener noreferrer">
               <svg class="about-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .297a12 12 0 0 0-3.793 23.386c.6.111.82-.261.82-.577v-2.234c-3.338.726-4.043-1.416-4.043-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.09-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.108-.775.418-1.305.762-1.605-2.665-.304-5.466-1.333-5.466-5.932 0-1.311.469-2.381 1.236-3.221-.123-.303-.536-1.524.117-3.176 0 0 1.008-.323 3.301 1.23A11.535 11.535 0 0 1 12 6.386c1.02.005 2.047.138 3.006.404 2.291-1.553 3.297-1.23 3.297-1.23.655 1.652.242 2.873.12 3.176.77.84 1.235 1.91 1.235 3.221 0 4.61-2.805 5.625-5.476 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.216.694.824.576A12.001 12.001 0 0 0 12 .297z"/></svg>
-              <span>WechatVibe</span>
+              <span>youdrew/zhiji-wechat-assistant</span>
             </a>
           </div>
         </div>
+        <p class="about-attribution"><small>本软件基于 <a class="about-link" href="https://github.com/tswawa/WechatVibe" target="_blank" rel="noopener noreferrer">WeChatVibe</a> 修改开发。感谢原作者 <a class="about-link" href="https://github.com/tswawa" target="_blank" rel="noopener noreferrer">tswawa</a> 的开源贡献。</small></p>
       </div>
     </div>
   </div>
   </div>
 </div>
+<div class="session-context-menu" id="sessionContextMenu" role="menu" aria-label="会话操作" hidden>
+  <button type="button" id="btnPinConversation" role="menuitem" tabindex="-1">置顶</button>
+  <div class="session-context-divider" role="separator"></div>
+  <button type="button" class="session-context-delete" id="btnDeleteConversation" role="menuitem" tabindex="-1">删除</button>
+</div>
+<div class="session-context-menu" id="messageContextMenu" role="menu" aria-label="消息操作" hidden>
+  <button type="button" id="btnCopyMessage" role="menuitem" tabindex="-1">复制</button>
+  <button type="button" id="btnAskAboutMessage" role="menuitem" tabindex="-1">问聊天助手</button>
+</div>
+<dialog class="conversation-action-dialog" id="conversationActionConfirm" aria-labelledby="conversationActionTitle" aria-describedby="conversationActionMessage">
+  <form method="dialog">
+    <h2 id="conversationActionTitle">确认批量操作</h2>
+    <p id="conversationActionMessage"></p>
+    <div class="conversation-action-buttons">
+      <button class="settings-action-btn" id="btnCancelConversationAction" value="cancel" autofocus>取消</button>
+      <button class="settings-action-btn model-source-primary" id="btnConfirmConversationAction" value="confirm">确认</button>
+    </div>
+  </form>
+</dialog>
 <div class="update-modal-overlay" id="updateModal" role="dialog" aria-modal="true" aria-labelledby="updateModalTitle">
   <div class="update-modal-card">
     <div class="update-modal-head">
       <div class="update-modal-identity">
-        <img src="/assets/wechatvibe-icon.png" alt="" class="update-modal-icon">
+        <img src="/assets/app-icon.png" alt="" class="update-modal-icon">
         <h2 id="updateModalTitle">软件更新</h2>
       </div>
       <button type="button" class="update-modal-close" id="btnCloseUpdate" title="关闭" aria-label="关闭软件更新">×</button>
@@ -659,29 +613,36 @@
       </div>
     </div>
     <div class="update-modal-actions">
-      <a id="updateReleaseLink" href="https://github.com/tswawa/WechatVibe/releases" target="_blank" rel="noopener noreferrer">官方发布页</a>
+      <a id="updateReleaseLink" href="https://github.com/youdrew/zhiji-wechat-assistant/releases" target="_blank" rel="noopener noreferrer">官方发布页</a>
       <button type="button" class="update-check-button" id="btnCheckUpdates">检查更新</button>
       <button type="button" class="update-primary-button" id="btnBeginUpdate" hidden>下载并安装</button>
     </div>
   </div>
 </div>
-<div class="analysis-scope-overlay" id="analysisScopeConfirm" role="dialog" aria-modal="true" aria-labelledby="analysisScopeTitle" aria-describedby="analysisScopeQuestion" hidden>
-  <div class="analysis-scope-dialog">
-    <h2 id="analysisScopeTitle">重置分析</h2>
-    <p id="analysisScopeQuestion"></p>
-    <div id="analysisScopeStatus" role="status" aria-live="polite"></div>
-    <div class="analysis-scope-actions">
-      <button type="button" class="settings-action-btn" id="btnCancelAnalysisScopeReset">取消</button>
-      <button type="button" class="settings-action-btn" id="btnConfirmAnalysisScopeReset">确认重置</button>
-    </div>
-  </div>
-</div>
+    <!-- Modified by Know Your Friends, 2026-10-09: independent portrait side panel. -->
+<!-- /personaView -->
 <script src="kaomoji.js"></script>
 <script src="view-state.js"></script>
-<script src="message-insight-adapters.js"></script>
-<script src="message-labels.js"></script>
+<script src="settings-window.js"></script>
+<script src="media.js"></script>
+<script src="message-links.js"></script>
+<script src="media-settings.js"></script>
+<script src="plugin-configuration.js"></script>
+<script src="plugin-settings.js"></script>
+<script src="message-analysis.js"></script>
+<script src="model-settings.js"></script>
+<script src="model-traces.js"></script>
+<script src="plugin-frame.js"></script>
+<script src="plugin-slots.js"></script>
+<script src="conversation-menu.js"></script>
+<script src="message-menu.js"></script>
+<script src="session-resize.js"></script>
+<script src="composer-resize.js"></script>
+<script src="composer-drafts.js"></script>
+<script src="chat-composer.js"></script>
+<script src="history-panel.js"></script>
 <script src="app.js"></script>
-<script src="advisor.js"></script>
+<script src="external-import-host.js"></script>
 </body>
 </html>
 

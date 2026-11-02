@@ -2,6 +2,7 @@ cffi==2.0.0
 colorama==0.4.6
 comtypes==1.4.16
 cryptography==46.0.3
+imageio-ffmpeg==0.6.0
 jieba==0.42.1
 numpy==2.3.5
 opencv-python==4.13.0.90
@@ -12,6 +13,7 @@ pycparser==2.23
 pyperclip==1.11.0
 pywin32==311
 setuptools==80.9.0
+silk-python==0.2.8
 tzdata==2025.2
 uiautomation==2.0.29
 wechatauto-replica==1.2.2.6
