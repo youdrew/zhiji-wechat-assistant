@@ -12,11 +12,11 @@
 
 适用于 **Windows 10/11 x64、Windows 微信 4.x**。
 
-**安装包正在重新整理，暂时停止下载。** 新附件将通过[官方发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases)提供；当前可以按下方步骤从源码运行。
+**2.0.1 免费开源版。** Windows 安装包以[官方发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases)实际提供的附件为准；也可以按下方步骤从源码运行。
 
 下载安装：
 
-1. 附件恢复后，从官方发布页下载 Windows x64 安装包。
+1. 从官方发布页下载 `Zhiji-WeChat-Assistant-2.0.1-Setup-x64.exe`。
 2. 双击安装，完成后从桌面或开始菜单打开“知己微信助手”。
 3. 按下面的步骤连接模型服务，开始使用。
 
