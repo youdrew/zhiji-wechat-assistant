@@ -164,9 +164,10 @@ print('STAGED_BRIDGE_IMPORTS_OK')
             self.assertFalse((dependencies & {path.stem for path in BRIDGE.glob("*.py")}) - staged,
                              f"staged module {name} depends on unstaged bridge modules")
         # The whole kyf.mcp plugin ships (manifest, backend, UI), still without tests,
-        # and the MCP user guide ships beside the other public docs.
+        # with the root README; project documents are local-only.
         public = {relative.as_posix() for _, relative, _ in stage.public_mappings(ROOT)}
-        self.assertIn("docs/mcp-plugin-guide.md", public)
+        self.assertIn("README.md", public)
+        self.assertFalse(any(name.casefold().startswith("docs/") for name in public))
         for name in ("plugins/kyf.mcp/plugin.json", "plugins/kyf.mcp/backend/main.py",
                      "plugins/kyf.mcp/backend/mcp_admin.py", "plugins/kyf.mcp/ui/index.html",
                      "plugins/kyf.mcp/ui/mcp.js", "plugins/kyf.mcp/ui/mcp.css"):

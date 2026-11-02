@@ -8,4 +8,4 @@
 
 开发者再分发依据和边界见 [Visual Studio 2022 Distributable Code 列表](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)、[Visual Studio Community 2022 许可](https://visualstudio.microsoft.com/license-terms/vs2022-ga-community/)与[微软运行库再分发文档](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)。本项目保留微软 release 文件的原始字节，不分发 debug runtime，不将其作为独立运行库产品提供，也不声称获得微软背书。
 
-原始 RTF 来自微软官方 VS2022 `vc_redist.x64.exe` 14.44.35211.0 的 `UX/license.rtf`，字节数 9,235，SHA-256 `8099dc3cf9502c335da829e5c755948a12e3e6de490eb492a99deb673d883d8b`。下载来源、签名、文件清单和验证边界见[Windows 原生运行库交付](../docs/windows-runtime-distribution.md)。
+原始 RTF 来自微软官方 VS2022 `vc_redist.x64.exe` 14.44.35211.0 的 `UX/license.rtf`，字节数 9,235，SHA-256 `8099dc3cf9502c335da829e5c755948a12e3e6de490eb492a99deb673d883d8b`。固定下载来源、版本及每项文件哈希见 [msvc-runtime.json](../scripts/msvc-runtime.json)，应用私有部署范围见[第三方声明](../THIRD_PARTY_NOTICES.md)。

@@ -186,6 +186,44 @@ class CleanPortableBuildTests(unittest.TestCase):
         self.assertIn("plugins/kyf.mcp/plugin.json", selected)
         self.assertFalse(any("wechat-send" in name or "unknown-pro" in name for name in selected))
 
+    def test_project_docs_and_measurements_are_not_selected_or_reintroduced_by_an_allowlist(self):
+        private_paths = ("docs/local-notes.md", "benchmarks/self-analysis-chat/results/run-manifest.json")
+        for name in private_paths:
+            self.put(self.source / name, b"synthetic local-only material")
+        selected = {relative.as_posix() for _, relative, _ in stage.public_mappings(self.source)}
+        self.assertTrue(set(private_paths).isdisjoint(selected))
+        for name in private_paths:
+            with self.subTest(path=name), mock.patch.object(stage, "PUBLIC_FILES", ("chatui/index.html", name)):
+                with self.assertRaisesRegex(ValueError, "project docs and generated benchmark results"):
+                    stage.stage_public(self.source, self.client)
+                self.assertFalse((self.client / "chatui/index.html").exists())
+
+    def test_formal_build_rejects_ignored_material_that_was_force_added_to_git(self):
+        checkout = self.root / "tracked-private-material"
+        checkout.mkdir()
+        self.put(checkout / ".gitignore", b"/docs/\n/benchmarks/self-analysis-chat/results/\n")
+        self.put(checkout / "docs/local-notes.md", b"synthetic local note")
+        self.put(checkout / "benchmarks/self-analysis-chat/results/run-manifest.json", b"{}")
+        def git(*args):
+            return subprocess.run(["git", "-C", str(checkout), *args], check=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+        git("init", "-q")
+        git("config", "user.name", "Synthetic Test")
+        git("config", "user.email", "synthetic@example.invalid")
+        git("add", ".gitignore")
+        git("add", "-f", "docs/local-notes.md", "benchmarks/self-analysis-chat/results/run-manifest.json")
+        git("-c", "commit.gpgsign=false", "commit", "-qm", "synthetic tracked material")
+        self.assertFalse(git("status", "--porcelain"))
+        with self.assertRaisesRegex(ValueError, "cannot track project docs or generated benchmark results"):
+            stage.source_revision(checkout, require_clean=True)
+        git("rm", "-r", "--cached", "docs")
+        git("-c", "commit.gpgsign=false", "commit", "-qm", "remove synthetic docs")
+        with self.assertRaisesRegex(ValueError, "cannot track project docs or generated benchmark results"):
+            stage.source_revision(checkout, require_clean=True)
+        git("rm", "-r", "--cached", "benchmarks/self-analysis-chat/results")
+        git("-c", "commit.gpgsign=false", "commit", "-qm", "remove synthetic results")
+        self.assertFalse(stage.source_revision(checkout, require_clean=True)["sourceDirty"])
+
     def test_plugin_runtime_configuration_is_rejected_before_copy(self):
         self.put(self.source / "plugins/kyf.mcp/settings.json", b'{"credential":"synthetic"}')
         with self.assertRaisesRegex(ValueError, "plugin runtime data"):
@@ -262,13 +300,14 @@ class CleanPortableBuildTests(unittest.TestCase):
             self.assertTrue((builder.ROOT / "chatui" / name).is_file())
             self.assertIn(name, page)
 
-    def test_self_analysis_ships_a_complete_plugin_and_user_guide_without_tests_or_private_data(self):
+    def test_self_analysis_ships_a_complete_plugin_without_project_docs_or_private_data(self):
         stage = load("stage_self_analysis_check", "stage-real-client.py")
         staged = {relative.as_posix() for _source, relative, _base in stage.public_mappings(builder.ROOT)}
         for name in ("plugin.json", "backend/main.py", "backend/self_store.py", "backend/self_worker.py",
                      "backend/self_samples.py", "ui/index.html", "ui/page.js", "ui/page.css"):
             self.assertIn("plugins/kyf.self-analysis/" + name, staged)
-        self.assertIn("docs/self-analysis.md", staged)
+        self.assertIn("README.md", staged)
+        self.assertFalse(any(name.casefold().startswith("docs/") for name in staged))
         for relative in ("scripts/embedding-model.json", "scripts/embedding-runner.cjs", "bridge/core_embeddings.py", "licenses/BGE-MIT.txt"):
             self.assertIn(relative, staged)
         self.assertFalse(any("/tests/" in name or "/.local/" in name or name.endswith(".sqlite3") for name in staged))
