@@ -6,7 +6,7 @@
 
 本次发布的是**免费开源版**，一台 Windows 电脑即可运行；模型服务与所需 API Key 由用户自行提供。
 
-[下载与安装](#下载与安装) · [第一次使用](#第一次使用) · [源码运行](#源码运行) · [问题反馈](https://github.com/youdrew/zhiji-wechat-assistant/issues)
+[产品官网与界面展示](https://youdrew.github.io/zhiji-wechat-assistant/) · [下载与安装](#下载与安装) · [第一次使用](#第一次使用) · [源码运行](#源码运行) · [问题反馈](https://github.com/youdrew/zhiji-wechat-assistant/issues)
 
 ## 下载与安装
 
@@ -16,7 +16,7 @@
 
 下载安装：
 
-1. 从官方发布页下载 `Zhiji-WeChat-Assistant-2.0.1-Setup-x64.exe`。
+1. [直接下载 Windows 2.0.1 安装包](https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.0.1/Zhiji-WeChat-Assistant-2.0.1-Setup-x64.exe)，或到[版本发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.0.1)查看校验文件和发行说明。
 2. 双击安装，完成后从桌面或开始菜单打开“知己微信助手”。
 3. 按下面的步骤连接模型服务，开始使用。
 
