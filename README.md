@@ -6,7 +6,7 @@
 
 本次发布的是**免费开源版**，一台 Windows 电脑即可运行；模型服务与所需 API Key 由用户自行提供。
 
-[产品官网与界面展示](https://youdrew.github.io/zhiji-wechat-assistant/) · [下载与安装](#下载与安装) · [第一次使用](#第一次使用) · [源码运行](#源码运行) · [问题反馈](https://github.com/youdrew/zhiji-wechat-assistant/issues)
+[界面截图](https://github.com/youdrew/zhiji-wechat-assistant/tree/main/site/assets) · [下载与安装](#下载与安装) · [第一次使用](#第一次使用) · [源码运行](#源码运行) · [问题反馈](https://github.com/youdrew/zhiji-wechat-assistant/issues)
 
 ## 下载与安装
 
