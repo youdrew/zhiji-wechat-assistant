@@ -89,7 +89,7 @@ PUBLIC_FILES = (
     "licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md",
     "licenses/Laya-Apache-2.0.txt", "licenses/Laya-NOTICE.txt",
     "chatui/app.js", "chatui/message-links.js", "chatui/conversation-menu.js", "chatui/message-menu.js", "chatui/session-resize.js", "chatui/composer-resize.js", "chatui/view-state.js", "chatui/style.css", "chatui/kaomoji.js",
-    "chatui/composer-drafts.js",
+    "chatui/composer-drafts.js", "chatui/chat-composer.js",
     "chatui/assets/app-icon.png",
     "chatui/assets/app-icon.ico",
     "chatui/settings-window.js", "chatui/settings-window.css",
