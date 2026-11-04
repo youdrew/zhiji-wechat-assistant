@@ -36,18 +36,18 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .download-button { min-height: 49px; display: inline-flex; align-items: center; justify-content: center; gap: 25px; padding: 14px 24px; background: var(--green); color: #fff; border-radius: 5px; font-size: 13px; transition: background .18s; }
 .download-button:hover { color: #fff; background: #354b33; }
 .hero-meta { display: flex; justify-content: center; gap: 10px; margin: 15px 0 0; color: var(--muted); font-size: 10px; }
-.mac-wish { max-width: 700px; margin: 27px auto 0; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px 20px; border: 1px solid var(--line); border-radius: 6px; text-align: left; }
-.mac-wish p { margin: 0; font-size: 12px; line-height: 1.8; }
-.mac-wish strong { display: block; font-size: 14px; font-weight: 600; }
-.mac-wish p span { color: #687360; }
-.star-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 10px 13px; border: 1px solid #c0ceb8; border-radius: 4px; color: var(--green); background: #f0f3ec; font-size: 12px; white-space: nowrap; }
+.mac-wish { margin: 20px auto 0; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px 12px; }
+.mac-wish p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.8; }
+.star-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 8px 10px; border-radius: 4px; color: var(--green); font-size: 12px; white-space: nowrap; }
 .star-button:hover { background: #e5ebdf; }
 .hero-actions { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 18px; }
 .agent-link { color: var(--green); padding: 12px 0; font-size: 13px; }
 .agent-install { max-width: 760px; padding-bottom: 48px; }
-.agent-intro h2 { margin: 0 0 10px; font-size: 23px; font-weight: 600; }
-.agent-intro>p, .agent-note { font-size: 12px; color: #687360; line-height: 1.8; }
-.agent-note a, .install-guide a { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
+.agent-intro h2 { margin: 0 0 16px; font-size: 18px; font-weight: 500; }
+.install-guide a { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
+.prompt-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.prompt-actions .copy-status { margin-left: 0; }
+.install-details-link { margin-left: auto; padding: 10px 0; color: var(--muted); font-size: 12px; }
 .prompt-box { border: 1px solid #d8e0d1; border-radius: 7px; padding: 18px 22px; background: #f0f3ec; }
 .prompt-box>p { margin: 0 0 14px; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
 .copy-text { border: 1px solid #c0ceb8; border-radius: 4px; padding: 9px 14px; min-height: 40px; font-size: 12px; background: #fafcf7; }
@@ -79,7 +79,6 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .screen-switch button[aria-pressed="true"] { color: var(--green); border-color: #cad4c3; background: #edf0e9; }
 .screen-switch button:hover { color: var(--green); }
 .practical { max-width: 760px; padding-block: 42px 53px; text-align: center; }
-.privacy-line { margin: 0 0 20px; font-size: 11px; color: var(--muted); line-height: 1.8; }
 .release-details summary { display: inline-flex; align-items: center; gap: 20px; cursor: pointer; font-size: 11px; color: #70786a; list-style: none; padding: 10px; }
 .release-details summary::-webkit-details-marker { display: none; }
 .release-details[open] summary span { transform: rotate(45deg); }
@@ -133,7 +132,6 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
   .screen-switch { margin-top: 17px; gap: 4px; }
   .screen-switch button { font-size: 10px; padding-inline: 10px; }
   .practical { padding-block: 30px 36px; }
-  .privacy-line { font-size: 10px; margin-bottom: 12px; }
   .details-body { padding: 20px; font-size: 11px; }
   .site-footer { padding-block: 21px; font-size: 10px; }
   .footer-links { gap: 20px; }

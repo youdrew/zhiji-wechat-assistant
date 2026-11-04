@@ -8,7 +8,7 @@
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>接入你的 AI 助手 · 知己微信助手</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=minimal-install-1">
   <script src="copy.js" defer></script>
 </head>
 <body>
@@ -18,7 +18,8 @@
     <p class="guide-eyebrow">v2.1.0 · Windows 10/11 x64 · 本机 MCP</p>
     <h1>让 AI 帮你安装知己</h1>
     <p>把下面这句话发送给你正在使用的 AI 客户端。Agent 按本页选择安装方式、合并配置并检查连接，你在安装界面及知己授权窗口完成确认。</p>
-    <div class="prompt-box"><p id="agent-prompt">请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端，等我确认账号授权后验证 MCP 连接。</p><button type="button" class="copy-text" data-copy-target="agent-prompt" aria-describedby="agent-copy-status" hidden>复制这句话</button><span class="copy-status" id="agent-copy-status" role="status"></span></div>
+    <div class="prompt-box"><p id="agent-prompt">请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端。</p><button type="button" class="copy-text" data-copy-target="agent-prompt" aria-describedby="agent-copy-status" hidden>复制这句话</button><span class="copy-status" id="agent-copy-status" role="status"></span></div>
+    <p>给 Agent 的安装要求：引导用户完成安装和账号授权；等待用户在知己窗口确认授权后，再验证 MCP 连接。请勿代替用户确认授权。</p>
 
     <h2>先确认运行环境和客户端</h2>
     <p>安装与 MCP 进程运行在同一台 Windows 10/11 x64 电脑、同一个 Windows 用户下。Agent 需要能够访问网络、运行 PowerShell 和编辑该客户端的配置。仅有网页聊天、远程 Linux 或 WSL 环境时，请转到 Windows 本机执行。知己自带 Python 与 Node.js。</p>
