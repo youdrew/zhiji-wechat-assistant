@@ -33,6 +33,7 @@
     "scripts/chat-link-host.cjs",
     "scripts/friend-windows.cjs",
     "scripts/friend-preload.cjs",
+    "scripts/chat-windows.cjs",
     "scripts/history-windows.cjs",
     "scripts/history-preload.cjs",
     "scripts/external-import-windows.cjs",

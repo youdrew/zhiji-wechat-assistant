@@ -4,10 +4,12 @@ const { contextBridge, ipcRenderer } = require("electron");
 // Modified by Know Your Friends, 2026-10-10: open 知己分析 windows and receive verified chat locations.
 // Modified 2026-10-13: the docked panel hosts chat-toolbar plugin pages; host-picked files become Core grants.
 // Modified 2026-10-22: chat-toolbar plugin pages open in one independent window per friend instead of the dock.
+// Modified 2026-11-04: one conversation pops out into its own chat window (?window=chat, --kyf-chat-window).
 const appUpdatesEnabled = process.argv?.includes("--kyf-app-updates-enabled") === true;
 const isSettingsWindow = process.argv?.includes("--kyf-settings-window") === true;
-const updateValidationMode = !isSettingsWindow && appUpdatesEnabled && process.env.KYF_UPDATE_VALIDATE === "1";
-const updateFinalReadyMode = !isSettingsWindow && appUpdatesEnabled && !updateValidationMode &&
+const isChatWindow = !isSettingsWindow && process.argv?.includes("--kyf-chat-window") === true;
+const updateValidationMode = !isSettingsWindow && !isChatWindow && appUpdatesEnabled && process.env.KYF_UPDATE_VALIDATE === "1";
+const updateFinalReadyMode = !isSettingsWindow && !isChatWindow && appUpdatesEnabled && !updateValidationMode &&
   typeof process.env.KYF_UPDATE_FINAL_READY_FILE === "string" &&
   typeof process.env.KYF_UPDATE_FINAL_READY_NONCE === "string";
 
@@ -56,6 +58,13 @@ contextBridge.exposeInMainWorld("desktopHost", Object.freeze({
   platform: "win32",
   appUpdatesEnabled,
   isSettingsWindow,
+  isChatWindow,
+  // The main window pops one conversation out: {account, user} -> boolean (an existing window is focused).
+  openChatWindow(account, user) {
+    if (window.top !== window || isSettingsWindow || isChatWindow || typeof account !== "string" || typeof user !== "string")
+      return Promise.resolve(false);
+    return ipcRenderer.invoke("chat-window:open", { account, user });
+  },
   openSettingsWindow(target = {}) {
     if (window.top !== window || isSettingsWindow || !target || typeof target !== "object") return Promise.resolve(false);
     return ipcRenderer.invoke("settings-window:open", target);
@@ -99,11 +108,12 @@ contextBridge.exposeInMainWorld("desktopHost", Object.freeze({
     if (!isSettingsWindow && window.top === window && context && typeof context === "object") ipcRenderer.send("model-traces-window:sync", context);
   },
   modelTracesRequest(operation, args = {}) {
-    if (window.top !== window || typeof operation !== "string") return Promise.resolve({ ok: false, error: "trace-forbidden" });
+    if (window.top !== window || isChatWindow || typeof operation !== "string")
+      return Promise.resolve({ ok: false, error: "trace-forbidden" });
     return ipcRenderer.invoke("model-traces:request", operation, args);
   },
   onModelTracesInvalidated(listener) {
-    if (window.top !== window || typeof listener !== "function") return () => {};
+    if (window.top !== window || isChatWindow || typeof listener !== "function") return () => {};
     const handler = (_event, value) => listener({ deleteVersion: Number.isSafeInteger(value?.deleteVersion) ? value.deleteVersion : null });
     ipcRenderer.on("model-traces:invalidated", handler);
     return () => ipcRenderer.removeListener("model-traces:invalidated", handler);

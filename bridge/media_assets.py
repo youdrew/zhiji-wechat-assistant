@@ -894,7 +894,9 @@ class LocalMedia:
         with tempfile.TemporaryDirectory(dir=self._folder("work")) as directory:
             source = Path(directory) / "input.hevc"
             source.write_bytes(data[offset:])
-            return self._run_ffmpeg(["-f", "hevc", "-i", str(source), "-frames:v", "1", "-vf",
+            # The Windows build can corrupt scaled full-range YUV before JPEG encoding.
+            cpu_flags = ["-cpuflags", "0"] if os.name == "nt" else []
+            return self._run_ffmpeg([*cpu_flags, "-f", "hevc", "-i", str(source), "-frames:v", "1", "-vf",
                 "scale=1600:1600:force_original_aspect_ratio=decrease", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"])
 
     def _voice(self, user, row):

@@ -99,7 +99,7 @@
       body.append(top);
       for (const item of observationsFor(id)) body.append(observationLine(item));
       const actions = A.el("div", "fa-item-actions");
-      actions.append(A.button("修正", "fa-plain", () => startObservation(null, id)));
+      if (!A.restricted) actions.append(A.button("修正", "fa-plain", () => startObservation(null, id)));
       main.append(body, actions);
       return { main, body };
     }
@@ -180,7 +180,7 @@
       if (newObservationFor(id)) observe.append(observationForm(P.observing));
       else {
         for (const saved of observationsFor(id)) observe.append(observationLine(saved));
-        observe.append(A.button("记录我的观察", "fa-plain", () => startObservation(null, id)));
+        if (!A.restricted) observe.append(A.button("记录我的观察", "fa-plain", () => startObservation(null, id)));
       }
       card.append(observe);
       return card;
@@ -328,7 +328,7 @@
       if (P.observing?.item?.id === item.id) { line.append(observationForm(P.observing)); return line; }
       line.append(A.el("span", "fa-row-label", "我的观察"), A.el("span", "", item.judgement));
       if (item.note) line.append(A.el("span", "fa-note", " · " + item.note));
-      line.append(A.button("编辑", "fa-plain", () => startObservation(item)),
+      if (!A.restricted) line.append(A.button("编辑", "fa-plain", () => startObservation(item)),
         A.button("删除", "fa-plain", () => deleteObservation(item)));
       return line;
     }
@@ -343,7 +343,8 @@
       const items = shared.data.observations.filter(item => !item.dimension || !known.has(item.dimension));
       const block = A.el("section", "fa-section");
       const top = A.el("div", "fa-group");
-      top.append(A.el("span", "", "其他观察"), A.el("span", "fa-spacer"), A.button("记录观察", "fa-plain", () => startObservation(null, "")));
+      top.append(A.el("span", "", "其他观察"), A.el("span", "fa-spacer"));
+      if (!A.restricted) top.append(A.button("记录观察", "fa-plain", () => startObservation(null, "")));
       block.append(top);
       const list = A.el("div", "fa-list");
       if (P.observing && !P.observing.item && !known.has(P.observing.dimension)) {
@@ -361,6 +362,7 @@
       return block;
     }
     function startObservation(item, dimension = "") {
+      if (A.restricted) return;
       const entry = item ? "observation:" + item.id : "observation:new";
       const draft = A.draft(entry);
       const base = draft.payload || { judgement: item?.judgement || "", note: item?.note || "",

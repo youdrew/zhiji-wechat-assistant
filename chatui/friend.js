@@ -29,7 +29,8 @@
   }
   async function refresh(open = false) {
     try {
-      const overview = open ? await A.api("/api/friend/open", { method: "POST", body: {} }) :
+      // A restricted window never opens (open may start model work); it only reads the overview.
+      const overview = open && !A.restricted ? await A.api("/api/friend/open", { method: "POST", body: {} }) :
         await A.api("/api/friend/overview?" + A.query());
       const previous = S.overview;
       S.overview = overview;
@@ -174,9 +175,13 @@
   });
   window.friendHost?.onHostEvent(event => {
     if (event.type === "focus") {
-      void refresh(true).then(() => window.FriendRun.refresh());
+      // A restricted window only re-reads the overview on focus; it never restarts run polling.
+      if (A.restricted) void refresh(true);
+      else void refresh(true).then(() => window.FriendRun.refresh());
       void window.FriendScheme.load().catch(() => { });
     } else if (event.type === "host-gone") A.mask("主窗口已关闭或重新载入，请从聊天重新打开知己分析。");
+    else if (A.restricted && event.type === "select-tab" && typeof event.tab === "string")
+      window.FriendScheme.selectTab(event.tab === "memory" ? "memories" : event.tab);
   });
 
   A.applyTheme();
@@ -185,6 +190,19 @@
     return;
   }
   header();
+  if (A.restricted) {
+    // Read-only window for an external Agent: no run controls, settings, memory edits or scheme switching.
+    A.byId("faRunControl").hidden = true;
+    A.byId("faMoreButton").hidden = true;
+    A.byId("faScheme").disabled = true;
+    void (async () => {
+      try { await window.FriendScheme.load(); }
+      catch (error) { A.toast(error.message || "分析方案读取失败"); }
+      if (A.initialTab) window.FriendScheme.selectTab(A.initialTab === "memory" ? "memories" : A.initialTab);
+      await refresh(true);
+    })();
+    return;
+  }
   void (async () => {
     try { await window.FriendScheme.load(); }
     catch (error) { A.toast(error.message || "分析方案读取失败"); }

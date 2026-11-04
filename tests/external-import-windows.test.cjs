@@ -11,7 +11,7 @@ const CLIENT = "http://127.0.0.1:34567/";
 const A = { account: "synthetic-account", user: "contact-a", name: "联系人甲", theme: "light", friendId: "synthetic-friend-a" };
 const B = { ...A, user: "contact-b", name: "联系人乙", friendId: "synthetic-friend-b" };
 
-function harness() {
+function harness({ withChat = false } = {}) {
   const made = [], handlers = new Map();
   const dialog = { choice: 0, calls: [], showMessageBoxSync(...args) { this.calls.push(args); return this.choice; } };
   class Window extends EventEmitter {
@@ -42,13 +42,18 @@ function harness() {
   }
   const main = new Window({});
   main.webContents.mainFrame.url = CLIENT; main.webContents.session = { synthetic: true };
-  const trustedMainFrame = event => event.sender === main.webContents && event.senderFrame === main.webContents.mainFrame &&
-    event.senderFrame.url === CLIENT;
+  // An independent chat window stands next to the main window when asked for.
+  const chat = withChat ? new Window({}) : null;
+  if (chat) chat.webContents.mainFrame.url = CLIENT + "index.html?window=chat";
+  const owners = [main, chat].filter(Boolean);
+  const trustedMainFrame = event => owners.some(win => event.sender === win.webContents &&
+    event.senderFrame === win.webContents.mainFrame) && (event.sender !== main.webContents || event.senderFrame.url === CLIENT);
   const manager = createExternalImportWindows({ BrowserWindow: Window, mainWindow: main, clientUrl: CLIENT,
+    ...(chat ? { openerWindow: event => owners.find(win => win.webContents === event.sender) ?? null } : {}),
     trustedMainFrame, dialog, ipcMain: { handle: (name, callback) => handlers.set(name, callback), removeHandler: name => handlers.delete(name) },
     screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }) } });
   const event = win => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
-  return { manager, main, made, handlers, event, dialog };
+  return { manager, main, chat, made, handlers, event, dialog };
 }
 
 test("external chat windows reuse the exact account and friend without changing an existing binding", () => {
@@ -344,6 +349,7 @@ async function shellLifecycle() {
     "./image-preview.cjs": { createImagePreviews: () => disposable },
     "./model-traces-window.cjs": { createModelTracesWindow: () => disposable },
     "./plugin-windows.cjs": { createPluginWindows: () => disposable },
+    "./chat-windows.cjs": { createChatWindows: () => disposable },
     "./real-client-update-controller.cjs": { createUpdateController: options => { state.updater = options; return {}; } },
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../scripts/real-client-shell.cjs"), "utf8"), {
@@ -397,4 +403,27 @@ test("updater cannot stop the service until external windows accept closing", as
   await h.state.updater.pauseRecovery();
   assert.equal(h.state.windows, 0);
   assert.equal(h.state.monitorStopped, 1);
+});
+
+test("a chat window opens and notifies import windows; chat navigation returns to it, settings go to main", async () => {
+  const h = harness({ withChat: true });
+  assert.equal(h.handlers.get("external-import:open")(h.event(h.chat), A, true), true);
+  const win = h.made[2];
+  assert.equal(h.handlers.get("external-import:notify")(h.event(h.chat), { type: "plugins-changed", plugins: [] }), true);
+  assert.deepEqual(win.sent.at(-1), ["external-import:host-event", { type: "plugins-changed", plugins: [] }]);
+  for (const target of ["plugins", "models", "model-settings"]) {
+    assert.equal(await h.handlers.get("external-import:navigate")(h.event(win), target, true), true);
+    assert.equal(h.main.sent.at(-1)[0], "external-import:navigate");
+    assert.equal(h.main.sent.at(-1)[1].target, target);
+  }
+  assert.equal(h.chat.sent.length, 0);
+  assert.equal(await h.handlers.get("external-import:navigate")(h.event(win), "chat", true), true);
+  assert.equal(h.chat.sent.at(-1)[1].target, "chat");
+  assert.equal(win.destroyed, true);
+  // Once the opening chat window is gone, chat navigation also falls back to the main window.
+  assert.equal(h.handlers.get("external-import:open")(h.event(h.chat), B, true), true);
+  const next = h.made[3];
+  h.chat.destroy();
+  assert.equal(await h.handlers.get("external-import:navigate")(h.event(next), "chat", true), true);
+  assert.equal(h.main.sent.at(-1)[1].target, "chat");
 });

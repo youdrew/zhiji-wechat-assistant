@@ -35,6 +35,15 @@
       <div id="masterOffBanner" class="mcp-banner" hidden>MCP 已关闭。所有客户端已断开；重新打开后客户端需重新配对连接。</div>
     </section>
 
+    <section id="pairingCard" class="mcp-card" aria-labelledby="pairingTitle" hidden>
+      <div class="mcp-bar">
+        <h2 id="pairingTitle">待确认的配对请求</h2>
+        <span class="mcp-spacer"></span>
+        <span class="mcp-note">来自本机命令行 connect；确认后凭据直接交给发起请求的命令。</span>
+      </div>
+      <div id="pairingList" class="mcp-profiles"></div>
+    </section>
+
     <section class="mcp-card" aria-labelledby="clientsTitle">
       <div class="mcp-bar">
         <h2 id="clientsTitle">客户端</h2>
@@ -59,7 +68,7 @@
       <p id="callsEmpty" class="mcp-empty" hidden>暂无调用记录。</p>
     </section>
 
-    <p class="mcp-footer-note">连接配置、授权模式与联系人授权只能在本页更改；MCP 工具不能修改自己的授权。</p>
+    <p class="mcp-footer-note">连接配置、数据范围、账号与联系人授权以及操作能力只能在本页更改；MCP 工具不能修改自己的授权。</p>
   </main>
 
   <section id="viewSafety" class="mcp-view" hidden>
@@ -75,7 +84,7 @@
         处理过程发生在本机之外。本页的开关与授权只约束知己这一侧提供什么，不约束外部客户端之后如何使用或转发。</p>
       <p>已经提供给外部模型的内容无法收回。撤销授权或删除客户端只阻止后续读取。</p>
       <h2>提示注入</h2>
-      <p>聊天内容来自联系人，其中可能包含刻意构造的文字，试图诱导外部 AI 客户端去调用工具（例如读取更多资料或发送消息）。
+      <p>聊天内容来自联系人，其中可能包含刻意构造的文字，试图诱导外部 AI 客户端去调用工具（例如读取更多资料或修改资料）。
         知己侧的授权检查不受这些文字影响，但外部客户端是否遵循自身安全策略取决于该客户端。</p>
       <h2>本机进程边界</h2>
       <p>同一 Windows 用户下的进程原则上可以读取该用户可访问的本机文件。MCP 的配对与授权约束的是受支持的 MCP

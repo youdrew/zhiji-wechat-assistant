@@ -28,7 +28,7 @@ from pathlib import Path
 
 from core_jobs import ProcessGroup
 from core_mcp_confirm import ConfirmUnavailable
-from core_runtime import electron_executable
+from core_runtime import electron_sidecar_command
 
 CONFIRM_LEASE_KIND = "confirm"
 # 确认到期后仍留给窗口收尾（打印结论行、退出）的宽限；确认服务在这之后本就
@@ -122,9 +122,8 @@ class ElectronConfirmPresenter:
         return decided
 
     def _spawn(self, request):
-        command = [self._electron or electron_executable(self.root) or "",
-                   self._script or str(self.root / "scripts" / "confirm-window.cjs")]
-        if not command[0]:
+        command = electron_sidecar_command(self.root, "confirm-window", electron=self._electron, script=self._script)
+        if command is None:
             raise ConfirmUnavailable("本机没有可用的确认窗口运行时，不能发起高影响删除")
         line = json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n"
         if len(line) > REQUEST_LINE_LIMIT:

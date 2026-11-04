@@ -48,6 +48,12 @@ function windowScope(value) {
 
 function createPluginWindows(options) {
   const { BrowserWindow, ipcMain, screen, clipboard, mainWindow, clientUrl, trustedMainFrame, userDataPath } = options;
+  // Modified 2026-11-04: independent chat windows open plugin windows too. Each plugin window belongs to the
+  // window that last opened it (its opener, or the main window once that one is gone): host calls go to it, and
+  // only its owner's retain/forget closes it. Every app window hears the open-window state.
+  const openerWindow = options.openerWindow || (() => mainWindow);
+  const stateTargets = options.stateTargets || (() => [mainWindow.webContents]);
+  const watched = new WeakSet();
   const address = new URL("plugin-panel.html", clientUrl).href;
   const windows = new Map(), pending = new Map();
   const prefix = "w" + randomBytes(6).toString("hex");
@@ -80,15 +86,18 @@ function createPluginWindows(options) {
     }
     return null;
   }
-  function toMain(channel, value) {
-    if (!closed && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, value);
+  const ownerOf = entry => entry.opener && !entry.opener.isDestroyed() ? entry.opener : mainWindow;
+  function toTargets(channel, value) {
+    if (closed || mainWindow.isDestroyed()) return;
+    for (const contents of new Set(stateTargets()))
+      if (contents && !contents.isDestroyed?.()) contents.send(channel, value);
   }
   function toPage(entry, message) {
     if (entry.loaded && !entry.window.isDestroyed()) entry.window.webContents.send("plugin-panel:to-panel", message);
   }
   // Which friends have a window, and whether it is on screen: the main window's toolbar and reminders follow it.
   function publish() {
-    toMain("plugin-panel:state", { windows: [...windows.values()].filter(live).map(entry => ({
+    toTargets("plugin-panel:state", { windows: [...windows.values()].filter(live).map(entry => ({
       plugin: entry.scope.plugin, account: entry.scope.account, user: entry.scope.user, visible: shown(entry) })) });
   }
   function visibility(entry) {
@@ -99,13 +108,15 @@ function createPluginWindows(options) {
     }
     publish();
   }
-  // Answers still owed to a page that can no longer get them from the main window it asked.
-  function failPending(entry, code, message) {
+  // Answers still owed to a page that can no longer get them from the window it asked
+  // (all of one plugin window's calls, or all calls asked of one host window).
+  function failPending(entry, code, message, host = null) {
     for (const [id, waiter] of pending) {
-      if (waiter.entry !== entry) continue;
+      if (entry ? waiter.entry !== entry : waiter.host !== host) continue;
+      const target = waiter.entry;
       pending.delete(id); clearTimeout(waiter.timer);
-      if (entry.loaded && !entry.window.isDestroyed())
-        entry.window.webContents.send("plugin-panel:host-result", waiter.original, { error: { code, message } });
+      if (target.loaded && !target.window.isDestroyed())
+        target.window.webContents.send("plugin-panel:host-result", waiter.original, { error: { code, message } });
     }
   }
   function initialBounds(key) {
@@ -134,15 +145,27 @@ function createPluginWindows(options) {
       .sort((left, right) => right.hiddenAt - left.hiddenAt);
     for (const entry of hidden.slice(HIDDEN_KEEP)) destroy(entry);
   }
-  function open(value) {
+  // A chat window that goes away fails the calls it still owes; its plugin windows fall back to the main window.
+  function watch(opener) {
+    if (opener === mainWindow || watched.has(opener)) return;
+    watched.add(opener);
+    opener.once("closed", () => {
+      if (closed) return;
+      failPending(null, "host-timeout", "聊天窗口已关闭，请重试", opener);
+      publish();
+    });
+  }
+  function open(value, opener = mainWindow) {
     const scope = windowScope(value);
     if (closed || !scope || mainWindow.isDestroyed()) return { opened: false };
     if (scope.theme !== theme) setTheme(scope.theme);
+    watch(opener);
     const key = keyOf(scope);
     const existing = windows.get(key);
     if (existing && !existing.window.isDestroyed()) {
       // A closed window keeps its page and comes back as it was.
       existing.hidden = false;
+      existing.opener = opener;
       existing.scope = { ...existing.scope, name: scope.name, label: scope.label };
       existing.window.setTitle(title(existing.scope));
       toPage(existing, { context: context(existing) });
@@ -160,7 +183,7 @@ function createPluginWindows(options) {
         nodeIntegration: false, webSecurity: true, devTools: false, session: mainWindow.webContents.session,
       },
     });
-    const entry = { window: child, scope, key, serial: ++serial, loaded: false, queued: [], visible: true,
+    const entry = { window: child, scope, key, opener, serial: ++serial, loaded: false, queued: [], visible: true,
       hidden: false, hiddenAt: 0, allowClose: false };
     windows.set(key, entry);
     const contents = child.webContents;
@@ -229,11 +252,13 @@ function createPluginWindows(options) {
   // A reloaded or replaced main renderer will not answer earlier calls; it learns which windows are open.
   function mainNavigation(_event, _url, inPlace, isMainFrame) {
     if (isMainFrame === false || inPlace) return;
-    for (const entry of windows.values()) failPending(entry, "host-timeout", "主窗口已重新载入，请重试");
+    failPending(null, "host-timeout", "主窗口已重新载入，请重试", mainWindow);
   }
 
-  ipcMain.handle("plugin-panel:open", (event, value) =>
-    !closed && trustedMainFrame(event) ? open(value) : { opened: false });
+  ipcMain.handle("plugin-panel:open", (event, value) => {
+    const opener = !closed && trustedMainFrame(event) ? openerWindow(event) : null;
+    return opener ? open(value, opener) : { opened: false };
+  });
   // Events for the windows of one friend (继续聊这句 quotes, completed-answer checks); they wait for the page.
   ipcMain.on("plugin-panel:event", (event, message) => {
     if (closed || !trustedMainFrame(event) || !object(message) || !small(message) || !object(message.target) ||
@@ -249,17 +274,20 @@ function createPluginWindows(options) {
   ipcMain.on("plugin-panel:retain", (event, value) => {
     if (closed || !trustedMainFrame(event) || !object(value) || !Array.isArray(value.targets) || value.targets.length > 256 ||
         typeof value.account !== "string") return;
+    const owner = openerWindow(event);
     const keep = new Set(value.targets.filter(validTarget).map(item => JSON.stringify([item.plugin, item.page])));
     for (const entry of [...windows.values()])
-      if (!keep.has(JSON.stringify([entry.scope.plugin, entry.scope.page])) || (value.account && entry.scope.account !== value.account))
-        destroy(entry);
+      // Another account's windows always close; removed contributions only among the caller's own windows.
+      if ((value.account && entry.scope.account !== value.account) ||
+          (ownerOf(entry) === owner && !keep.has(JSON.stringify([entry.scope.plugin, entry.scope.page])))) destroy(entry);
   });
   // A cleared account's windows close; Core has already stopped its plugin work.
   ipcMain.on("plugin-panel:forget", (event, account) => {
     if (closed || !trustedMainFrame(event) || !validText(account, 256)) return;
-    for (const entry of [...windows.values()]) if (entry.scope.account === account) destroy(entry);
+    const owner = openerWindow(event);
+    for (const entry of [...windows.values()]) if (ownerOf(entry) === owner && entry.scope.account === account) destroy(entry);
   });
-  // Host methods a page asks of the main window, pinned to the window's friend; answers return to that page only.
+  // Host methods a page asks of its owner window, pinned to the window's friend; answers return to that page only.
   ipcMain.on("plugin-panel:host-call", (event, call) => {
     const entry = entryFor(event);
     if (closed || !entry || !shown(entry) || !object(call) || !validText(call.id, 48) || !HOST_METHODS.has(call.method) ||
@@ -274,21 +302,24 @@ function createPluginWindows(options) {
       entry.window.webContents.send("plugin-panel:host-result", original, { error: { code: "host-timeout", message: "主窗口没有响应，请重试" } });
     }, HOST_CALL_TIMEOUT_MS);
     timer.unref?.();
-    pending.set(id, { entry, original, method: call.method, timer });
-    toMain("plugin-panel:host-call", { id, plugin: entry.scope.plugin, method: call.method, params, independent: true,
+    const host = ownerOf(entry);
+    pending.set(id, { entry, host, original, method: call.method, timer });
+    host.webContents.send("plugin-panel:host-call", { id, plugin: entry.scope.plugin, method: call.method, params, independent: true,
       scope: { account: entry.scope.account, user: entry.scope.user, name: entry.scope.name } });
   });
   ipcMain.on("plugin-panel:host-result", (event, id, reply) => {
     if (!trustedMainFrame(event) || typeof id !== "string" || id.length > 64 || !object(reply) || !small(reply)) return;
     const waiter = pending.get(id);
-    if (!waiter) return;
+    // Only the window that was asked can answer.
+    if (!waiter || openerWindow(event) !== waiter.host) return;
     pending.delete(id); clearTimeout(waiter.timer);
     const { entry } = waiter;
     if (!entry.loaded || entry.window.isDestroyed()) return;
-    // The main window comes forward only once it has switched to the friend's chat.
-    if (waiter.method === "view.focusChat" && !reply.error && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show(); mainWindow.focus();
+    // The asked window comes forward only once it has switched to the friend's chat.
+    const { host } = waiter;
+    if (waiter.method === "view.focusChat" && !reply.error && !host.isDestroyed()) {
+      if (host.isMinimized()) host.restore();
+      host.show(); host.focus();
     }
     entry.window.webContents.send("plugin-panel:host-result", waiter.original, reply);
   });
@@ -304,7 +335,7 @@ function createPluginWindows(options) {
   mainWindow.webContents.on("did-finish-load", publish);
   mainWindow.webContents.on("did-start-navigation", mainNavigation);
   return {
-    open, setTheme, destroyAll,
+    open, setTheme, destroyAll, publish,
     count: () => [...windows.values()].filter(live).length,
     close() {
       if (closed) return;

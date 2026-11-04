@@ -4,6 +4,8 @@ Modified by Know Your Friends, 2026-10-11: accept bounded forward history pages.
 Modified by Know Your Friends, 2026-10-13: retired legacy analysis endpoints; plugin architecture.
 Modified by Know Your Friends, 2026-10-13: the assistant's /api/advisor routes moved into the kyf.advisor
 plugin (reached through /api/plugins/rpc); host-picked files are granted through /api/plugins/file-grant.
+Modified by Know Your Friends, 2026-11-04: requests carrying X-KYF-UI-Session (Agent-opened windows) pass
+core.ui.guard before routing; requests without the header are unchanged.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from instance_identity import default_port, instance_id
 from model_source import ModelSourceUnavailable
 from core_contracts import AdvisorError, error_status
 import core_http
+import core_mcp_pairing
 import core_mcp_proxy
 import friend_http
 import plugin_api
@@ -43,6 +46,8 @@ PLUGIN_PAGE_POLICY = ("default-src 'none'; script-src 'self'; style-src 'self' '
                       "font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
 CONTROL_TOKEN_ENV = "KYF_CONTROL_TOKEN"
 CONTROL_TOKEN_HEADER = "X-KYF-Control-Token"
+# Agent-opened windows (core_ui_host) carry a restricted, read-only session token in this header.
+UI_SESSION_HEADER = "X-KYF-UI-Session"
 TRACE_INGRESS = threading.BoundedSemaphore(16)
 MAX_POST_BODY = 65536
 # Plugin RPC carries user-written prompts and skills (16 000 CJK characters are about 48 KB).
@@ -133,6 +138,47 @@ def make_handler(backend, accounts=None, control_token=None):
 
         def query(self, path):
             return {key: values[0] for key, values in parse_qs(path.query, keep_blank_values=True).items()}
+
+        def ui_session_allowed(self, method):
+            """Agent-opened window requests pass ``core.ui.guard`` first; others are untouched.
+
+            The body of a guarded POST/DELETE is read here and put back as ``self.rfile`` so
+            the route handler reads exactly the same bytes.
+            """
+            token = self.headers.get(UI_SESSION_HEADER)
+            if token is None:
+                return True
+            try:
+                ui = getattr(backend.core_services(), "ui", None)
+            except Exception:
+                ui = None
+            guard = getattr(ui, "guard", None)
+            if not callable(guard):
+                self.send(403, {"error": "ui-session-forbidden"})
+                return False
+            parsed = urlsplit(self.path)
+            body = None
+            if method in ("POST", "DELETE"):
+                try:
+                    length = integer(self.headers.get("Content-Length"), 0, MAX_RPC_BODY)
+                except ValueError:
+                    self.send(400, {"error": "invalid-request"})
+                    return False
+                raw = self.rfile.read(length) if length else b""
+                self.rfile = io.BytesIO(raw)
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else None
+                except (ValueError, UnicodeError):
+                    body = None
+            try:
+                guard(token, method, parsed.path, self.query(parsed), body)
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code not in ("ui-session-forbidden", "ui-session-read-only"):
+                    code = "ui-session-forbidden"
+                self.send(403, {"error": code})
+                return False
+            return True
 
         def send_media(self, asset):
             # Modified by Know Your Friends, 2026-10-10: bounded streaming of local
@@ -281,6 +327,8 @@ def make_handler(backend, accounts=None, control_token=None):
         def _do_GET(self):
             if not self.trusted_request():
                 return self.send(403, {"error": "forbidden"})
+            if not self.ui_session_allowed("GET"):
+                return None
             parsed = urlsplit(self.path)
             if parsed.path.startswith(core_mcp_proxy.HTTP_PREFIX):
                 return self._mcp_api("GET")
@@ -477,8 +525,14 @@ def make_handler(backend, accounts=None, control_token=None):
                 except (ValueError, UnicodeError):
                     return self.send(400, {"error": "invalid-request", "message": "请求格式不正确"})
             try:
-                result = backend.core_services().mcp.http_handle(method, urlsplit(self.path).path,
-                                                                 self.headers, body)
+                path = urlsplit(self.path).path
+                mcp = backend.core_services().mcp
+                if path.startswith(core_mcp_pairing.PAIRING_PREFIX):
+                    # G12 one-command pairing: request/poll/cancel/revoke only; nothing on
+                    # these loopback routes can approve a pairing (see core_mcp_pairing).
+                    result = core_mcp_pairing.handle_pairing_path(mcp, method, path, body)
+                else:
+                    result = mcp.http_handle(method, path, self.headers, body)
             except core_mcp_proxy.McpError as exc:
                 return self.send(exc.status, {"error": exc.code, "message": exc.message})
             except RuntimeError:
@@ -490,6 +544,8 @@ def make_handler(backend, accounts=None, control_token=None):
         def _do_POST(self):
             if not self.trusted_request():
                 return self.send(403, {"error": "forbidden"})
+            if not self.ui_session_allowed("POST"):
+                return None
             endpoint = urlsplit(self.path).path
             if endpoint in ("/api/control/lease", "/api/control/background"):
                 return self._control_lease(endpoint)
@@ -631,6 +687,8 @@ def make_handler(backend, accounts=None, control_token=None):
         def do_DELETE(self):
             if not self.trusted_request():
                 return self.send(403, {"error": "forbidden"})
+            if not self.ui_session_allowed("DELETE"):
+                return None
             path = urlsplit(self.path).path
             if path.startswith(plugin_api.PREFIX):
                 return self._plugin_api("DELETE")

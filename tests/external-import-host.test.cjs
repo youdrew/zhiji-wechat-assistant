@@ -70,7 +70,7 @@ test("external chat has only a friend entry and never creates an embedded pane",
   assert.doesNotMatch(indexHtml, /\bid="navExternalImport"/);
   assert.match(indexHtml.match(/<button\b[^>]*\bid="btnExternalImport"[^>]*>/)?.[0] || "", /\bhidden(?:\s|=|>)/);
   assert.doesNotMatch(source, /createElement|iframe|externalImportView|togglePluginPanel|openPluginPanel/);
-  assert.equal((read("chatui/app.js").match(/window\.ExternalImportHost\?\.onSessionChanged\(/g) || []).length, 4);
+  assert.equal((read("chatui/app.js").match(/window\.ExternalImportHost\?\.onSessionChanged\(/g) || []).length, 6);
   const h = harness(); await settle(); h.friend.click(); await settle();
   assert.deepEqual(h.views, []);
   assert.equal(h.chatState.view, "chat");

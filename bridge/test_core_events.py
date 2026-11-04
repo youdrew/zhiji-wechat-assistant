@@ -262,9 +262,11 @@ class EventBoundaryTests(unittest.TestCase):
         self.core.tasks = SimpleNamespace(stop=Mock())
         self.supervisor.stop, self.supervisor.reset = stop, Mock()
         self.supervisor.reconcile_dependencies = Mock()
+        self.core._close_windows_of_unavailable_plugins = Mock()
         with patch("core_events.time.time", return_value=101.8):
             CoreServices.set_enabled(self.core, PLUGIN, False)
         self.supervisor.reconcile_dependencies.assert_called_once_with()
+        self.core._close_windows_of_unavailable_plugins.assert_called_once_with(PLUGIN)
         self.rows.extend([message(2, 103000), message(3, 105000)])
         with patch("core_events.time.time", return_value=104.875):
             CoreServices.set_enabled(self.core, PLUGIN, True)

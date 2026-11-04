@@ -10,6 +10,8 @@
 // Modified by Know Your Friends, 2026-10-13 (Apache-2.0): plugin architecture; the WechatVibe label,
 // portrait, background-analysis and local-model UI is retired.
 // Modified by Know Your Friends, 2026-10-14 (Apache-2.0): blank context budgets use Core's default on save.
+// Modified by Know Your Friends, 2026-11-04 (Apache-2.0): a conversation pops out into its own chat window
+// (window.ChatWindow, set by settings-window.js); drafts and read state follow it across windows.
 const chatState = window.ViewState.create("chat");
 const settingsState = window.ViewState.create("settings");
 const byId = id => document.getElementById(id);
@@ -46,13 +48,17 @@ function markSessionAsRead(username) {
   const marks = getWatermarks();
   const session = chatState.sessions.get(username);
   if (!session) return;
-  marks[username] = {
+  const mark = {
     // The message timestamp is independent of pinning and conversation ordering.
     messageTime: Number(session.time) || 0,
     unreadCount: Number(session?.unreadCount) || 0,
     preview: String(session?.preview || ""),
-    readAt: Date.now()
   };
+  // An unchanged mark is not rewritten: other windows re-render on every write (storage event).
+  const previous = marks[username];
+  if (previous && previous.messageTime === mark.messageTime && previous.unreadCount === mark.unreadCount &&
+      previous.preview === mark.preview) return;
+  marks[username] = { ...mark, readAt: Date.now() };
   try { localStorage.setItem(key, JSON.stringify(marks)); } catch {}
 }
 function getVisibleUnreadCount(session) {
@@ -126,7 +132,8 @@ chatState.lastChatScrollTop = 0;
 let toastTimer;
 let accountUnavailable = false;
 let accountClearedExiting = false;
-let startupActive = !window.desktopHost?.isSettingsWindow;
+// A chat window has no startup overlay or database gate; it shows its state inside the conversation.
+let startupActive = !window.desktopHost?.isSettingsWindow && !window.ChatWindow;
 let startupStage = "account";
 let startupStageEpoch = 0;
 let startupAttempt = 0;
@@ -331,6 +338,7 @@ function status(container, message, retry) {
 }
 const isNetworkFailure = error => error instanceof TypeError;
 function resetAccountView(message = "当前微信账号未就绪", preserveOtherCaches = false) {
+  if (window.ChatWindow) { invalidateChatWindow(message); return; }
   window.ConversationMenu?.close();
   chatState.conversationSelectionEpoch++;
   chatState.conversationSelectionBusy = false;
@@ -440,7 +448,11 @@ function acceptResponseAccount(account) {
 }
 function renderSessions() {
   // A visible conversation stays read when its session snapshot refreshes, even while browsing history.
-  markSessionAsRead(chatState.currentUser);
+  // renderSessions({ markRead: false }) follows another window's read mark without writing one back,
+  // so two windows never answer each other's writes.
+  if (arguments[0]?.markRead !== false) markSessionAsRead(chatState.currentUser);
+  // A chat window has no conversation list.
+  if (window.ChatWindow) return;
   const container = byId("sessionList");
   const query = byId("searchInput").value.trim().toLowerCase();
   const existing = new Map([...container.children].filter(node => node.classList.contains("session-item")).map(node => [node.dataset.id, node]));
@@ -472,6 +484,8 @@ function renderSessions() {
         markSessionAsRead(item.dataset.id);
         switchSession(item.dataset.id);
       });
+      // As in WeChat, a double-click also opens the conversation in its own window.
+      item.addEventListener("dblclick", () => { openChatWindow(item.dataset.id); });
     }
     item.classList.toggle("active", session.username === chatState.currentUser);
     const avatarWrap = item.querySelector(".session-avatar-wrap");
@@ -529,6 +543,20 @@ function renderSessions() {
     container.appendChild(empty);
   } else if (!visible) status(container, chatState.sessions.size ? "没有匹配的会话" : "暂无会话");
   window.ConversationMenu?.refresh();
+}
+let chatWindowRequest = 0;
+function canOpenChatWindow() {
+  return !window.ChatWindow && !window.desktopHost?.isSettingsWindow && typeof window.desktopHost?.openChatWindow === "function";
+}
+function openChatWindow(user) {
+  const account = chatState.currentAccount;
+  if (!canOpenChatWindow() || !account || !chatState.messageSourceReady || !chatState.sessions.has(user)) return;
+  const request = ++chatWindowRequest;
+  const failed = () => { if (request === chatWindowRequest) toast("聊天窗口未能打开"); };
+  try {
+    void Promise.resolve(window.desktopHost.openChatWindow(account, user))
+      .then(opened => { if (opened !== true) failed(); }, failed);
+  } catch { failed(); }
 }
 function updateAddConversationButton() {
   const button = byId("btnAddConversation");
@@ -1061,6 +1089,7 @@ async function loadSessions(retryChanged = true) {
       if (changedAccount) void window.MediaSettings?.refresh?.();
       return;
     }
+    if (window.ChatWindow) { applyChatWindowSessions(data); return; }
     if (startupActive) showStartup("sessions", "正在整理会话列表…");
     const signature = JSON.stringify([data.self, data.sessions, data.account]);
     if (data.messagesReady === false) {
@@ -1182,6 +1211,21 @@ async function loadSessions(retryChanged = true) {
       accountCheckStatus(error.preparation?.message || "微信账号暂不可用，请重试", true);
       return;
     }
+    if (window.ChatWindow) {
+      if (accountChangedError(error)) {
+        invalidateChatWindow("微信账号已变化，正在重新读取…");
+        if (retryChanged !== false) followup = false;
+      } else if (accountUnavailableError(error)) {
+        invalidateChatWindow(error.preparation?.message || "当前微信账号未就绪");
+        accountUnavailable = true;
+        renderAccountUnavailable(error);
+      } else if (contactSnapshotStaleError(error)) {
+        if (!chatState.currentUser) status(byId("chatMessages"), "联系人资料更新中…");
+        const pendingRequest = chatState.sessionRequest;
+        setTimeout(() => { if (pendingRequest === chatState.sessionRequest) void loadSessions(); }, 2000);
+      } else if (!chatState.currentUser) status(byId("chatMessages"), "聊天读取失败，请重试", () => { void loadSessions(); });
+      return;
+    }
     if (accountChangedError(error)) {
       resetAccountView("微信账号已变化，正在读取会话…");
       if (retryChanged !== false) followup = false;
@@ -1230,6 +1274,81 @@ async function loadSessions(retryChanged = true) {
     if (followup !== null) void loadSessions(followup);
     else if (queued) void loadSessions();
   }
+}
+// -- chat window (added 2026-11-04) -------------------------------------------------------------------------
+// The window is fixed to one [account, conversation]. It reads the directory only to find that
+// conversation; it never selects, follows or remembers conversations, and never switches to another one.
+let chatWindowRetired = false;
+function chatWindowTitle(user = window.ChatWindow?.user) {
+  const name = String(chatState.sessions.get(user)?.name || "").trim();
+  return name || "聊天";
+}
+function applyChatWindowSessions(data) {
+  const target = window.ChatWindow;
+  if (chatWindowRetired) return;
+  if (!target.account || !target.user) { invalidateChatWindow("此聊天窗口已失效"); return; }
+  if (data.account !== target.account) { invalidateChatWindow("微信账号已切换，此窗口已失效"); return; }
+  const wasReady = chatState.currentAccount === target.account && chatState.messageSourceReady;
+  accountUnavailable = false;
+  chatState.currentAccount = target.account;
+  chatState.messageSourceReady = data.messagesReady !== false;
+  chatState.self = data.self || null;
+  chatState.sessions.clear();
+  for (const session of data.sessions) if (session?.username) chatState.sessions.set(session.username, session);
+  const session = chatState.sessions.get(target.user);
+  document.title = chatWindowTitle();
+  text("chatTitle", chatWindowTitle());
+  if (!chatState.messageSourceReady) {
+    const message = typeof data.preparation?.message === "string" && data.preparation.message.length <= 240
+      ? data.preparation.message : "聊天记录尚未就绪，正在重试…";
+    if (chatState.currentUser) invalidateChatWindow(message);
+    else status(byId("chatMessages"), message);
+    return;
+  }
+  if (!session) {
+    // An open conversation stays readable when it leaves the directory; one never found shows its absence.
+    if (!chatState.currentUser) status(byId("chatMessages"), "暂无和 TA 的聊天记录");
+    return;
+  }
+  if (chatState.currentUser !== target.user || !wasReady) { switchSession(target.user, true); return; }
+  window.ChatComposer?.setScope(target.account, target.user, { available: true, isGroup: session.isGroup === true });
+  updateFriendButton(target.user);
+  window.PluginSlots?.onSessionChanged(target.account, target.user, pluginFriendName(target.user));
+  window.ExternalImportHost?.onSessionChanged(target.account, target.user, pluginFriendName(target.user));
+  renderSessions();
+}
+// The conversation stays in place but nothing can be read or sent until its account is current again.
+function invalidateChatWindow(message) {
+  window.ConversationMenu?.close();
+  window.ChatMedia?.reset();
+  window.MessageAnalysis?.reset();
+  cancelHistoryRequest();
+  chatState.historyState = null;
+  resetHistorySearch();
+  chatState.controller?.abort();
+  chatState.controller = null;
+  chatState.advance("generation");
+  chatState.messageRequest++;
+  chatState.messagePending = false;
+  chatState.messageRefreshQueued = false;
+  chatState.currentAccount = null;
+  chatState.currentUser = null;
+  chatState.currentHasMoreBefore = null;
+  chatState.messageSourceReady = false;
+  chatState.sessions.clear();
+  chatState.sessionCache.clear();
+  chatState.messages = [];
+  chatState.followLatest = true;
+  chatState.lastChatScrollTop = 0;
+  // The draft stays in memory for this contact; only the composer is disabled.
+  window.ChatComposer?.setScope(null, null);
+  window.PluginSlots?.onSessionChanged(null, null);
+  window.ExternalImportHost?.onSessionChanged(null, null);
+  window.ModelTraces?.setScope(null, null, chatState.view);
+  byId("btnChatHistory").disabled = true;
+  updateFriendButton(null);
+  status(byId("chatMessages"), message);
+  updateHistoryNavigation();
 }
 function messageNode(message) {
   const session = chatState.sessions.get(chatState.currentUser);
@@ -1695,13 +1814,16 @@ async function loadMessages(token = chatState.generation, poll = false, refresh 
 }
 function switchSession(user, force = false) {
   if (window.desktopHost?.isSettingsWindow) return;
+  // A chat window shows only its own conversation, whoever asks it to switch.
+  if (window.ChatWindow && user !== window.ChatWindow.user) return;
   if (!chatState.sessions.has(user)) return;
   if (!chatState.messageSourceReady) {
     text("chatTitle", chatState.sessions.get(user).name || user);
     status(byId("chatMessages"), "聊天记录尚未就绪，正在重试…");
     return;
   }
-  try { localStorage.setItem(`last-conversation:${chatState.currentAccount}`, user); } catch {}
+  // Only the main window remembers its last conversation.
+  if (!window.ChatWindow) try { localStorage.setItem(`last-conversation:${chatState.currentAccount}`, user); } catch {}
   markSessionAsRead(user);
   if (user === chatState.currentUser && !force) {
     renderSessions();
@@ -1730,6 +1852,7 @@ function switchSession(user, force = false) {
   chatState.followLatest = cached?.followLatest ?? true;
   chatState.lastChatScrollTop = cached?.scrollTop || 0;
   text("chatTitle", chatState.sessions.get(user).name || user);
+  if (window.ChatWindow) document.title = chatWindowTitle(user);
   if (Array.isArray(cached?.messages)) renderMessages(cached.messages, cached);
   else status(byId("chatMessages"), "正在读取消息…");
   updateHistoryNavigation();
@@ -2629,6 +2752,8 @@ async function clearAccountUiData(accountId) {
   const accounts = new Set();
   for (const account of window.ChatComposer?.accounts() || []) accounts.add(account);
   if (typeof chatState.currentAccount === "string" && chatState.currentAccount) accounts.add(chatState.currentAccount);
+  // An invalidated chat window no longer has a current account but still belongs to its own.
+  if (window.ChatWindow?.account) accounts.add(window.ChatWindow.account);
   for (const key of chatState.sessionCache.keys()) {
     try {
       const [account] = JSON.parse(key);
@@ -2791,9 +2916,15 @@ byId("btnHistoryRetry").addEventListener("click", retryHistory);
 byId("btnReturnLatest").addEventListener("click", returnToLatest);
 byId("btnChatHistory").addEventListener("click", () => { void openHistorySearch(); });
 byId("historySearchPanel").addEventListener("cancel", event => { event.preventDefault(); closeHistorySearch(); });
-window.ChatComposer = window.Composer.create({ drafts: window.ComposerDrafts.create(),
+// Desktop windows showing the same contact share its draft in memory (BroadcastChannel, never storage).
+function composerDraftChannel() {
+  if (!window.desktopHost || window.desktopHost.isSettingsWindow || typeof BroadcastChannel !== "function") return null;
+  try { return new BroadcastChannel("kyf-composer-drafts"); } catch { return null; }
+}
+const composerDrafts = window.ComposerDrafts.create({ channel: composerDraftChannel() });
+window.ChatComposer = window.Composer.create({ drafts: composerDrafts,
   input: byId("chatInput"), copy: copyDraft });
-window.addEventListener("pagehide", () => window.ChatComposer.dispose());
+window.addEventListener("pagehide", () => { window.ChatComposer.dispose(); composerDrafts.close(); });
 byId("navChat").addEventListener("click", () => switchView("chat"));
 window.desktopHost?.onFriendLocate?.(target => { void locateFromFriend(target); });
 window.desktopHost?.onHistoryLocate?.(target => { void locateFromFriend(target); });
@@ -3009,7 +3140,7 @@ async function checkForUpdates(quiet = false) {
   }
 }
 function scheduleBackgroundUpdateChecks() {
-  if (window.desktopHost?.isSettingsWindow) return;
+  if (window.desktopHost?.isSettingsWindow || window.ChatWindow) return;
   if (!appUpdatesEnabled || updateBackgroundChecksScheduled || typeof window.desktopHost?.checkForUpdates !== "function") return;
   updateBackgroundChecksScheduled = true;
   setTimeout(() => {
@@ -3237,9 +3368,10 @@ byId("startupRetry").addEventListener("click", retryStartup);
 byId("databaseLoadingRetry").addEventListener("click", () => { void loadSessions(); });
 byId("startupContinue").addEventListener("click", () => { if (startupActive && accountUnavailable) completeStartup(); });
 const updateValidationMode = window.desktopHost?.updateValidationMode === true;
-window.ConversationMenu?.init({ state: chatState, byId, renderSessions, deleteConversation, setStatus: notifyStatus });
+window.ConversationMenu?.init({ state: chatState, byId, renderSessions, deleteConversation, setStatus: notifyStatus,
+  openChatWindow: canOpenChatWindow() ? openChatWindow : null });
 window.MessageMenu?.init({ state: chatState, byId, toast });
-window.SessionResize?.init({ pane: byId("sessionPane"), handle: byId("sessionResizeHandle"),
+if (!window.ChatWindow) window.SessionResize?.init({ pane: byId("sessionPane"), handle: byId("sessionResizeHandle"),
   container: byId("appWindow"), rail: document.querySelector(".nav-rail") });
 function keepComposerScroll() {
   if (chatState.view !== "chat" || !chatState.followLatest || chatState.historyState || window.MessageAnalysis?.isReading()) return;
@@ -3269,6 +3401,11 @@ if (updateValidationMode) {
     unlockStartupUi();
     void startInitialLoad();
   }).catch(() => {});
+} else if (window.ChatWindow) {
+  // No startup gate: the conversation shows its own loading and failure states.
+  byId("databaseLoading").hidden = true;
+  status(byId("chatMessages"), "正在读取消息…");
+  void loadSessions();
 } else if (!window.desktopHost?.isSettingsWindow) {
   void startInitialLoad();
   scheduleBackgroundUpdateChecks();
@@ -3319,9 +3456,12 @@ window.PluginSettings?.init({ onChange: listing => {
     closeSettingsModal(); window.PluginSlots?.openNav(plugin, nav);
   }
 });
+// A chat window keeps the header buttons and toolbar panels but has no nav pages.
 if (!window.desktopHost?.isSettingsWindow) window.PluginSlots?.init({ switchView, toast, openFriendWindow, updateFriendButton,
+  navigation: !window.ChatWindow,
   focusChat(scope) {
     if (scope.account !== chatState.currentAccount || !chatState.sessions.has(scope.user)) return false;
+    if (window.ChatWindow && scope.user !== window.ChatWindow.user) return false;
     switchSession(scope.user); return true;
   } });
 document.addEventListener("visibilitychange", () => {
@@ -3334,6 +3474,11 @@ window.SettingsSync?.listen((path, clearedAccount) => {
   if (path === "/api/accounts" && clearedAccount) {
     void clearAccountUiData(clearedAccount).then(accounts => {
       for (const account of accounts) window.PluginSlots?.onAccountCleared(account);
+      // A chat window of a cleared account stays retired; nothing of that account is shown again.
+      if (window.ChatWindow && accounts.has(window.ChatWindow.account)) {
+        chatWindowRetired = true;
+        invalidateChatWindow("微信账号数据已清除，此窗口已失效");
+      }
     }).catch(() => { toast("账号已清除，请重新打开应用以刷新界面缓存"); });
   }
   if (path === "/api/plugins") { void window.PluginSettings?.refresh(); }
@@ -3349,6 +3494,11 @@ window.SettingsSync?.listen((path, clearedAccount) => {
   }
 });
 window.addEventListener("storage", event => {
+  // Another window read a conversation: refresh unread badges without writing a mark back.
+  if (event.key?.startsWith("read-watermark:")) {
+    if (event.key === `read-watermark:${chatState.currentAccount || "default"}`) renderSessions({ markRead: false });
+    return;
+  }
   if (event.key !== "real-ui-settings-1") return;
   try {
     const next = JSON.parse(event.newValue || "{}");

@@ -4,10 +4,15 @@
 // centralized 安全与数据说明 view. All data flows through kyfHost.rpc to this plugin's
 // backend; a credential is shown once and never leaves the dialog it was shown in.
 (function () {
-  const MODE_LABEL = { full: "完整授权", per_contact: "逐联系人授权" };
+  // Data scope (which data) and operation capabilities (what it may do) are separate settings.
+  const MODE_LABEL = { accounts: "按账号", per_contact: "逐联系人", full: "全部账号（旧）" };
+  const CAPABILITY_LABEL = { write: "修改资料与发起分析",
+    manage: "全局管理（应用与模型设置，不含联系人资料）" };
+  const EXTERNAL_LABEL = "外部聊天导入";
   const REFRESH_MS = 5000;
   const S = { status: null, profiles: [], calls: [], directory: null, grants: null, expanded: null,
-    modal: false, rendered: "", serial: 0, timer: null, defaultMode: "full", nameById: {} };
+    modal: false, rendered: "", serial: 0, timer: null, defaultMode: "accounts", nameById: {},
+    pairings: [], pairingAccounts: [] };
   const byId = id => document.getElementById(id);
 
   function el(tag, className, text) {
@@ -87,7 +92,11 @@
       rpc("mcp.status"), rpc("mcp.profiles"), rpc("mcp.calls"),
       ...(S.expanded ? [rpc("mcp.profile", { clientId: S.expanded })] : []),
     ]);
+    // Pending CLI pairings are optional: an older Core without the route simply shows none.
+    const pairing = await kyfHost.rpc("mcp.pairings", {}).catch(() => null);
     if (serial !== S.serial) return;
+    S.pairings = pairing && Array.isArray(pairing.pairings) ? pairing.pairings : [];
+    S.pairingAccounts = pairing && Array.isArray(pairing.accounts) ? pairing.accounts : [];
     const [status, profiles, calls, profile] = results.map(item => item.status === "fulfilled" ? item.value : null);
     if (status) S.status = status;
     if (profiles) S.profiles = profiles.profiles || [];
@@ -114,6 +123,7 @@
 
   function stateKey() {
     return JSON.stringify([S.status, S.profiles, S.calls, S.expanded, S.grants,
+      S.pairings.map(item => [item.pairingId, item.ui]),
       S.directory && S.directory.accounts.map(item => [item.accountId, item.label, item.contacts.length])]);
   }
 
@@ -128,8 +138,70 @@
     master.setAttribute("aria-checked", String(enabled));
     byId("masterOffBanner").hidden = enabled || !status;
     byId("btnCreate").disabled = !enabled;
+    renderPairings();
     renderProfiles(enabled);
     renderCalls();
+  }
+
+  // -- command-line pairing requests (G12): the fallback when no pairing window could open ----
+  function renderPairings() {
+    const card = byId("pairingCard"), list = byId("pairingList");
+    if (!card || !list) return;
+    card.hidden = !S.pairings.length;
+    list.replaceChildren();
+    for (const item of S.pairings) {
+      const row = el("div", "mcp-profile");
+      const head = el("div", "mcp-profile-head");
+      head.appendChild(el("span", "mcp-profile-name", item.clientName));
+      head.appendChild(el("span", "mcp-chip", item.clientLabel));
+      head.appendChild(el("span", "mcp-spacer"));
+      head.appendChild(button("审核", "mcp-primary", () => openPairing(item)));
+      row.appendChild(head);
+      row.appendChild(el("p", "mcp-profile-meta", `发起于 ${formatTime(item.createdAtMs)} · 有效至 ${formatTime(item.expiresAtMs)}` +
+        (item.replaces ? ` · 将修复已有客户端「${item.replaces}」（旧凭据失效）` : "")));
+      list.appendChild(row);
+    }
+  }
+
+  function openPairing(item) {
+    dialog((card, close) => {
+      card.appendChild(el("h2", "", `允许「${item.clientName}」连接知己？`));
+      card.appendChild(el("p", "mcp-note", "选择可读取的账号；额外操作能力默认关闭。"));
+      const accountBox = el("div", "mcp-contacts mcp-dialog-accounts");
+      const accountChecks = new Map();
+      for (const account of S.pairingAccounts) {
+        const label = checkLabel(account.label, false);
+        label.className = "mcp-contact";
+        label.title = account.accountId;
+        accountChecks.set(account.accountId, label.children[0]);
+        accountBox.appendChild(label);
+      }
+      card.appendChild(accountBox);
+      const capabilityChecks = {};
+      const capabilityBox = el("div", "mcp-dialog-capabilities");
+      for (const key of Object.keys(CAPABILITY_LABEL)) {
+        const label = checkLabel(CAPABILITY_LABEL[key], false);
+        capabilityChecks[key] = label.children[0];
+        capabilityBox.appendChild(label);
+      }
+      card.appendChild(capabilityBox);
+      const actions = el("div", "mcp-dialog-actions");
+      const decide = async approve => {
+        const params = { pairingId: item.pairingId, approve };
+        if (approve) {
+          params.accounts = [...accountChecks].filter(([, check]) => check.checked).map(([id]) => id);
+          if (!params.accounts.length) { toast("请至少选择一个账号"); return; }
+          params.capabilities = Object.fromEntries(Object.keys(capabilityChecks)
+            .map(key => [key, capabilityChecks[key].checked]));
+        }
+        try { await rpc("mcp.decide_pairing", params); } catch { return; }
+        toast(approve ? "已允许，命令行将自动完成接入" : "已拒绝该配对请求");
+        close();
+      };
+      actions.appendChild(button("拒绝", "mcp-secondary", () => void decide(false)));
+      actions.appendChild(button("允许连接", "mcp-primary", () => void decide(true)));
+      card.appendChild(actions);
+    });
   }
 
   function renderProfiles(enabled) {
@@ -154,8 +226,8 @@
     head.appendChild(chip);
     head.appendChild(el("span", "mcp-spacer"));
     const actions = el("div", "mcp-profile-actions");
-    if (profile.mode === "per_contact") {
-      actions.appendChild(button("授权联系人", "mcp-plain", () => {
+    if (profile.mode === "per_contact" || profile.mode === "accounts") {
+      actions.appendChild(button(profile.mode === "accounts" ? "授权账号" : "授权联系人", "mcp-plain", () => {
         S.expanded = S.expanded === profile.clientId ? null : profile.clientId;
         S.grants = null;
         render(true);
@@ -176,37 +248,55 @@
 
     card.appendChild(el("p", "mcp-profile-meta",
       `创建于 ${formatTime(profile.createdAt)} · 最近使用 ${formatTime(profile.lastUsedAt)}` +
-      (profile.mode === "per_contact" ? ` · 已授权联系人 ${profile.contactCount}` : "")));
+      (profile.mode === "per_contact" ? ` · 已授权联系人 ${profile.contactCount}` : "") +
+      (profile.mode === "accounts" ? ` · 已授权账号 ${(profile.accountGrants || []).length}` : "")));
 
     const body = el("div", "mcp-profile-body");
     const modeLine = el("div", "mcp-fieldline");
-    modeLine.appendChild(el("span", "", "授权模式"));
-    const mode = el("select");
-    for (const [value, label] of Object.entries(MODE_LABEL)) {
-      const option = el("option", "", label);
-      option.value = value;
-      mode.appendChild(option);
-    }
-    mode.value = profile.mode;
-    mode.setAttribute("aria-label", "授权模式");
-    mode.addEventListener("change", () => void setMode(profile, mode.value));
+    modeLine.appendChild(el("span", "", "数据范围"));
+    const mode = modeSelect(profile.mode);
+    mode.addEventListener("change", () => void setMode(profile, mode.value, mode));
     modeLine.appendChild(mode);
     body.appendChild(modeLine);
-    if (profile.mode === "per_contact") {
-      const line = el("div", "mcp-fieldline");
-      const check = el("input");
-      check.type = "checkbox";
-      check.checked = !!profile.globalManagement;
-      check.addEventListener("change", () => void setGlobalManagement(profile, check.checked));
-      const label = el("label", "mcp-check");
-      label.appendChild(check);
-      label.appendChild(el("span", "", "全局管理（应用与模型设置，不含联系人资料）"));
-      line.appendChild(label);
-      body.appendChild(line);
+    const capabilities = profileCapabilities(profile);
+    const line = el("div", "mcp-fieldline mcp-capabilities");
+    for (const key of Object.keys(CAPABILITY_LABEL)) {
+      line.appendChild(checkLabel(CAPABILITY_LABEL[key], capabilities[key],
+        check => void setCapability(profile, key, check)));
     }
-    if (S.expanded === profile.clientId) body.appendChild(matrix(profile));
+    body.appendChild(line);
+    if (S.expanded === profile.clientId) {
+      body.appendChild(profile.mode === "accounts" ? accountList(profile) : matrix(profile));
+    }
     card.appendChild(body);
     return card;
+  }
+
+  function modeSelect(value) {
+    const select = el("select");
+    for (const [key, label] of Object.entries(MODE_LABEL)) {
+      const option = el("option", "", label);
+      option.value = key;
+      select.appendChild(option);
+    }
+    select.value = MODE_LABEL[value] ? value : "accounts";
+    select.setAttribute("aria-label", "数据范围");
+    return select;
+  }
+  function checkLabel(text, checked, onChange) {
+    const label = el("label", "mcp-check");
+    const check = el("input");
+    check.type = "checkbox";
+    check.checked = !!checked;
+    if (onChange) check.addEventListener("change", () => onChange(check));
+    label.appendChild(check);
+    label.appendChild(el("span", "", text));
+    return label;
+  }
+  function profileCapabilities(profile) {
+    const capabilities = profile.capabilities || {};
+    return { write: !!capabilities.write,
+      manage: !!(capabilities.manage || profile.globalManagement) };
   }
 
   async function toggleProfile(profile) {
@@ -217,16 +307,22 @@
     catch { return; }
     await load();
   }
-  async function setGlobalManagement(profile, value) {
-    try { await rpc("mcp.set_global_management", { clientId: profile.clientId, enabled: value }); }
-    catch { return; }
+  async function setCapability(profile, key, check) {
+    // Any capability change re-pairs the client: its current connection stops being valid.
+    check.disabled = true;
+    try { await rpc("mcp.set_capabilities", { clientId: profile.clientId, [key]: check.checked }); }
+    catch { check.checked = !check.checked; check.disabled = false; return; }
+    check.disabled = false;
     await load();
   }
-  async function setMode(profile, mode) {
+  async function setMode(profile, mode, select) {
     if (mode === profile.mode) return;
-    if (!await confirm(`切换「${profile.name}」的授权模式？切换后授权版本提升，现有游标与进行中的操作失效。`, "切换")) return;
+    if (!await confirm(`切换「${profile.name}」的数据范围？切换后授权版本提升，现有游标与进行中的操作失效。`, "切换")) {
+      if (select) select.value = profile.mode;
+      return;
+    }
     try { await rpc("mcp.set_mode", { clientId: profile.clientId, mode }); }
-    catch { return; }
+    catch { if (select) select.value = profile.mode; return; }
     await load();
   }
   async function regenerate(profile) {
@@ -301,6 +397,54 @@
     });
     return box;
   }
+  // -- account grants (按账号) ------------------------------------------------------------------
+  // The directory's saved accounts plus the external-import library as one pseudo-account.
+  function directoryAccounts() {
+    const accounts = ((S.directory && S.directory.accounts) || [])
+      .map(account => ({ accountId: account.accountId, label: account.label }));
+    if (S.directory && S.directory.externalAccountId) {
+      accounts.push({ accountId: S.directory.externalAccountId, label: EXTERNAL_LABEL });
+    }
+    return accounts;
+  }
+  function accountList(profile) {
+    const box = el("div", "mcp-matrix");
+    if (!S.directory) {
+      box.appendChild(el("p", "mcp-empty", "正在读取账号目录…"));
+      void loadDirectory();
+      return box;
+    }
+    const accounts = directoryAccounts();
+    if (!accounts.length) { box.appendChild(el("p", "mcp-empty", "还没有已保存账号。")); return box; }
+    const granted = new Set(((S.grants && S.grants.accountGrants) || [])
+      .filter(item => item.sourceFingerprint === S.directory.sourceFingerprint)
+      .map(item => item.accountId));
+    const grid = el("div", "mcp-contacts");
+    for (const account of accounts) {
+      const label = checkLabel(account.label, granted.has(account.accountId),
+        check => void toggleAccount(profile, account.accountId, check));
+      label.className = "mcp-contact";
+      label.title = account.accountId;
+      grid.appendChild(label);
+    }
+    box.appendChild(grid);
+    box.appendChild(el("p", "mcp-note mcp-matrix-note", "授权账号下的全部联系人；之后新增的账号不会自动授权。"));
+    return box;
+  }
+  async function toggleAccount(profile, accountId, check) {
+    const fingerprint = S.directory && S.directory.sourceFingerprint;
+    const granted = check.checked;
+    if (!fingerprint) { check.checked = !granted; return; }
+    check.disabled = true;
+    try {
+      const result = await rpc(granted ? "mcp.grant_account" : "mcp.revoke_account",
+        { clientId: profile.clientId, sourceFingerprint: fingerprint, accountId });
+      S.grants = { ...(S.grants || {}), accountGrants: result.accountGrants, sourceFingerprint: fingerprint };
+    } catch { check.checked = !granted; }
+    check.disabled = false;
+    render();
+  }
+
   async function loadDirectory() {
     try { S.directory = await rpc("mcp.directory"); }
     catch { S.directory = { accounts: [] }; toast("账号目录暂不可用，无法编辑联系人授权"); }
@@ -314,8 +458,7 @@
       const result = await rpc(granted ? "mcp.grant_contact" : "mcp.revoke_contact",
         { clientId: profile.clientId, sourceFingerprint: fingerprint, accountId,
           subjectType: "wechat_contact", subjectId });
-      S.grants = { profile: S.grants && S.grants.profile, contacts: result.contacts,
-        sourceFingerprint: fingerprint };
+      S.grants = { ...(S.grants || {}), contacts: result.contacts, sourceFingerprint: fingerprint };
     } catch { check.checked = !granted; }
     check.disabled = false;
     render();
@@ -355,33 +498,75 @@
       name.setAttribute("aria-label", "客户端名称");
       nameLabel.appendChild(name);
       form.appendChild(nameLabel);
-      const modeLabel = el("label", "", "授权模式");
-      const mode = el("select");
-      for (const [value, label] of Object.entries(MODE_LABEL)) {
-        const option = el("option", "", label);
-        option.value = value;
-        mode.appendChild(option);
-      }
-      mode.value = MODE_LABEL[S.defaultMode] ? S.defaultMode : "full";
+      const modeLabel = el("label", "", "数据范围");
+      const mode = modeSelect(S.defaultMode);
       modeLabel.appendChild(mode);
       form.appendChild(modeLabel);
-      const global = el("label", "mcp-check");
-      const globalCheck = el("input");
-      globalCheck.type = "checkbox";
-      global.appendChild(globalCheck);
-      global.appendChild(el("span", "", "允许全局管理（应用与模型设置，不含联系人资料）"));
-      global.hidden = mode.value !== "per_contact";
-      mode.addEventListener("change", () => { global.hidden = mode.value !== "per_contact"; });
-      form.appendChild(global);
+      // 按账号: pick the accounts here; 逐联系人 is granted per contact after creation.
+      const accountBox = el("div", "mcp-contacts mcp-dialog-accounts");
+      const accountChecks = new Map();
+      const fillAccounts = () => {
+        accountBox.replaceChildren();
+        accountChecks.clear();
+        const accounts = directoryAccounts();
+        if (!accounts.length) accountBox.appendChild(el("p", "mcp-note", S.directory ? "还没有已保存账号。" : "正在读取账号目录…"));
+        for (const account of accounts) {
+          const label = checkLabel(account.label, false);
+          label.className = "mcp-contact";
+          label.title = account.accountId;
+          accountChecks.set(account.accountId, label.children[0]);
+          accountBox.appendChild(label);
+        }
+      };
+      fillAccounts();
+      if (!S.directory) void loadDirectory().then(fillAccounts);
+      accountBox.hidden = mode.value !== "accounts";
+      mode.addEventListener("change", () => { accountBox.hidden = mode.value !== "accounts"; });
+      form.appendChild(accountBox);
+      const capabilityChecks = {};
+      const capabilityBox = el("div", "mcp-dialog-capabilities");
+      capabilityBox.appendChild(el("p", "mcp-note", "默认只读；需要时再开启："));
+      for (const key of Object.keys(CAPABILITY_LABEL)) {
+        const label = checkLabel(CAPABILITY_LABEL[key], false);
+        capabilityChecks[key] = label.children[0];
+        capabilityBox.appendChild(label);
+      }
+      form.appendChild(capabilityBox);
+      const notice = el("p", "mcp-note mcp-dialog-notice", "");
+      notice.hidden = true;
+      form.appendChild(notice);
       const actions = el("div", "mcp-dialog-actions");
       actions.appendChild(button("取消", "mcp-secondary", close));
       const create = button("创建并生成凭据", "mcp-primary", async () => {
         if (!name.value.trim() || create.disabled) return;
         create.disabled = true;
+        notice.hidden = true;
+        // Account grants bind to the data source; without its fingerprint they cannot be
+        // made, so never create the client silently without them: retry once, else say so.
+        const wanted = mode.value === "accounts" ? [...accountChecks].filter(([, check]) => check.checked) : [];
+        if (wanted.length && !(S.directory && S.directory.sourceFingerprint)) {
+          try { S.directory = await kyfHost.rpc("mcp.directory", {}); } catch { /* reported below */ }
+          if (!(S.directory && S.directory.sourceFingerprint)) {
+            notice.textContent = "暂时读不到数据来源，所选账号无法授权；请稍后重试，或不选账号先创建。";
+            notice.hidden = false;
+            create.disabled = false;
+            return;
+          }
+        }
         let result;
         try { result = await rpc("mcp.create_profile", { name: name.value.trim(), mode: mode.value,
-          globalManagement: globalCheck.checked }); }
+          allowWrite: capabilityChecks.write.checked,
+          globalManagement: capabilityChecks.manage.checked }); }
         catch { create.disabled = false; return; }
+        const fingerprint = S.directory && S.directory.sourceFingerprint;
+        if (wanted.length && fingerprint) {
+          let failed = 0;
+          for (const [accountId] of wanted) {
+            try { await rpc("mcp.grant_account", { clientId: result.profile.clientId, sourceFingerprint: fingerprint, accountId }); }
+            catch { failed += 1; }
+          }
+          if (failed) toast(`有 ${failed} 个账号未能授权，请在客户端卡片的“授权账号”中重试`);
+        }
         close();
         showCredential(result.profile.name, result.profile.clientId, result.credential);
       });

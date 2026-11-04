@@ -59,5 +59,16 @@ class ChatUiReferenceStageTests(unittest.TestCase):
         self.assertIsNone(packaged_path("chatui/index.html", "mailto:someone@example.com"))
 
 
+class PrivateDocsStageTests(unittest.TestCase):
+    """Root docs/ is private development documentation and never enters the client stage."""
+
+    def test_public_mappings_contain_no_root_docs(self):
+        stage = load_script("stage-real-client")
+        mapped = [relative for _source, relative, _root in stage.public_mappings(ROOT)]
+        self.assertEqual([], [path.as_posix() for path in mapped if path.parts[0].casefold() == "docs"])
+        self.assertFalse(any(name.startswith("docs/") for name in stage.PUBLIC_FILES))
+        self.assertIn(Path("README.md"), mapped)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ from pathlib import Path
 # Only the variables a helper process needs to start; credentials never travel in the environment.
 BASE_ENVIRONMENT = ("SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "TEMP", "TMP",
                     "PATHEXT", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE")
+ELECTRON_SIDECARS = frozenset(("pairing-window", "confirm-window", "ui-host"))
 
 
 def node_executable(root):
@@ -39,6 +40,33 @@ def electron_executable(root):
     bundled = root / "node_modules" / "electron" / "dist" / "electron.exe"
     if bundled.is_file():
         return str(bundled)
+    return None
+
+
+def packaged_electron_executable(root):
+    """The outer Electron app for an installed resources/client tree."""
+    if root is None:
+        return None
+    root = Path(root).resolve()
+    resources = root.parent
+    if root.name.lower() != "client" or resources.name.lower() != "resources":
+        return None
+    executable = resources.parent / "KnowYourFriends.exe"
+    return str(executable) if executable.is_file() and (resources / "app.asar").is_file() else None
+
+
+def electron_sidecar_command(root, component, *, electron=None, script=None):
+    """Run a registered helper through the development runtime or the packaged app."""
+    if component not in ELECTRON_SIDECARS:
+        raise ValueError("unknown Electron sidecar")
+    electron = electron or (electron_executable(root) if root is not None else None)
+    if electron:
+        relative = Path("scripts") / (component + ".cjs")
+        return [electron, script or (str(Path(root) / relative) if root is not None else relative.as_posix())]
+    if script is None:
+        packaged = packaged_electron_executable(root)
+        if packaged:
+            return [packaged, "--kyf-sidecar", component]
     return None
 
 

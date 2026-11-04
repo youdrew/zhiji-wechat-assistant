@@ -3,6 +3,7 @@ const { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, s
 // Modified by Know Your Friends, 2026-10-10: independent 知己分析 windows with draft flush on exit.
 // Modified 2026-10-13: a generic docked plugin panel, host-picked files as Core file grants and plugin-page-only frames.
 // Modified 2026-10-22: chat-toolbar plugin pages open in one independent window per friend (scripts/plugin-windows.cjs).
+// Modified 2026-11-04: one conversation pops out into an independent chat window (scripts/chat-windows.cjs).
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -91,6 +92,13 @@ function argument(name) {
 }
 
 const url = clientUrl(argument("--client-url"));
+// Modified 2026-11-04 (G13): Core opens the main window for an Agent with
+// `--open-module settings`; only this one module id is understood.
+function openModuleArgument(argv) {
+  const index = Array.isArray(argv) ? argv.indexOf("--open-module") : -1;
+  return index >= 0 && argv[index + 1] === "settings" ? "settings" : null;
+}
+const startupModule = openModuleArgument(process.argv);
 const selfTest = process.argv.includes("--self-test");
 const instanceId = process.env.KYF_INSTANCE_ID;
 const updateValidation = appUpdatesEnabled && process.env.KYF_UPDATE_VALIDATE === "1";
@@ -119,6 +127,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   let historyWindows = null;
   let externalImportWindows = null;
   let settingsWindow = null;
+  let chatWindows = null;
   let friendExitReady = false;
   let friendExitPending = null;
   let appExitPending = null;
@@ -172,6 +181,11 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   }
   const trustedSettingsFrame = event => settingsWindow?.trusted(event) === true;
   const trustedAppFrame = event => trustedFrame(event) || trustedSettingsFrame(event);
+  // Independent chat windows act for their own conversation like the main window's chat pane.
+  const trustedChatFrame = event => chatWindows?.trusted(event) === true;
+  const trustedClientFrame = event => trustedFrame(event) || trustedChatFrame(event);
+  // The window a trusted main or chat frame belongs to; locate events and plugin host calls return to it.
+  const openerWindow = event => trustedFrame(event) ? window : chatWindows?.senderWindow(event) ?? null;
 
   // Quitting first persists every 知己分析 window's drafts; only a failed save asks.
   function confirmFriendExit() {
@@ -214,15 +228,17 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   if (!app.requestSingleInstanceLock()) {
     app.quit();
   } else {
-    app.on("second-instance", () => {
+    app.on("second-instance", (_event, argv) => {
       if (window && !window.isDestroyed()) {
         if (window.isMinimized()) window.restore();
         window.focus();
+        if (openModuleArgument(argv) === "settings") settingsWindow?.open({ tab: "general" });
       }
     });
 
     ipcMain.on("real-client:set-theme", (event, theme) => {
-      if (!trustedAppFrame(event) || !Object.hasOwn(THEMES, theme)) return;
+      if (!Object.hasOwn(THEMES, theme) || chatWindows?.applyTheme(event, theme)) return;
+      if (!trustedAppFrame(event)) return;
       if (trustedSettingsFrame(event)) {
         settingsWindow.senderWindow(event)?.setBackgroundColor(THEMES[theme].color);
         return;
@@ -231,6 +247,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       pluginWindows?.setTheme(theme);
       historyWindows?.setTheme(theme);
       externalImportWindows?.setTheme(theme);
+      chatWindows?.setTheme(theme);
       if (selfTest) {
         testState.themes.push({ theme, ...THEMES[theme] });
         if (testState.themes.length === 2 && testState.themeWaiter) testState.themeWaiter();
@@ -264,7 +281,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
     });
 
     ipcMain.on("real-client:open-doc", (event, target, trusted, active) => {
-      if (!trustedAppFrame(event) || trusted !== true || active !== true || typeof target !== "string") return;
+      if (!(trustedAppFrame(event) || trustedChatFrame(event)) || trusted !== true || active !== true || typeof target !== "string") return;
       let parsed;
       try {
         parsed = new URL(target);
@@ -278,23 +295,24 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
     });
 
     ipcMain.handle("real-client:open-image-preview", (event, scope, activated) => {
-      if (!trustedFrame(event) || activated !== true || selfTest || updateValidation || exiting) return false;
+      if (!trustedClientFrame(event) || activated !== true || selfTest || updateValidation || exiting) return false;
       return imagePreviews?.open(scope) ?? false;
     });
-    require("./chat-link-host.cjs").attachChatLinks({ ipcMain, trustedMainFrame: trustedFrame, shell,
+    require("./chat-link-host.cjs").attachChatLinks({ ipcMain, trustedMainFrame: trustedClientFrame, shell,
       available: () => !selfTest && !updateValidation && !exiting && updateHandoff === "none" });
     ipcMain.on("real-client:close-image-previews", event => {
-      if (trustedFrame(event)) imagePreviews?.closeAll();
+      if (trustedClientFrame(event)) imagePreviews?.closeAll();
     });
 
     ipcMain.handle("real-client:copy-draft", (event, value) => {
-      if (!trustedAppFrame(event) || typeof value !== "string" || !value.trim() || value.length > 1_000_000) return false;
+      if (!(trustedAppFrame(event) || trustedChatFrame(event)) || typeof value !== "string" || !value.trim() ||
+          value.length > 1_000_000) return false;
       clipboard.writeText(value);
       return true;
     });
 
     ipcMain.handle("real-client:app-version", (event) => {
-      if (!trustedAppFrame(event)) return null;
+      if (!(trustedAppFrame(event) || trustedChatFrame(event))) return null;
       return app.getVersion();
     });
 
@@ -497,18 +515,19 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       });
       if (!selfTest && screen) friendWindows = require("./friend-windows.cjs").createFriendWindows({
         BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, dialog, userDataPath: userData,
-        trustedMainFrame: trustedFrame,
+        trustedMainFrame: trustedClientFrame, openerWindow,
       });
       if (!selfTest && screen) selfAnalysisWindow = require("./self-analysis-window.cjs").createSelfAnalysisWindow({
         BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, clipboard,
         trustedMainFrame: trustedFrame, root: ROOT,
       });
       if (!selfTest && screen) historyWindows = require("./history-windows.cjs").createHistoryWindows({
-        BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, trustedMainFrame: trustedFrame,
-        openImagePreview: scope => imagePreviews?.open(scope) ?? false,
+        BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, trustedMainFrame: trustedClientFrame,
+        openerWindow, openImagePreview: scope => imagePreviews?.open(scope) ?? false,
       });
       if (!selfTest && screen) externalImportWindows = require("./external-import-windows.cjs").createExternalImportWindows({
-        BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, dialog, trustedMainFrame: trustedFrame,
+        BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, dialog, trustedMainFrame: trustedClientFrame,
+        openerWindow,
       });
       if (!selfTest && screen) settingsWindow = require("./settings-window.cjs").createSettingsWindow({
         BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, trustedMainFrame: trustedFrame,
@@ -521,11 +540,17 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
       if (!selfTest && screen) modelTracesWindow = require("./model-traces-window.cjs").createModelTracesWindow({
         BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, clipboard,
         trustedMainFrame: trustedFrame, root: ROOT, instanceId,
-        trustedOpenFrame: trustedAppFrame,
+        trustedOpenFrame: event => trustedAppFrame(event) || trustedChatFrame(event),
       });
       if (!selfTest && screen) pluginWindows = require("./plugin-windows.cjs").createPluginWindows({
         BrowserWindow, ipcMain, screen, clipboard, mainWindow: window, clientUrl: url, userDataPath: userData,
-        trustedMainFrame: trustedFrame,
+        trustedMainFrame: trustedClientFrame, openerWindow,
+        stateTargets: () => [window?.webContents, ...(chatWindows?.contents() ?? [])],
+      });
+      if (!selfTest && screen) chatWindows = require("./chat-windows.cjs").createChatWindows({
+        BrowserWindow, mainWindow: window, clientUrl: url, screen, ipcMain, userDataPath: userData,
+        trustedMainFrame: trustedFrame, themes: THEMES, root: ROOT, instanceId, appUpdatesEnabled,
+        onLoad: () => pluginWindows?.publish?.(),
       });
       if (updateValidation || updateFinalReady) {
         validationTimer = setTimeout(() => app.quit(), updateValidation ? 60000 : 90000);
@@ -563,6 +588,8 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
         }, 600);
       });
       contents.on("did-finish-load", () => { loadRetries = 0; });
+      if (startupModule === "settings" && !selfTest)
+        contents.once("did-finish-load", () => { settingsWindow?.open({ tab: "general" }); });
       if (selfTest) {
         contents.once("did-finish-load", async () => {
           try {
@@ -591,7 +618,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
           void confirmAppExit().then(ok => { if (ok && window && !window.isDestroyed()) window.close(); });
         }
       });
-      window.on("closed", () => { pluginWindows?.close(); selfAnalysisWindow?.close(); historyWindows?.close(); externalImportWindows?.close(); settingsWindow?.close(); modelTracesWindow?.close(); modelTracesHost?.close(); window = null; stopBridgeMonitor?.(); });
+      window.on("closed", () => { pluginWindows?.close(); selfAnalysisWindow?.close(); historyWindows?.close(); externalImportWindows?.close(); settingsWindow?.close(); chatWindows?.close(); modelTracesWindow?.close(); modelTracesHost?.close(); window = null; stopBridgeMonitor?.(); });
       if (!selfTest && !updateValidation) {
         const startBridgeMonitor = () => {
           if (stopBridgeMonitor || !window || window.isDestroyed()) return;
@@ -603,6 +630,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
               if (!exiting && window && !window.isDestroyed()) {
                 window.webContents.send("real-client:bridge-restored");
                 settingsWindow?.broadcast("real-client:bridge-restored");
+                chatWindows?.broadcast("real-client:bridge-restored");
                 selfAnalysisWindow?.sync({ event: { type: "service-restored" } });
                 historyWindows?.broadcast({ type: "service-restored" });
                 externalImportWindows?.broadcast({ type: "service-restored" });

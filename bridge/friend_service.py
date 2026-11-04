@@ -17,8 +17,10 @@ Modified 2026-10-13: owned by Core's AccountDataService; the prompt rendering of
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 
 from core_contracts import AdvisorError, valid_scope_value
 from friend_store import TAGS, FriendStore, content_hash
@@ -28,6 +30,40 @@ PAGE_SIZE = 50
 EVIDENCE_CONTEXT = 5
 JOIN_SECONDS = 200
 GOAL_PRESETS = ("自然交流", "保持联系", "了解近况", "讨论具体事项", "安排见面")
+# MCP 读取入口的文本上限：最近消息单条 2000 字、搜索命中 500 字、会话预览 80 字。
+MESSAGE_TEXT_MAX = 2000
+SEARCH_TEXT_MAX = 500
+PREVIEW_TEXT_MAX = 80
+
+
+def _message_view(row, limit):
+    """One saved message in the MCP read shape; media without a transcript has no text."""
+    try:
+        raw = json.loads(row.get("raw") or "{}")
+    except ValueError:
+        raw = {}
+    media = raw.get("media") if isinstance(raw, dict) else None
+    text = row.get("text") or ""
+    if isinstance(media, dict):
+        text = "[语音转写] " + media["transcript"] if media.get("kind") in ("voice", "audio") and \
+            isinstance(media.get("transcript"), str) and media["transcript"] else ""
+    side = row.get("side")
+    time_ms = row.get("time_ms")
+    view = {"id": row["msg_id"], "time": time_ms if isinstance(time_ms, int) and time_ms > 0 else None,
+            "side": side, "senderName": row.get("sender_name") or ("我" if side == "self" else ""),
+            "kind": row.get("kind") or "", "text": text[:limit], "hasMedia": isinstance(media, dict)}
+    if len(text) > limit:
+        view["truncated"] = True
+    return view
+
+
+def _safe_tags(raw):
+    """Stored memory tags as a list of strings; unreadable or malformed tags read as none."""
+    try:
+        tags = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
 
 
 def _friendly_error(exc):
@@ -410,9 +446,12 @@ class FriendService:
         user = valid_scope_value(user, "user")
         return account, user, database
 
-    def _saved_metadata(self, account, database, user):
-        """来源元数据：账号、实时/缓存标记、资料时间、覆盖状态和来源版本。"""
-        context = database.context(user)
+    def _saved_metadata(self, account, database, user, *, reader=None):
+        """来源元数据：账号、实时/缓存标记、资料时间、覆盖状态和来源版本。
+
+        ``reader`` (an open read-only snapshot) keeps the read off the writer lock.
+        """
+        context = reader.read_row("SELECT * FROM context WHERE user=?", (user,)) if reader is not None             else database.context(user)
         return {"accountId": account,
                 "sourceMode": "live" if self._live_account() == account else "cached",
                 "dataTimeMs": context["updated_at_ms"] if context else None,
@@ -749,6 +788,263 @@ class FriendService:
             result = {"observationId": row["id"], "version": row["version"]}
         self._changed(account, user, store)
         return {**result, "account": account, "user": user}
+
+    # -- MCP 读取入口（外部 Agent 衔接 G1–G3）：找人、最近会话、最近消息、跨联系人搜索、简报 --
+    # 全部只读已保存投影与人工资料，不核验当前微信身份、不读微信、不调模型、不建任务。
+    # 范围（哪些账号、哪些联系人）由 MCP 能力代理按授权传入，这里只按给定范围取数。
+    # 所有查询走只读 WAL 快照（每条语句 5 秒期限，超时为 data-busy），绝不持有
+    # AccountDatabase.lock，因此不会挡住消息写入，也不会被写入挡住。
+
+    # 会话排序键：最后一条已保存消息的时间（未知记 0）降序，再按联系人 id 升序。
+    _CONVERSATION_BASE = (
+        "SELECT c.user AS user, c.state AS state, c.read_count AS read_count,"
+        " c.total_count AS total_count, c.updated_at_ms AS updated_at_ms,"
+        " (SELECT MAX(seq) FROM context_messages WHERE user=c.user) AS last_seq"
+        " FROM context c")
+    _OTHER_NAME = (
+        "CASE WHEN {u} LIKE '%@chatroom' THEN NULL ELSE"
+        " (SELECT n.sender_name FROM context_messages n WHERE n.user={u} AND n.side='other'"
+        " AND n.group_chat=0 AND n.sender_name IS NOT NULL AND n.sender_name!=''"
+        " ORDER BY n.seq DESC LIMIT 1) END")
+
+    @staticmethod
+    def _users_filter(column, wanted):
+        """``column IN (...)`` for any number of ids: one JSON parameter, no SQL variable limit."""
+        return column + " IN (SELECT value FROM json_each(?))", (json.dumps(wanted, ensure_ascii=False),)
+
+    @staticmethod
+    def _keyset(after, time_expr, user_col, seq_col=None):
+        """SQL bound for "strictly after ``after``" in (time desc, user asc[, seq desc]) order.
+
+        ``after`` is ``{"timeMs": t}`` (older than t only), ``{"timeMs": t, "sameTime": True}``
+        (t and older) or ``{"timeMs": t, "user": u[, "seq": s]}`` (exact position).
+        """
+        if after is None:
+            return "", ()
+        if not isinstance(after, dict) or type(after.get("timeMs")) is not int:
+            raise AdvisorError("invalid-request", "分页位置不正确")
+        t = after["timeMs"]
+        if after.get("user") is None:
+            return (f" AND {time_expr}<=?" if after.get("sameTime") else f" AND {time_expr}<?"), (t,)
+        user = after["user"]
+        if not isinstance(user, str):
+            raise AdvisorError("invalid-request", "分页位置不正确")
+        if seq_col is None:
+            return f" AND ({time_expr}<? OR ({time_expr}=? AND {user_col}>?))", (t, t, user)
+        seq = after.get("seq")
+        if type(seq) is not int:
+            raise AdvisorError("invalid-request", "分页位置不正确")
+        return (f" AND ({time_expr}<? OR ({time_expr}=? AND ({user_col}>? OR ({user_col}=? AND {seq_col}<?))))",
+                (t, t, user, user, seq))
+
+    def _conversation_item(self, row):
+        last = _message_view(row, PREVIEW_TEXT_MAX) if row.get("msg_id") else None
+        return {"user": row["user"], "isGroup": row["user"].endswith("@chatroom") or bool(row.get("group_chat")),
+                "state": row["state"], "readCount": row["read_count"], "totalCount": row["total_count"],
+                "updatedAtMs": row["updated_at_ms"], "otherName": row.get("other_name") or None,
+                "lastSeq": row.get("seq"), "last": last, "sortTime": row.get("k") or 0}
+
+    def saved_conversations(self, account, users=None, *, limit=None, after=None, match=None):
+        """Saved conversations of one saved account, newest first, each with its latest saved message.
+
+        Order: last saved message time (0 when unknown) descending, then contact id
+        ascending -- a complete order, so a page boundary never reorders. ``users`` (an
+        iterable of ids, any size) restricts the listing; ``None`` means all. ``limit``
+        caps the rows (``total`` still counts every conversation in ``users``);
+        ``after`` is a keyset position (see :meth:`_keyset`, without ``seq``).
+        ``match = {"needle": casefolded text, "users": [ids]}`` keeps only conversations
+        whose id or latest other-side name contains the needle (case-folded) or whose
+        id is listed (the caller's own cached-name matches).
+
+        The display name is the other side's latest sender name in a private chat
+        (groups carry member names there, so they get none); the caller may prefer a
+        cached session name.
+        """
+        account, database = self._saved_account(account)
+        wanted = None if users is None else sorted(set(users))
+        if wanted is not None and not wanted:
+            return {"account": account, "conversations": [], "total": 0}
+        where, params = "", ()
+        if wanted is not None:
+            clause, params = self._users_filter("c.user", wanted)
+            where = " WHERE " + clause
+        bound, bound_params = self._keyset(after, "k", "user")
+        inner = ("SELECT i.*, COALESCE((SELECT CASE WHEN time_ms>0 THEN time_ms END FROM context_messages"
+                 " WHERE user=i.user AND seq=i.last_seq), 0) AS k FROM (" + self._CONVERSATION_BASE + where +
+                 ") i")
+        inner_params = params
+        if match is not None:
+            needle = match.get("needle")
+            named = sorted(set(match.get("users") or ()))
+            if not isinstance(needle, str) or not needle:
+                raise AdvisorError("invalid-request", "查询条件不正确")
+            inner = ("SELECT * FROM (SELECT x.*, " + self._OTHER_NAME.format(u="x.user") + " AS other_name FROM ("
+                     + inner + ") x) WHERE instr(kyf_casefold(user), ?)>0 OR instr(kyf_casefold(other_name), ?)>0"
+                     " OR user IN (SELECT value FROM json_each(?))")
+            inner_params = (*params, needle, needle, json.dumps(named, ensure_ascii=False))
+        page = "SELECT * FROM (" + inner + ") WHERE 1=1" + bound + " ORDER BY k DESC, user ASC"
+        page_params = (*inner_params, *bound_params)
+        if limit is not None:
+            if type(limit) is not int or limit < 1:
+                raise AdvisorError("invalid-request", "分页参数不正确")
+            page += " LIMIT ?"
+            page_params = (*page_params, limit)
+        other = "p.other_name" if match is not None else self._OTHER_NAME.format(u="p.user")
+        sql = ("SELECT p.user AS user, p.state AS state, p.read_count AS read_count, p.total_count AS total_count,"
+               " p.updated_at_ms AS updated_at_ms, p.k AS k, m.seq AS seq, m.msg_id AS msg_id, m.side AS side,"
+               " m.sender_name AS sender_name, m.kind AS kind, m.text AS text, m.raw AS raw, m.time_ms AS time_ms,"
+               " m.group_chat AS group_chat, " + other + " AS other_name"
+               " FROM (" + page + ") p LEFT JOIN context_messages m ON m.user=p.user AND m.seq=p.last_seq"
+               " ORDER BY p.k DESC, p.user ASC")
+        with self._snapshot(database) as reader:
+            rows = reader.read_rows(sql, page_params)
+            if limit is None:
+                total = len(rows) if after is None else None
+            else:
+                total = reader.read_rows("SELECT COUNT(*) AS n FROM context c" + where, params)[0]["n"]
+        return {"account": account, "total": total, "conversations": [self._conversation_item(row) for row in rows]}
+
+    def saved_recent_messages(self, account, user, *, limit=30, before_seq=None, before_time_ms=None):
+        """One newest-first page of a saved contact's projection, returned in chronological order."""
+        account, user, database = self._saved_scope(account, user)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise AdvisorError("invalid-request", "分页参数不正确")
+        clauses, params = ["user=?"], [user]
+        if before_seq is not None:
+            clauses.append("seq<?")
+            params.append(before_seq)
+        if before_time_ms is not None:
+            clauses.append("time_ms>0 AND time_ms<?")
+            params.append(before_time_ms)
+        where = " AND ".join(clauses)
+        with self._snapshot(database) as reader:
+            rows = reader.read_rows("SELECT * FROM context_messages WHERE " + where + " ORDER BY seq DESC LIMIT ?",
+                                    (*params, limit))
+            rows.reverse()
+            more = False
+            if rows:
+                more = reader.read_row("SELECT 1 AS found FROM context_messages WHERE " + where +
+                                       " AND seq<? LIMIT 1", (*params, rows[0]["seq"])) is not None
+            metadata = self._saved_metadata(account, database, user, reader=reader)
+        return {"account": account, "user": user,
+                "messages": [_message_view(row, MESSAGE_TEXT_MAX) for row in rows],
+                "oldestSeq": rows[0]["seq"] if rows else None, "hasMore": more, **metadata}
+
+    def saved_search_all(self, account, *, query, users=None, limit=20, scan_max=200_000, after=None):
+        """Bounded text search across the given contacts (``None`` = all, any number) of one saved account.
+
+        Only the ``scan_max`` most recently written rows (of those contacts) are
+        scanned; ``scanLimited`` says whether older rows were left out. Hits come in
+        one complete order -- message time (0 when unknown) descending, contact id
+        ascending, seq descending -- applied before ``limit``, so the caller can merge
+        accounts and page without ties reordering. ``after`` restricts to hits
+        strictly after a position in that order (see :meth:`_keyset`). Each hit
+        carries ``sortTime`` and ``seq`` for that order.
+        """
+        account, database = self._saved_account(account)
+        if not isinstance(query, str) or not query.strip() or len(query) > 256:
+            raise AdvisorError("invalid-request", "查询条件不正确")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise AdvisorError("invalid-request", "分页参数不正确")
+        wanted = None if users is None else sorted(set(users))
+        if wanted is not None and not wanted:
+            return {"account": account, "hits": [], "scanLimited": False}
+        where, params = "", ()
+        if wanted is not None:
+            clause, params = self._users_filter("user", wanted)
+            where = " WHERE " + clause
+        bound, bound_params = self._keyset(after, "k", "user", "seq")
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._snapshot(database) as reader:
+            rows = reader.read_rows(
+                "SELECT * FROM (SELECT *, CASE WHEN time_ms>0 THEN time_ms ELSE 0 END AS k FROM"
+                " (SELECT rowid AS rid, * FROM context_messages" + where + " ORDER BY rowid DESC LIMIT ?)"
+                " WHERE text IS NOT NULL AND text LIKE ? ESCAPE '\\') WHERE 1=1" + bound +
+                " ORDER BY k DESC, user ASC, seq DESC LIMIT ?",
+                (*params, scan_max, f"%{escaped}%", *bound_params, limit))
+            limited = reader.read_rows(
+                "SELECT 1 AS found FROM context_messages" + where + " ORDER BY rowid DESC LIMIT 1 OFFSET ?",
+                (*params, scan_max))
+        return {"account": account, "scanLimited": bool(limited),
+                "hits": [{"user": row["user"], "seq": row["seq"], "sortTime": row["k"],
+                          "message": _message_view(row, SEARCH_TEXT_MAX)} for row in rows]}
+
+    def saved_contact_stats(self, account, user, *, now_ms=None, months=6):
+        """Deterministic message statistics of one saved contact (counts only, no content)."""
+        account, user, database = self._saved_scope(account, user)
+        now = now_ms if type(now_ms) is int else int(time.time() * 1000)
+        since = now - 30 * 86_400_000
+        start = time.localtime(now / 1000)
+        index = start.tm_year * 12 + start.tm_mon - 1 - (months - 1)
+        month_start = int(time.mktime((index // 12, index % 12 + 1, 1, 0, 0, 0, 0, 0, -1)) * 1000)
+        with self._snapshot(database) as reader:
+            rows = reader.read_rows(
+                "SELECT side, COUNT(*) AS total, MIN(CASE WHEN time_ms>0 THEN time_ms END) AS first_ms,"
+                " MAX(CASE WHEN time_ms>0 THEN time_ms END) AS last_ms,"
+                " SUM(CASE WHEN time_ms>=? THEN 1 ELSE 0 END) AS recent"
+                " FROM context_messages WHERE user=? GROUP BY side", (since, user))
+            month_rows = reader.read_rows(
+                "SELECT strftime('%Y-%m', time_ms/1000, 'unixepoch', 'localtime') AS month, side, COUNT(*) AS n"
+                " FROM context_messages WHERE user=? AND time_ms>=? GROUP BY month, side", (user, month_start))
+            metadata = self._saved_metadata(account, database, user, reader=reader)
+        by_side = {row["side"] or "unknown": row["total"] for row in rows}
+        recent = {row["side"] or "unknown": row["recent"] or 0 for row in rows}
+        firsts = [row["first_ms"] for row in rows if row["first_ms"]]
+        lasts = [row["last_ms"] for row in rows if row["last_ms"]]
+        monthly = {}
+        for row in month_rows:
+            entry = monthly.setdefault(row["month"], {"month": row["month"], "self": 0, "other": 0})
+            if row["side"] in ("self", "other"):
+                entry[row["side"]] = row["n"]
+        return {"account": account, "user": user, "totalMessages": sum(by_side.values()), "bySide": by_side,
+                "firstTimeMs": min(firsts) if firsts else None, "lastTimeMs": max(lasts) if lasts else None,
+                "last30Days": {"self": recent.get("self", 0), "other": recent.get("other", 0),
+                               "total": sum(recent.values())},
+                "months": [monthly[key] for key in sorted(monthly)], **metadata}
+
+    def saved_contact_records(self, account, user, *, memory_limit=20, observation_limit=10):
+        """The human records of one saved contact: memories (confirmed first), goal, observations.
+
+        Counts and the bounded pages come from SQL on a read-only snapshot; a memory
+        whose stored tags are unreadable is still listed, with no tags.
+        """
+        account, user, database = self._saved_scope(account, user)
+        with self._snapshot(database) as reader:
+            counts = {row["status"]: row["n"] for row in reader.read_rows(
+                "SELECT status, COUNT(*) AS n FROM memories WHERE user=? AND status IN ('confirmed','pending')"
+                " GROUP BY status", (user,))}
+            memory_rows = reader.read_rows(
+                "SELECT * FROM memories WHERE user=? AND status IN ('confirmed','pending')"
+                " ORDER BY CASE status WHEN 'confirmed' THEN 0 ELSE 1 END, updated_at_ms DESC, created_at_ms, id"
+                " LIMIT ?", (user, memory_limit))
+            goal = reader.read_row("SELECT * FROM friend_settings WHERE user=?", (user,)) or {
+                "goal": "", "version": 0, "updated_at_ms": 0}
+            observation_total = reader.read_row(
+                "SELECT COUNT(*) AS n FROM friend_observations WHERE user=?", (user,))["n"]
+            observations = reader.read_rows(
+                "SELECT * FROM friend_observations WHERE user=? ORDER BY updated_at_ms DESC LIMIT ?",
+                (user, observation_limit))
+        memories = [{"id": row["id"], "text": row["text"], "tags": _safe_tags(row.get("tags_json")),
+                     "status": row["status"], "origin": row["origin"], "eventTime": row["event_time"],
+                     "updatedAtMs": row["updated_at_ms"]} for row in memory_rows]
+        return {"account": account, "user": user,
+                "memoryCounts": {"confirmed": counts.get("confirmed", 0), "pending": counts.get("pending", 0)},
+                "memories": memories,
+                "goal": {"text": goal["goal"], "version": goal["version"], "updatedAtMs": goal["updated_at_ms"] or None},
+                "observationTotal": observation_total,
+                "observations": [{"id": row["id"], "judgement": row["judgement"], "note": row["note"],
+                                  "dimension": row["dimension"], "updatedAtMs": row["updated_at_ms"]}
+                                 for row in observations]}
+
+    @staticmethod
+    @contextmanager
+    def _snapshot(database):
+        """A read-only WAL snapshot (5 s per statement); an overrun or lock is a stable busy error."""
+        try:
+            with database.read_snapshot() as reader:
+                yield reader
+        except sqlite3.OperationalError:
+            raise AdvisorError("data-busy", "资料查询超时，请缩小范围后重试") from None
 
     def _message_context(self, database, user, msg_id):
         """Shared context-window read; the caller has already established the scope."""

@@ -3443,3 +3443,8 @@ body.theme-light .about-version-row { border-bottom-color: #f1f5f9; }
 body.theme-light .update-modal-card { border-color: var(--border-color); background: #fff; box-shadow: 0 24px 70px rgba(23, 56, 70, .22); }
 @media (max-width: 460px) { .update-modal-head, .update-modal-body { padding-left: 18px; padding-right: 18px; } .update-modal-actions { padding-left: 18px; padding-right: 18px; } }
 @media (prefers-reduced-motion: reduce) { .update-progress-track.indeterminate span { animation: none; } }
+/* Added 2026-11-04: a conversation popped out into its own window shows only the chat pane. */
+html.chat-window .nav-rail,
+html.chat-window #sessionPane,
+html.chat-window #databaseLoading,
+html.chat-window #startupOverlay { display: none !important; }

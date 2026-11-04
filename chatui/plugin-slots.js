@@ -32,6 +32,8 @@
     else if (typeof window.alert === "function") window.alert(message);
   };
   const failure = (code, message) => Object.assign(new Error(message), { code });
+  // Added 2026-11-04: a chat window (init option navigation: false) has header and toolbar entries only.
+  const navigable = () => S.options.navigation !== false;
 
   // -- contributions --------------------------------------------------------------------------------------
   function contributions(listing) {
@@ -62,6 +64,7 @@
   }
   function renderNav() {
     for (const node of [...document.querySelectorAll(".plugin-nav-item")]) node.remove();
+    if (!navigable()) return;
     let anchor = byId("navChat");
     for (const item of S.nav) {
       const node = document.createElement("div");
@@ -113,7 +116,7 @@
       if (!item || item.page !== entry.page) { entry.handle?.destroy(); entry.node.remove(); S.frames.delete(key); }
     }
     renderNav(); renderHeader(); renderToolbar();
-    window.desktopHost?.syncSelfAnalysisWindow?.({ event: { type: "plugins-changed",
+    if (navigable()) window.desktopHost?.syncSelfAnalysisWindow?.({ event: { type: "plugins-changed",
       enabled: S.nav.some(item => item.plugin === "kyf.self-analysis") } });
     void loadAttention();
     if (S.view.startsWith("plugin:") && !S.nav.some(item => viewKey(item) === S.view)) S.options.switchView?.("chat");
@@ -235,6 +238,7 @@
 
   // -- nav pages --------------------------------------------------------------------------------------------
   function openNav(plugin, id) {
+    if (!navigable()) return;
     if (plugin === "kyf.self-analysis" && typeof window.desktopHost?.openSelfAnalysisWindow === "function") {
       if (!S.nav.some(item => item.plugin === plugin && item.id === id)) return;
       // Invoke synchronously in the click's activation; opening a window must not replace the main chat.
@@ -435,7 +439,7 @@
   // -- context ----------------------------------------------------------------------------------------------
   function pushContext() {
     for (const entry of S.frames.values()) entry.handle?.post(context("nav"));
-    window.desktopHost?.syncSelfAnalysisWindow?.({ context: { account: S.account, theme: theme() } });
+    if (navigable()) window.desktopHost?.syncSelfAnalysisWindow?.({ context: { account: S.account, theme: theme() } });
   }
   function onSessionChanged(account, user, name) {
     account = typeof account === "string" ? account : ""; user = typeof user === "string" ? user : "";
@@ -456,7 +460,7 @@
     S.cleared.add(account);
     for (const entry of S.frames.values()) { entry.handle?.forget(account); entry.handle?.event({ type: "account-cleared", account }); }
     window.desktopHost?.forgetPluginWindows?.(account);
-    window.desktopHost?.syncSelfAnalysisWindow?.({ event: { type: "account-cleared", account } });
+    if (navigable()) window.desktopHost?.syncSelfAnalysisWindow?.({ event: { type: "account-cleared", account } });
     if (S.account === account) onSessionChanged("", "", "");
   }
 
@@ -470,7 +474,7 @@
     window.addEventListener("kyf-service-restored", () => { void load(); });
     window.desktopHost?.onPluginPanelHostCall?.(call => { void servePanelCall(call); });
     window.desktopHost?.onPluginPanelState?.(state => setWindows(state?.windows));
-    window.desktopHost?.onSelfAnalysisHostCall?.(call => { void serveSelfAnalysisCall(call); });
+    if (navigable()) window.desktopHost?.onSelfAnalysisHostCall?.(call => { void serveSelfAnalysisCall(call); });
     // A visible toolbar window keeps its reminders current while the main window is hidden.
     setInterval(() => {
       if (!document.hidden || S.windows.some(item => item.visible)) void loadAttention();

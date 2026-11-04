@@ -131,6 +131,10 @@ def _now_ms():
     return int(time.time() * 1000)
 
 
+def _casefold(value):
+    return value.casefold() if isinstance(value, str) else None
+
+
 class _ReadSnapshot:
     """A read-only WAL snapshot; a slow consumer holds no Core writer lock."""
     def __init__(self, path):
@@ -139,6 +143,8 @@ class _ReadSnapshot:
         self.connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2,
                                           check_same_thread=False, isolation_level=None)
         self.connection.row_factory = sqlite3.Row
+        # Unicode case folding for name matching in SQL (SQLite's LIKE folds ASCII only).
+        self.connection.create_function("kyf_casefold", 1, _casefold, deterministic=True)
         self.connection.execute("PRAGMA query_only=ON")
         self.connection.execute("BEGIN")
 

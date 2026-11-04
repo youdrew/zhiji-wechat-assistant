@@ -17,7 +17,7 @@ const HOST = CLIENT + 'plugin-panel.html?plugin=kyf.advisor&page=ui%2Fpanel.html
 const plain = value => JSON.parse(JSON.stringify(value));
 const friend = (user, extra = {}) => ({ ...TARGET, account: 'a', user, name: user.toUpperCase(), label: '聊天助手', ...extra });
 
-function fixture(area = { x: 0, y: 0, width: 1800, height: 1000 }) {
+function fixture(area = { x: 0, y: 0, width: 1800, height: 1000 }, { withChat = false } = {}) {
   const windows = [], handlers = new Map(), ipcMain = new EventEmitter(), copied = [];
   ipcMain.handle = (name, fn) => handlers.set(name, fn); ipcMain.removeHandler = name => handlers.delete(name);
   function contents() {
@@ -46,14 +46,26 @@ function fixture(area = { x: 0, y: 0, width: 1800, height: 1000 }) {
   main.isMinimized = () => false; main.restore = () => {}; main.show = () => {}; main.focus = () => { main.focused++; };
   const screen = { getDisplayMatching: () => ({ workArea: area }), getAllDisplays: () => [{ workArea: area }] };
   const event = own => ({ sender: own.webContents, senderFrame: own.webContents.mainFrame });
+  // An independent chat window stands next to the main window when asked for.
+  let chat = null;
+  if (withChat) {
+    chat = new EventEmitter(); chat.destroyed = false; chat.focused = 0; chat.webContents = contents();
+    chat.isDestroyed = () => chat.destroyed; chat.isMinimized = () => false; chat.restore = () => {}; chat.show = () => {};
+    chat.focus = () => { chat.focused++; };
+    chat.destroy = () => { chat.destroyed = true; chat.emit('closed'); };
+  }
+  const owners = [main, chat].filter(Boolean);
   const manager = createPluginWindows({ BrowserWindow: Window, ipcMain, screen, mainWindow: main, clientUrl: CLIENT,
-    clipboard: { writeText: text => copied.push(text) }, trustedMainFrame: e => e.sender === main.webContents && e.senderFrame === main.webContents.mainFrame });
+    clipboard: { writeText: text => copied.push(text) },
+    trustedMainFrame: e => owners.some(own => !own.destroyed && e.sender === own.webContents && e.senderFrame === own.webContents.mainFrame),
+    ...(chat ? { openerWindow: e => owners.find(own => own.webContents === e.sender) ?? null,
+      stateTargets: () => owners.filter(own => !own.destroyed).map(own => own.webContents) } : {}) });
   const open = value => handlers.get('plugin-panel:open')(event(main), value);
   const ready = own => { own.emit('ready-to-show'); own.webContents.emit('did-finish-load'); };
   const toPage = own => own.webContents.sent.filter(item => item.name === 'plugin-panel:to-panel').map(item => item.value);
   const states = () => main.webContents.sent.filter(item => item.name === 'plugin-panel:state').map(item => item.value);
   const send = (channel, ...values) => ipcMain.emit(channel, event(main), ...values);
-  return { main, windows, handlers, ipcMain, manager, copied, event, open, ready, toPage, states, send };
+  return { main, chat, windows, handlers, ipcMain, manager, copied, event, open, ready, toPage, states, send };
 }
 
 test('each friend gets an own window; the same friend comes back to the front', () => {
@@ -445,4 +457,54 @@ test('messages reaching a page before its listener exists are delivered to it in
   late.fromHost({ kyf: 1, type: 'event', event: { type: 'visibility' } });
   late.runTimers();
   assert.deepEqual(order, ['quote', 'visibility'], 'a live message never overtakes an earlier one');
+});
+
+test('a chat window owns the plugin windows it opens: host calls, answers, state and forget stay per opener', () => {
+  const f = fixture(undefined, { withChat: true });
+  assert.deepEqual(f.handlers.get('plugin-panel:open')(f.event(f.chat), friend('u1')), { opened: true });
+  assert.deepEqual(f.open(friend('u2')), { opened: true });
+  const [fromChat, fromMain] = f.windows; f.ready(fromChat); f.ready(fromMain);
+  const callsOf = own => own.webContents.sent.filter(item => item.name === 'plugin-panel:host-call').map(item => item.value);
+  const results = own => own.webContents.sent.filter(item => item.name === 'plugin-panel:host-result').map(item => item.value);
+  // Every app window hears the open-window state.
+  const chatStates = f.chat.webContents.sent.filter(item => item.name === 'plugin-panel:state');
+  assert.equal(plain(chatStates.at(-1).value).windows.length, 2);
+  // Calls go to the window that opened the page; only that window may answer.
+  f.ipcMain.emit('plugin-panel:host-call', f.event(fromChat), { id: 'c1', method: 'view.focusChat' });
+  assert.equal(callsOf(f.chat).length, 1); assert.equal(callsOf(f.main).length, 0);
+  f.send('plugin-panel:host-result', callsOf(f.chat)[0].id, { result: { ok: true } });
+  assert.equal(results(fromChat).length, 0, 'the main window cannot answer a chat window\'s call');
+  f.ipcMain.emit('plugin-panel:host-result', f.event(f.chat), callsOf(f.chat)[0].id, { result: { ok: true } });
+  assert.equal(results(fromChat).length, 1); assert.equal(f.chat.focused, 1); assert.equal(f.main.focused, 0);
+  // The main window reloading fails only its own calls.
+  f.ipcMain.emit('plugin-panel:host-call', f.event(fromChat), { id: 'c2', method: 'toast' });
+  f.ipcMain.emit('plugin-panel:host-call', f.event(fromMain), { id: 'm1', method: 'toast' });
+  f.main.webContents.emit('did-start-navigation', {}, CLIENT, false, true);
+  assert.equal(results(fromMain).at(-1)[1].error.code, 'host-timeout'); assert.equal(results(fromChat).length, 1);
+  // retain/forget from one window never closes another window's plugin windows.
+  f.ipcMain.emit('plugin-panel:forget', f.event(f.chat), 'a');
+  assert.equal(fromChat.destroyed, true); assert.equal(fromMain.destroyed, false);
+  assert.deepEqual(f.handlers.get('plugin-panel:open')(f.event(f.chat), friend('u3')), { opened: true });
+  const third = f.windows[2]; f.ready(third);
+  // Removed contributions are pruned only among the caller's own windows.
+  f.send('plugin-panel:retain', { account: 'a', targets: [] });
+  assert.equal(fromMain.destroyed, true); assert.equal(third.destroyed, false);
+  // A closed chat window fails what it still owes; its windows fall back to the main window.
+  f.ipcMain.emit('plugin-panel:host-call', f.event(third), { id: 'c3', method: 'toast' });
+  f.chat.destroy();
+  assert.equal(results(third).at(-1)[1].error.code, 'host-timeout');
+  f.ipcMain.emit('plugin-panel:host-call', f.event(third), { id: 'c4', method: 'toast' });
+  assert.equal(callsOf(f.main).at(-1).scope.user, 'u3');
+  f.manager.close();
+});
+
+test("the main window switching to another account closes every other account's plugin windows, whoever opened them", () => {
+  const f = fixture(undefined, { withChat: true });
+  assert.deepEqual(f.handlers.get('plugin-panel:open')(f.event(f.chat), friend('u1')), { opened: true });
+  assert.deepEqual(f.open(friend('u2', { account: 'b' })), { opened: true });
+  const [fromChat, fromMain] = f.windows; f.ready(fromChat); f.ready(fromMain);
+  f.send('plugin-panel:retain', { account: 'b', targets: [TARGET] });
+  assert.equal(fromChat.destroyed, true, 'account a closes although a chat window opened it');
+  assert.equal(fromMain.destroyed, false);
+  f.manager.close();
 });

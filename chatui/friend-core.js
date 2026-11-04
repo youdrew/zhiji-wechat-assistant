@@ -12,6 +12,13 @@
   if (!valid(scope.name, 128)) scope.name = scope.user || "";
   const avatar = parameters.get("avatar");
   scope.avatar = typeof avatar === "string" && avatar.length <= 512 && /^https?:\/\/[^\s"'<>]+$/i.test(avatar) ? avatar : "";
+  // Opened by an external Agent through the UI host (scripts/ui-host.cjs): read-only, no model work.
+  const restricted = parameters.get("restricted") === "1";
+  const restrictedTheme = restricted && ["light", "dark"].includes(parameters.get("theme")) ? parameters.get("theme") : null;
+  const initialTab = restricted && /^[a-z]{1,32}$/.test(parameters.get("tab") || "") ? parameters.get("tab") : null;
+  // Restricted windows may only read; the plugin RPC carries the scheme page's reads (Core checks the session).
+  const RESTRICTED_POST = new Set(["/api/plugins/rpc"]);
+  const RESTRICTED_GONE = "授权已失效或窗口已关闭，请回到 Agent 重新打开";
   const listeners = new Set();
   let masked = false;
 
@@ -66,6 +73,8 @@
   }
   async function api(path, options = {}) {
     if (masked) throw new ApiError(0, "masked", "窗口已失效");
+    if (restricted && (options.method || "GET") !== "GET" && !RESTRICTED_POST.has(String(path).split("?")[0]))
+      throw new ApiError(403, "restricted", "此窗口只读，不能修改");
     const init = { method: options.method || "GET", signal: options.signal, headers: {} };
     if (options.body !== undefined) {
       init.headers["Content-Type"] = "application/json";
@@ -82,6 +91,7 @@
     try { data = await response.json(); } catch { }
     if (!response.ok) {
       const code = typeof data?.error === "string" ? data.error : "";
+      if (restricted && response.status === 403 && code.startsWith("ui-session-")) mask(RESTRICTED_GONE);
       if (["AccountChangedError", "AccountUnavailableError"].includes(code) ||
           (response.status === 409 && ["account-paused", "account-closed"].includes(code)))
         mask("微信账号已切换或正在清理，此窗口的资料已隐藏。请从聊天重新打开知己分析。");
@@ -101,7 +111,8 @@
   // -- theme follows the main window's saved setting ---------------------------------
   function applyTheme() {
     let theme = "dark";
-    try { theme = JSON.parse(localStorage.getItem("real-ui-settings-1") || "{}").theme === "light" ? "light" : "dark"; }
+    if (restrictedTheme) theme = restrictedTheme;
+    else try { theme = JSON.parse(localStorage.getItem("real-ui-settings-1") || "{}").theme === "light" ? "light" : "dark"; }
     catch { }
     document.body.classList.toggle("theme-light", theme === "light");
   }
@@ -195,7 +206,7 @@
     }
   }
   function updateDraft(state, payload, baseVersion = null) {
-    if (masked) return;
+    if (masked || restricted) return;
     state.payload = payload;
     state.baseVersion = baseVersion;
     state.dirty = true;
@@ -236,7 +247,7 @@
   }
 
   window.FriendApp = {
-    scope, validScope, byId, el, button, formatDate, formatDuration, toast, mask, api, query, ApiError,
+    scope, validScope, restricted, initialTab, byId, el, button, formatDate, formatDuration, toast, mask, api, query, ApiError,
     applyTheme, broadcast, setTask, openSheet, closeSheet, contextList,
     loadDrafts, draft, updateDraft, closeDraft, flushDrafts, savedDrafts: () => drafts.saved,
     get masked() { return masked; },

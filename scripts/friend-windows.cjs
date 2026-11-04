@@ -39,6 +39,8 @@ function visibleOn(displays, bounds) {
 
 function createFriendWindows(options) {
   const { BrowserWindow, mainWindow, clientUrl, screen, ipcMain, dialog, userDataPath, trustedMainFrame } = options;
+  // Modified 2026-11-04: an independent chat window may open the window too; locate returns to the opener.
+  const openerWindow = options.openerWindow || (() => mainWindow);
   const windows = new Map();
   const boundsFile = userDataPath ? path.join(userDataPath, "friend-windows.json") : null;
   let saved = {};
@@ -87,12 +89,13 @@ function createFriendWindows(options) {
       entry.window.webContents.send("friend:before-close", token);
     });
   }
-  function open(value) {
+  function open(value, opener = mainWindow) {
     const scope = friendScope(value);
     if (!scope || mainWindow.isDestroyed()) return false;
     const key = keyOf(scope);
     const existing = windows.get(key);
     if (existing && !existing.window.isDestroyed()) {
+      existing.opener = opener;
       if (existing.window.isMinimized()) existing.window.restore();
       existing.window.show();
       existing.window.focus();
@@ -109,7 +112,7 @@ function createFriendWindows(options) {
         nodeIntegration: false, webSecurity: true, devTools: false, session: mainWindow.webContents.session,
       },
     });
-    const entry = { window: friend, scope, key, pending: new Map(), allowClose: false, closing: false };
+    const entry = { window: friend, scope, key, opener, pending: new Map(), allowClose: false, closing: false };
     windows.set(key, entry);
     const target = new URL("friend.html", clientUrl);
     target.hash = new URLSearchParams({ account: scope.account, user: scope.user, name: scope.name,
@@ -170,7 +173,8 @@ function createFriendWindows(options) {
   }
   ipcMain.handle("friend:open", (event, scope, activated) => {
     if (!trustedMainFrame(event) || activated !== true) return false;
-    return open(scope);
+    const opener = openerWindow(event);
+    return opener ? open(scope, opener) : false;
   });
   ipcMain.on("friend:close-ready", (event, token, ok) => {
     const entry = trustedFriend(event);
@@ -185,10 +189,12 @@ function createFriendWindows(options) {
     // A window may only locate messages of its own fixed account and contact.
     if (!entry || activated !== true || !target || target.account !== entry.scope.account ||
         target.user !== entry.scope.user || mainWindow.isDestroyed()) return false;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    mainWindow.webContents.send("friend:locate", target);
+    // The window that opened this one (a chat window still open), otherwise the main window.
+    const host = entry.opener && !entry.opener.isDestroyed() ? entry.opener : mainWindow;
+    if (host.isMinimized()) host.restore();
+    host.show();
+    host.focus();
+    host.webContents.send("friend:locate", target);
     return true;
   });
   const closeAllNow = () => destroyAll();

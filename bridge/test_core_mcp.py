@@ -33,6 +33,57 @@ def headers(token):
     return {"Authorization": "Bearer " + token}
 
 
+def legacy_capabilities(mode, **overrides):
+    """Capabilities a pre-G10 profile of ``mode`` holds after migration.
+
+    Full mode used to imply writes, sends and application management; per-contact
+    mode writes and sends with management behind its own switch. Fixtures that
+    exercise those operations create profiles with exactly these capabilities.
+    """
+    capabilities = {"allow_write": True, "allow_send": True, "global_management": mode == "full"}
+    capabilities.update(overrides)
+    return capabilities
+
+
+# Every tool with a handler today; a profile's openCapabilities is a filtered subset (G9).
+ALL_OPEN_TOOLS = ["zhiji_clear_local_data", "zhiji_confirm_memory", "zhiji_create_memory",
+                  "zhiji_delete_account", "zhiji_delete_assistant_skill",
+                  "zhiji_delete_assistant_template", "zhiji_delete_memory",
+                  "zhiji_delete_observation", "zhiji_edit_self_timeline",
+                  "zhiji_enable_assistant_template",
+                  "zhiji_find_contacts", "zhiji_get_assistant_catalog", "zhiji_get_assistant_run",
+                  "zhiji_get_assistant_thread", "zhiji_get_contact", "zhiji_get_contact_brief", "zhiji_get_contact_goal",
+                  "zhiji_get_friend_analysis", "zhiji_get_import_batch",
+                  "zhiji_get_import_messages", "zhiji_get_media",
+                  "zhiji_get_memory_evidence", "zhiji_get_message_context",
+                  "zhiji_get_message_insights", "zhiji_get_model_settings",
+                  "zhiji_get_plugins", "zhiji_get_recent_messages", "zhiji_get_self_analysis", "zhiji_get_self_profile",
+                  "zhiji_get_task", "zhiji_get_usage",
+                  "zhiji_import_assistant_skill", "zhiji_list_accounts",
+                  "zhiji_list_assistant_friends", "zhiji_list_assistant_threads",
+                  "zhiji_list_import_batches", "zhiji_list_import_candidates",
+                  "zhiji_list_import_contacts", "zhiji_list_memories",
+                  "zhiji_list_observations", "zhiji_list_recent_conversations", "zhiji_new_assistant_thread", "zhiji_ping",
+                  "zhiji_remove_import_material", "zhiji_save_assistant_template",
+                  "zhiji_save_contact_goal", "zhiji_save_import_batch",
+                  "zhiji_save_model_settings", "zhiji_save_observation",
+                  "zhiji_save_self_profile", "zhiji_search_messages",
+                  "zhiji_set_plugin_enabled",
+                  "zhiji_start_friend_analysis", "zhiji_start_import_recognition",
+                  "zhiji_start_message_insights", "zhiji_start_self_analysis",
+                  "zhiji_stop_assistant_run", "zhiji_stop_import_recognition",
+                  "zhiji_stop_self_analysis", "zhiji_stop_task",
+                  "zhiji_submit_assistant_question", "zhiji_undo_self_timeline",
+                  "zhiji_update_memory"]
+MANAGE_TOOLS = {"zhiji_clear_local_data", "zhiji_delete_account", "zhiji_get_model_settings",
+                "zhiji_get_plugins", "zhiji_get_usage", "zhiji_save_model_settings",
+                "zhiji_set_plugin_enabled"}
+ACCOUNT_LEVEL_TOOLS = {"zhiji_get_self_profile", "zhiji_save_self_profile", "zhiji_start_self_analysis",
+                       "zhiji_get_self_analysis", "zhiji_stop_self_analysis", "zhiji_edit_self_timeline",
+                       "zhiji_undo_self_timeline"}
+SEND_TOOLS = {"zhiji_send_wechat_text", "zhiji_get_send_result"}
+
+
 def stored_dump(store):
     """Every record of the authorization database as text, after flushing the WAL."""
     store.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -167,7 +218,7 @@ class SessionTests(unittest.TestCase):
         self.store = self.mcp.store
 
     def token(self, name="合成客户端", mode="full", **kwargs):
-        created = self.store.create_profile(name, mode, **kwargs)
+        created = self.store.create_profile(name, mode, **legacy_capabilities(mode, **kwargs))
         return self.mcp.handshake({"clientId": created["clientId"], "credential": created["credential"]})
 
     def test_handshake_and_token_roundtrip(self):
@@ -229,7 +280,7 @@ class AuthorizationTests(unittest.TestCase):
         self.addCleanup(self.patcher.cleanup)
 
     def principal(self, name, mode, **kwargs):
-        created = self.store.create_profile(name, mode, **kwargs)
+        created = self.store.create_profile(name, mode, **legacy_capabilities(mode, **kwargs))
         token = self.mcp.handshake({"clientId": created["clientId"], "credential": created["credential"]})
         return self.mcp.authenticate(headers(token["token"])), created
 
@@ -304,11 +355,12 @@ class AuthorizationTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "contact-not-authorized")
 
     def test_aggregates_are_blocked_unless_declared_recomputable(self):
-        self.patcher.add("zhiji_aggregate_test", {"kind": "business", "subjects": False,
+        self.patcher.add("zhiji_aggregate_test", {"kind": "business", "capability": "read", "subjects": False,
                                                   "aggregate": True, "recomputable": False})
-        self.patcher.add("zhiji_subset_test", {"kind": "business", "subjects": False,
+        self.patcher.add("zhiji_subset_test", {"kind": "business", "capability": "read", "subjects": False,
                                                "aggregate": True, "recomputable": True})
-        self.patcher.add("zhiji_manage_test", {"kind": "app_management", "subjects": False})
+        self.patcher.add("zhiji_manage_test", {"kind": "app_management", "capability": "manage",
+                                               "subjects": False})
         principal, created = self.principal("逐联系人客户端", "per_contact")
         with self.assertRaises(McpError) as caught:
             self.mcp.authorize(principal, "zhiji_aggregate_test")
@@ -325,15 +377,26 @@ class AuthorizationTests(unittest.TestCase):
         principal = self.mcp.authenticate(headers(refreshed["token"]))
         decision = self.mcp.authorize(principal, "zhiji_manage_test")
         self.assertEqual(decision["scope"], "authorized_contacts")
-        # Full mode always includes application management.
+        # A (migrated) full-mode profile holds application management.
         full, _full_created = self.principal("完整客户端", "full")
         self.assertEqual(self.mcp.authorize(full, "zhiji_manage_test")["scope"], "installation")
+        # Full mode without the manage capability is refused like any other mode (G10).
+        bare, _bare_created = self.principal("完整只读客户端", "full", global_management=False)
+        with self.assertRaises(McpError) as caught:
+            self.mcp.authorize(bare, "zhiji_manage_test")
+        self.assertEqual(caught.exception.code, "management-not-enabled")
 
     def test_subject_actions_need_an_explicit_subject_in_per_contact_mode(self):
         principal, created = self.principal("逐联系人客户端", "per_contact")
         self.grant(created["clientId"], "账号A", "好友1")
         with self.assertRaises(McpError) as caught:
-            self.mcp.authorize(principal, "zhiji_search_messages")
+            self.mcp.authorize(principal, "zhiji_list_memories")
+        self.assertEqual(caught.exception.code, "contact-not-authorized")
+        # 跨联系人搜索不带主体可以进入（处理器只在已授权联系人内搜）；带了主体就逐个核验。
+        self.assertEqual(self.mcp.authorize(principal, "zhiji_search_messages")["mode"], "per_contact")
+        with self.assertRaises(McpError) as caught:
+            self.mcp.authorize(principal, "zhiji_search_messages",
+                               subjects=[("账号A", "wechat_contact", "好友2")])
         self.assertEqual(caught.exception.code, "contact-not-authorized")
 
 
@@ -344,7 +407,7 @@ class DispatchTests(unittest.TestCase):
         self.store = self.mcp.store
 
     def token(self, name="合成客户端", mode="full", **kwargs):
-        created = self.store.create_profile(name, mode, **kwargs)
+        created = self.store.create_profile(name, mode, **legacy_capabilities(mode, **kwargs))
         result = self.mcp.handshake({"clientId": created["clientId"], "credential": created["credential"]})
         result["credential"] = created["credential"]
         return result
@@ -362,36 +425,14 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(second_result["profile"]["clientId"], second["clientId"])
         self.assertNotIn("contacts", first_result["profile"])
         self.assertNotIn(str(self.store.grants(first["clientId"])), repr(first_result))
+        # A migrated full-mode profile (read, write, send, manage) sees every open tool.
+        self.assertEqual(second_result["server"]["openCapabilities"], ALL_OPEN_TOOLS)
+        # Per-contact without management: no app-management tools and no account-level
+        # aggregates that cannot be recomputed over granted contacts (G9).
+        self.assertEqual(first_result["profile"]["capabilities"],
+                         {"write": True, "send": True, "manage": False})
         self.assertEqual(first_result["server"]["openCapabilities"],
-["zhiji_clear_local_data", "zhiji_confirm_memory", "zhiji_create_memory",
-                          "zhiji_delete_account", "zhiji_delete_assistant_skill",
-                          "zhiji_delete_assistant_template", "zhiji_delete_memory",
-                          "zhiji_delete_observation", "zhiji_edit_self_timeline",
-                          "zhiji_enable_assistant_template",
-                          "zhiji_get_assistant_catalog", "zhiji_get_assistant_run",
-                          "zhiji_get_assistant_thread", "zhiji_get_contact_goal",
-                          "zhiji_get_friend_analysis", "zhiji_get_import_batch",
-                          "zhiji_get_import_messages", "zhiji_get_media",
-                          "zhiji_get_memory_evidence", "zhiji_get_message_context",
-                          "zhiji_get_message_insights", "zhiji_get_model_settings",
-                          "zhiji_get_plugins", "zhiji_get_self_analysis", "zhiji_get_self_profile",
-                          "zhiji_get_task", "zhiji_get_usage",
-                          "zhiji_import_assistant_skill", "zhiji_list_accounts",
-                          "zhiji_list_assistant_friends", "zhiji_list_assistant_threads",
-                          "zhiji_list_import_batches", "zhiji_list_import_candidates",
-                          "zhiji_list_import_contacts", "zhiji_list_memories",
-                          "zhiji_list_observations", "zhiji_new_assistant_thread", "zhiji_ping",
-                          "zhiji_remove_import_material", "zhiji_save_assistant_template",
-                          "zhiji_save_contact_goal", "zhiji_save_import_batch",
-                          "zhiji_save_model_settings", "zhiji_save_observation",
-                          "zhiji_save_self_profile", "zhiji_search_messages",
-                          "zhiji_set_plugin_enabled",
-                          "zhiji_start_friend_analysis", "zhiji_start_import_recognition",
-                          "zhiji_start_message_insights", "zhiji_start_self_analysis",
-                          "zhiji_stop_assistant_run", "zhiji_stop_import_recognition",
-                          "zhiji_stop_self_analysis", "zhiji_stop_task",
-                          "zhiji_submit_assistant_question", "zhiji_undo_self_timeline",
-                          "zhiji_update_memory"])
+                         sorted(set(ALL_OPEN_TOOLS) - MANAGE_TOOLS - ACCOUNT_LEVEL_TOOLS))
 
     def test_unregistered_actions_return_a_stable_not_registered_error(self):
         principal = self.mcp.authenticate(headers(self.token()["token"]))
@@ -621,7 +662,7 @@ class Phase6DisableUninstallTests(unittest.TestCase):
         self.mcp.plugin_gate = gate
 
     def token(self, name="桌面客户端", mode="full"):
-        created = self.store.create_profile(name, mode)
+        created = self.store.create_profile(name, mode, **legacy_capabilities(mode))
         return self.mcp.handshake({"clientId": created["clientId"], "credential": created["credential"]})
 
     def test_disabled_plugin_refuses_handshakes_sessions_and_settings_channel(self):

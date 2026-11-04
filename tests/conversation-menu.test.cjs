@@ -28,7 +28,7 @@ function events(target = {}) {
   return target;
 }
 
-function harness({ account = "synthetic-a", storage = new Map(), storageFails = false, zoom = 1, renderImpl } = {}) {
+function harness({ account = "synthetic-a", storage = new Map(), storageFails = false, zoom = 1, renderImpl, openChatWindow } = {}) {
   let document;
   class Node {
     constructor(id = "", tag = "div") {
@@ -78,14 +78,15 @@ function harness({ account = "synthetic-a", storage = new Map(), storageFails = 
     style: { zoom: String(zoom) } }, activeElement: null });
   document.body = new Node("body", "body");
   const nodes = new Map();
-  for (const id of ["sessionContextMenu", "btnPinConversation", "btnDeleteConversation", "sessionList"]) {
+  for (const id of ["sessionContextMenu", "btnPinConversation", "btnOpenConversationWindow", "btnDeleteConversation", "sessionList"]) {
     nodes.set(id, new Node(id, id.startsWith("btn") ? "button" : "div"));
   }
   const byId = id => nodes.get(id);
   const menu = byId("sessionContextMenu"), pin = byId("btnPinConversation"), remove = byId("btnDeleteConversation");
   menu.hidden = true; menu.rect = { left: 0, top: 0, width: 180, height: 100 };
-  pin.setAttribute("role", "menuitem"); remove.setAttribute("role", "menuitem");
-  menu.append(pin, remove); document.body.append(byId("sessionList"), menu);
+  const popout = byId("btnOpenConversationWindow");
+  pin.setAttribute("role", "menuitem"); popout.setAttribute("role", "menuitem"); remove.setAttribute("role", "menuitem");
+  menu.append(pin, popout, remove); document.body.append(byId("sessionList"), menu);
   document.getElementById = byId;
   const window = events({ innerWidth: 800, innerHeight: 600,
     localStorage: {
@@ -111,14 +112,15 @@ function harness({ account = "synthetic-a", storage = new Map(), storageFails = 
     renders++;
     if (renderImpl) renderImpl({ rows, Node, byId, document, state, ui });
   },
-    deleteConversation: (...args) => { deletions.push(args); }, setStatus: (...args) => { statuses.push(args); } });
+    deleteConversation: (...args) => { deletions.push(args); }, setStatus: (...args) => { statuses.push(args); },
+    ...(openChatWindow ? { openChatWindow } : {}) });
   init();
   const rows = new Map();
   for (const username of state.selectedConversations) {
     const row = new Node(username); row.dataset.id = username; row.className = "session-item";
     byId("sessionList").append(row); ui.attach(row); rows.set(username, row);
   }
-  return { ui, state, window, document, byId, rows, menu, pin, remove, storage, deletions, statuses, init,
+  return { ui, state, window, document, byId, rows, menu, pin, popout, remove, storage, deletions, statuses, init,
     get renders() { return renders; },
     open(username = "second", x = 140, y = 220) {
       return rows.get(username).emit("contextmenu", { clientX: x, clientY: y, button: 2 });
@@ -402,4 +404,28 @@ test("clearing an account discovers and removes its stored pins while preserving
     assert.equal(storage.values.has(storageKey(account)), false);
     assert.equal(storage.values.get(storageKey(other)), pins);
   }
+});
+
+// Added 2026-11-04: 在独立窗口中打开 pops the conversation out, only where the desktop host offers it.
+test("the pop-out item appears only with a desktop host, opens the targeted chat and keeps keyboard order", async () => {
+  const plain = harness();
+  plain.open("second");
+  assert.equal(plain.popout.hidden, true);
+  plain.menu.emit("keydown", { key: "ArrowDown" });
+  assert.equal(plain.document.activeElement, plain.remove, "A hidden item is skipped by the arrow keys");
+
+  const opened = [];
+  const h = harness({ openChatWindow: user => opened.push(user) });
+  h.open("second");
+  assert.equal(h.popout.hidden, false);
+  h.menu.emit("keydown", { key: "ArrowDown" });
+  assert.equal(h.document.activeElement, h.popout);
+  await h.popout.click();
+  assert.deepEqual(opened, ["second"]);
+  assert.equal(h.menu.hidden, true);
+  assert.equal(h.state.currentUser, "first", "Opening a window does not switch the main conversation");
+  assert.deepEqual(h.deletions, []);
+  h.open("second"); h.state.conversationSelectionEpoch++;
+  await h.popout.click();
+  assert.deepEqual(opened, ["second"], "A stale menu target opens nothing");
 });

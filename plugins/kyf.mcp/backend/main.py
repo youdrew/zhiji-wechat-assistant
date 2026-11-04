@@ -22,8 +22,9 @@ def _service():
 
 
 for _name in ("status", "profiles", "profile", "directory", "calls", "create_profile", "credential",
-              "set_enabled", "set_mode", "set_global_management", "revoke", "grant_contact",
-              "revoke_contact", "set_master", "disconnect_all", "settings"):
+              "set_enabled", "set_mode", "set_global_management", "set_capabilities", "revoke",
+              "grant_contact", "revoke_contact", "grant_account", "revoke_account", "set_master",
+              "disconnect_all", "settings", "pairings", "decide_pairing"):
     def _make(name):
         def handler(params, _context):
             return getattr(_service(), name)(params)

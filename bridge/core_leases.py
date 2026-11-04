@@ -25,7 +25,8 @@ import time
 DEFAULT_IDLE_EXIT_SECONDS = 300
 REAP_INTERVAL_SECONDS = 15
 # "confirm" 是阶段 5 的按需确认窗：一次高影响删除的本机确认展示期间持有租约。
-KINDS = ("gui", "mcp", "task", "confirm")
+# "ui" 是 Agent 打开窗口用的 UI 宿主进程（core_ui_host）：进程存活期间持有 ("ui","host")。
+KINDS = ("gui", "mcp", "task", "confirm", "ui")
 
 
 def idle_exit_seconds(env=None):

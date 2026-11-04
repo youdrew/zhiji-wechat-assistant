@@ -102,6 +102,8 @@ ASAR_SCRIPTS = (
     # Modified by Know Your Friends, 2026-10-10: independent 知己分析 windows.
     "scripts/friend-windows.cjs",
     "scripts/friend-preload.cjs",
+    # Modified by Know Your Friends, 2026-11-04: independent chat windows.
+    "scripts/chat-windows.cjs",
     "scripts/history-windows.cjs",
     "scripts/history-preload.cjs",
     "scripts/external-import-windows.cjs",

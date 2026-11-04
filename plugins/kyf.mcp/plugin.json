@@ -11,12 +11,13 @@
     "nav": [{ "id": "mcp-admin", "label": "MCP 管理", "page": "ui/index.html", "icon": "generic" }],
     "settings": {
       "schema": 1,
-      "description": "授权连接、模式与联系人只在 MCP 管理页更改；这里仅保存新建客户端的默认授权模式。",
+      "description": "授权连接、数据范围、账号与联系人只在 MCP 管理页更改；这里仅保存新建客户端的默认数据范围。",
       "groups": [{
         "id": "pairing", "title": "配对",
-        "fields": [{ "key": "defaultMode", "title": "新建客户端默认授权模式", "type": "select", "default": "full",
-          "options": [{ "value": "full", "label": "完整授权" }, { "value": "per_contact", "label": "逐联系人授权" }],
-          "description": "仅作为配对时的预选项；已创建客户端的模式随时可在管理页修改。" }]
+        "fields": [{ "key": "defaultMode", "title": "新建客户端默认数据范围", "type": "select", "default": "accounts",
+          "options": [{ "value": "accounts", "label": "按账号" }, { "value": "per_contact", "label": "逐联系人" },
+            { "value": "full", "label": "全部账号（旧）" }],
+          "description": "仅作为配对时的预选项；已创建客户端的数据范围随时可在管理页修改。" }]
       }],
       "links": [{ "label": "打开 MCP 管理", "nav": "mcp-admin" }]
     }

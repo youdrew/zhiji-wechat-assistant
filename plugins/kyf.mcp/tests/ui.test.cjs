@@ -18,10 +18,16 @@ const settle = async () => { for (let index = 0; index < 6; index++) await tick(
 const STATUS = { coreReady: true, enabled: true, profiles: 2, enabledProfiles: 1, activeConnections: 1,
   guiAttached: true };
 const PROFILE_FULL = { clientId: "mcp_full", name: "桌面客户端", enabled: true, mode: "full",
-  globalManagement: false, authVersion: 1, createdAt: 1761500000000, lastUsedAt: 1761600000000, contactCount: 0 };
+  globalManagement: true, capabilities: { write: true, send: true, manage: true }, accountGrants: [],
+  authVersion: 1, createdAt: 1761500000000, lastUsedAt: 1761600000000, contactCount: 0 };
 const PROFILE_MATRIX = { clientId: "mcp_matrix", name: "逐联系人客户端", enabled: true, mode: "per_contact",
-  globalManagement: false, authVersion: 3, createdAt: 1761500000000, lastUsedAt: null, contactCount: 1 };
-const DIRECTORY = { sourceFingerprint: "synthetic-install-fingerprint", accounts: [
+  globalManagement: false, capabilities: { write: true, send: false, manage: false }, accountGrants: [],
+  authVersion: 3, createdAt: 1761500000000, lastUsedAt: null, contactCount: 1 };
+const PROFILE_ACCOUNTS = { clientId: "mcp_accounts", name: "按账号客户端", enabled: true, mode: "accounts",
+  globalManagement: false, capabilities: { write: false, send: false, manage: false },
+  accountGrants: [{ accountId: "account-a", sourceFingerprint: "synthetic-install-fingerprint", createdAt: 1 }],
+  authVersion: 2, createdAt: 1761500000000, lastUsedAt: null, contactCount: 0 };
+const DIRECTORY = { sourceFingerprint: "synthetic-install-fingerprint", externalAccountId: "external-chat", accounts: [
   { accountId: "account-a", label: "账号甲", contacts: [
       { subjectId: "wxid_1", name: "好友一", isGroup: false },
       { subjectId: "wxid_2", name: "好友二", isGroup: false },
@@ -72,14 +78,19 @@ function environment(options = {}) {
         if (method === "mcp.profiles") return { profiles: JSON.parse(JSON.stringify(
           env.profiles === undefined ? [PROFILE_FULL, PROFILE_MATRIX] : env.profiles)) };
         if (method === "mcp.calls") return JSON.parse(JSON.stringify(CALLS));
-        if (method === "mcp.profile") return { profile: PROFILE_MATRIX, contacts: env.grants || [],
-          sourceFingerprint: DIRECTORY.sourceFingerprint };
+        if (method === "mcp.profile") {
+          const profile = [PROFILE_FULL, PROFILE_MATRIX, PROFILE_ACCOUNTS].find(item => item.clientId === params.clientId)
+            || PROFILE_MATRIX;
+          return { profile, contacts: env.grants || [], accountGrants: env.accountGrants || profile.accountGrants,
+            sourceFingerprint: DIRECTORY.sourceFingerprint };
+        }
         if (method === "mcp.directory") return JSON.parse(JSON.stringify(env.directory === undefined ? DIRECTORY : env.directory));
         if (method === "mcp.settings") return { defaultMode: "per_contact" };
         if (method === "mcp.create_profile") return { profile: { clientId: "mcp_new", name: params.name,
           mode: params.mode, enabled: true, globalManagement: params.globalManagement, contactCount: 0 },
           credential: "zmc_synthetic-credential" };
         if (method === "mcp.grant_contact" || method === "mcp.revoke_contact") return { contacts: env.grants || [] };
+        if (method === "mcp.grant_account" || method === "mcp.revoke_account") return { accountGrants: env.accountGrants || [] };
         return {};
       });
     },
@@ -118,7 +129,9 @@ test("the manifest exposes exactly one admin nav entry and a settings link to it
   assert.equal(manifest.id, "kyf.mcp");
   assert.deepEqual(manifest.contributes.nav, [{ id: "mcp-admin", label: "MCP 管理", page: "ui/index.html", icon: "generic" }]);
   assert.deepEqual(manifest.contributes.settings.links, [{ label: "打开 MCP 管理", nav: "mcp-admin" }]);
-  assert.equal(manifest.contributes.settings.groups[0].fields[0].default, "full");
+  assert.equal(manifest.contributes.settings.groups[0].fields[0].default, "accounts");
+  assert.deepEqual(manifest.contributes.settings.groups[0].fields[0].options.map(item => item.value),
+    ["accounts", "per_contact", "full"]);
   assert.doesNotMatch(source, /\bfetch\(|localStorage|sessionStorage|indexedDB|\.innerHTML/);
   assert.equal([...html.matchAll(/<script src="([^"]+)"/g)].map(match => match[1]).join(","),
     "/plugin-sdk/web/kyf-host.js,mcp.js");
@@ -172,18 +185,114 @@ test("pairing shows the credential exactly once and never renders it again", asy
   const input = find(env.overlay(), item => item.tag === "input" && item.type === "text");
   assert.ok(input, "pairing dialog has a name input");
   input.value = "新客户端";
-  // The default mode comes from the plugin's pairing setting.
+  // The default scope comes from the plugin's pairing setting.
   const mode = find(env.overlay(), item => item.tag === "select");
   assert.equal(mode.value, "per_contact", "per_contact is preselected");
   await env.dialogButton("创建并生成凭据");
   const create = env.calls.find(call => call.method === "mcp.create_profile");
-  assert.deepEqual(create.params, { name: "新客户端", mode: "per_contact", globalManagement: false });
+  // A new profile is read-only unless a capability is switched on.
+  assert.deepEqual(create.params, { name: "新客户端", mode: "per_contact", allowWrite: false,
+    globalManagement: false });
+  assert.ok(!env.calls.some(call => call.method === "mcp.grant_account"), "per-contact grants no accounts");
   const secret = env.allText();
   assert.ok(secret.includes("zmc_synthetic-credential"), "the credential is shown once");
   assert.ok(secret.includes("安全与数据说明"), "the pairing flow keeps one safety-page entry");
   await env.dialogButton("我已保存，不再显示");
   assert.ok(!env.allText().includes("zmc_synthetic-credential"), "the credential never renders again");
   assert.ok(!env.overlay(), "the dialog is gone after saving");
+});
+
+test("pairing by account grants the checked accounts and the requested capabilities only", async () => {
+  const env = environment({ rpc(method) { if (method === "mcp.settings") return { defaultMode: "accounts" }; return undefined; } });
+  await settle();
+  await env.click("btnCreate");
+  await settle();
+  const overlay = env.overlay();
+  find(overlay, item => item.tag === "input" && item.type === "text").value = "按账号新客户端";
+  assert.equal(find(overlay, item => item.tag === "select").value, "accounts", "按账号 is the default scope");
+  const dialogText = text(overlay);
+  for (const phrase of ["按账号", "逐联系人", "全部账号（旧）", "账号甲", "外部聊天导入", "修改资料与发起分析", "全局管理"]) {
+    assert.ok(dialogText.includes(phrase), phrase);
+  }
+  const boxes = collect(overlay);
+  const byLabel = label => boxes.find(box => text(box.parent).includes(label));
+  byLabel("账号甲").checked = true;
+  byLabel("修改资料与发起分析").checked = true;
+  await env.dialogButton("创建并生成凭据");
+  const create = env.calls.find(call => call.method === "mcp.create_profile");
+  assert.deepEqual(create.params, { name: "按账号新客户端", mode: "accounts", allowWrite: true,
+    globalManagement: false });
+  const grants = env.calls.filter(call => call.method === "mcp.grant_account");
+  assert.deepEqual(grants.map(call => call.params), [{ clientId: "mcp_new",
+    sourceFingerprint: "synthetic-install-fingerprint", accountId: "account-a" }]);
+  assert.ok(env.allText().includes("zmc_synthetic-credential"));
+});
+
+test("pairing by account without a source fingerprint keeps the dialog open with a notice", async () => {
+  const env = environment({ rpc(method) { if (method === "mcp.settings") return { defaultMode: "accounts" }; return undefined; } });
+  // The directory lists accounts but cannot say which data source they belong to.
+  env.directory = { externalAccountId: "external-chat", accounts: DIRECTORY.accounts };
+  await settle();
+  await env.click("btnCreate");
+  await settle();
+  const overlay = env.overlay();
+  find(overlay, item => item.tag === "input" && item.type === "text").value = "按账号新客户端";
+  const boxes = collect(overlay);
+  boxes.find(box => text(box.parent).includes("账号甲")).checked = true;
+  await env.dialogButton("创建并生成凭据");
+  assert.ok(!env.calls.some(call => call.method === "mcp.create_profile"), "no client without its account grants");
+  assert.ok(!env.calls.some(call => call.method === "mcp.grant_account"));
+  assert.equal(env.overlay(), overlay, "the dialog stays open");
+  assert.ok(text(overlay).includes("暂时读不到数据来源"), "a short notice says why");
+  assert.ok(!env.allText().includes("zmc_synthetic-credential"));
+  // Once the directory answers with its fingerprint the same dialog goes through.
+  env.directory = undefined;
+  await env.dialogButton("创建并生成凭据");
+  assert.deepEqual(env.calls.filter(call => call.method === "mcp.grant_account").map(call => call.params),
+    [{ clientId: "mcp_new", sourceFingerprint: "synthetic-install-fingerprint", accountId: "account-a" }]);
+  assert.ok(env.allText().includes("zmc_synthetic-credential"));
+});
+
+test("an accounts-scope card lists account grants and changes capabilities in place", async () => {
+  const env = environment();
+  env.profiles = [PROFILE_ACCOUNTS];
+  await env.click("btnRefresh");
+  const card = env.get("profileList").children[0];
+  assert.ok(text(card).includes("按账号") && text(card).includes("已授权账号 1"));
+  find(card, item => item.tag === "button" && item.textContent === "授权账号").click();
+  await settle();
+  const list = find(env.get("profileList"), item => item.className === "mcp-matrix");
+  assert.ok(text(list).includes("账号甲") && text(list).includes("外部聊天导入"));
+  const [accountA, external] = collect(list);
+  assert.equal(accountA.checked, true, "the granted account is checked");
+  assert.equal(external.checked, false);
+  external.checked = true;
+  for (const handler of external.listeners.change) handler({});
+  await settle();
+  assert.deepEqual(env.calls.filter(call => call.method === "mcp.grant_account").at(-1).params,
+    { clientId: "mcp_accounts", sourceFingerprint: "synthetic-install-fingerprint", accountId: "external-chat" });
+  accountA.checked = false;
+  for (const handler of accountA.listeners.change) handler({});
+  await settle();
+  assert.equal(env.calls.filter(call => call.method === "mcp.revoke_account").at(-1).params.accountId, "account-a");
+  // Capability switches: one request per change, off by default for this profile.
+  const freshCard = env.get("profileList").children[0];
+  assert.ok(!text(freshCard).includes("发送微信"));
+  const writeToggle = collect(freshCard).find(box => text(box.parent).includes("修改资料与发起分析"));
+  assert.equal(writeToggle.checked, false);
+  writeToggle.checked = true;
+  for (const handler of writeToggle.listeners.change) handler({});
+  await settle();
+  assert.deepEqual(env.calls.filter(call => call.method === "mcp.set_capabilities").at(-1).params,
+    { clientId: "mcp_accounts", write: true });
+  const failing = environment({ rpc(method) { if (method === "mcp.set_capabilities") throw new Error("拒绝"); return undefined; } });
+  failing.profiles = [PROFILE_ACCOUNTS];
+  await failing.click("btnRefresh");
+  const write = collect(failing.get("profileList").children[0]).find(box => text(box.parent).includes("修改资料"));
+  write.checked = true;
+  for (const handler of write.listeners.change) handler({});
+  await settle();
+  assert.equal(write.checked, false, "a refused change reverts the switch");
 });
 
 test("the per-contact matrix grants through the directory fingerprint only", async () => {
