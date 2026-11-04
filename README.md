@@ -110,7 +110,9 @@ npm.cmd start
 
 ## 联系与来源
 
-- 作者博客：[EugenePage](https://eugenepage.com) · 邮箱：[youdrewxuan@icloud.com](mailto:youdrewxuan@icloud.com)
+- 作者博客：[EugenePage](https://eugenepage.com)
 - 问题反馈：[GitHub Issues](https://github.com/youdrew/zhiji-wechat-assistant/issues)
 
 本项目基于 [tswawa/WechatVibe](https://github.com/tswawa/WechatVibe) 独立开发，感谢原作者、贡献者及各上游项目。代码采用 [Apache-2.0](LICENSE)，第三方组件、模型和素材遵循各自许可；完整署名与许可入口见[第三方声明](THIRD_PARTY_NOTICES.md)。本项目独立维护，不代表腾讯、微信或上游项目，也没有其官方背书。
+
+有新功能建议？欢迎发邮件至 [youdrewxuan@icloud.com](mailto:youdrewxuan@icloud.com)。
