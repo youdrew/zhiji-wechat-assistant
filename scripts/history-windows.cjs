@@ -16,7 +16,8 @@ function historyScope(value) {
 }
 
 function createHistoryWindows({ BrowserWindow, mainWindow, clientUrl, screen, ipcMain, trustedMainFrame,
-  openImagePreview = () => false }) {
+  openImagePreview = () => false, openerWindow = () => mainWindow }) {
+  // Modified 2026-11-04: independent chat windows open history too; locate returns to the opener.
   const windows = new Map();
   const mainContents = mainWindow.webContents;
   let closed = false;
@@ -31,13 +32,14 @@ function createHistoryWindows({ BrowserWindow, mainWindow, clientUrl, screen, ip
   function sameConversation(entry, scope) {
     return entry && scope && scope.account === entry.scope.account && scope.user === entry.scope.user;
   }
-  function open(value) {
+  function open(value, opener = mainWindow) {
     const scope = historyScope(value);
     if (closed || !scope || mainWindow.isDestroyed()) return false;
     const key = JSON.stringify([scope.account, scope.user]);
     const existing = windows.get(key);
     if (existing && !existing.window.isDestroyed()) {
       existing.scope = scope;
+      existing.opener = opener;
       existing.window.setTitle(`${scope.name} · 聊天记录`);
       if (existing.window.isMinimized()) existing.window.restore();
       existing.window.show(); existing.window.focus();
@@ -61,7 +63,7 @@ function createHistoryWindows({ BrowserWindow, mainWindow, clientUrl, screen, ip
     });
     const target = new URL("history.html", clientUrl);
     target.hash = new URLSearchParams(scope).toString();
-    const entry = { window: child, scope, url: target.href };
+    const entry = { window: child, scope, url: target.href, opener };
     windows.set(key, entry);
     const contents = child.webContents;
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -85,8 +87,10 @@ function createHistoryWindows({ BrowserWindow, mainWindow, clientUrl, screen, ip
     for (const entry of windows.values()) entry.scope.theme = theme;
     broadcast({ type: "theme", theme });
   }
-  ipcMain.handle("history:open", (event, scope, activated) =>
-    !closed && trustedMainFrame(event) && activated === true ? open(scope) : false);
+  ipcMain.handle("history:open", (event, scope, activated) => {
+    const opener = !closed && trustedMainFrame(event) && activated === true ? openerWindow(event) : null;
+    return opener ? open(scope, opener) : false;
+  });
   ipcMain.handle("history:context", event => entryFor(event)?.scope ?? null);
   ipcMain.handle("history:close", event => {
     const entry = entryFor(event);
@@ -96,9 +100,10 @@ function createHistoryWindows({ BrowserWindow, mainWindow, clientUrl, screen, ip
   ipcMain.handle("history:locate", (event, value, activated) => {
     const entry = entryFor(event), target = locateTarget(value);
     if (activated !== true || !sameConversation(entry, target) || mainWindow.isDestroyed()) return false;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show(); mainWindow.focus();
-    mainContents.send("history:locate", target);
+    const host = entry.opener && !entry.opener.isDestroyed() ? entry.opener : mainWindow;
+    if (host.isMinimized()) host.restore();
+    host.show(); host.focus();
+    host.webContents.send("history:locate", target);
     return true;
   });
   ipcMain.handle("history:image", (event, value, activated) => {

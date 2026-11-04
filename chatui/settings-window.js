@@ -28,3 +28,26 @@
   });
   window.addEventListener("pagehide", () => channel?.close());
 })();
+// Added 2026-11-04: one conversation popped out of the main window, as in WeChat. The desktop host
+// opens index.html?window=chat&account=…&user=… with the same preload; the page then shows only that
+// conversation. The query is read once and never written back: the main process trusts the exact URL.
+(function () {
+  // {account, user} of a chat window, or null for every other window. An unusable query still yields a
+  // chat window (empty fields), so the page never falls back to the main window's sidebar and startup.
+  function parseChatWindowTarget(desktopHost, search) {
+    if (desktopHost?.isChatWindow !== true || desktopHost?.isSettingsWindow === true) return null;
+    let params = null;
+    try { params = new URLSearchParams(typeof search === "string" ? search : ""); } catch { }
+    const valid = params?.get("window") === "chat";
+    const read = (name, limit) => {
+      const value = valid ? params.get(name) : null;
+      return typeof value === "string" && value.length > 0 && value.length <= limit ? value : "";
+    };
+    return Object.freeze({ account: read("account", 128), user: read("user", 256) });
+  }
+  window.parseChatWindowTarget = parseChatWindowTarget;
+  const target = parseChatWindowTarget(window.desktopHost, window.location?.search);
+  if (!target) return;
+  window.ChatWindow = target;
+  document.documentElement.classList.add("chat-window");
+})();

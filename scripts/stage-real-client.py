@@ -40,11 +40,20 @@ SCRIPTS = (
     "image-preview.cjs", "chat-link-host.cjs",
     # Modified by Know Your Friends, 2026-10-10: independent 知己分析 windows.
     "friend-windows.cjs", "friend-preload.cjs",
+    # Modified by Know Your Friends, 2026-11-04: independent chat windows (one conversation per window).
+    "chat-windows.cjs",
     "history-windows.cjs", "history-preload.cjs",
     "external-import-windows.cjs", "external-import-preload.cjs",
     # Modified by Know Your Friends, 2026-10-27: the phase-5 high-impact deletion confirm window,
     # raised on demand by Core's presenter adapter (bridge/core_mcp_confirm_window.py).
     "confirm-window.cjs", "confirm-window-preload.cjs",
+    # Modified by Know Your Friends, 2026-11-04 (G12): the one-command connect CLI, its shared
+    # DPAPI credential helper (also read by the stdio adapter) and the on-demand pairing window.
+    "zhiji-mcp-cli.py", "zhiji_mcp_credentials.py", "zhiji_mcp_http.py", "pairing-window.cjs", "pairing-window-preload.cjs",
+    # Modified by Know Your Friends, 2026-11-04 (G13): the Agent-openable window module host.
+    "ui-host.cjs",
+    # Modified by Know Your Friends, 2026-11-04 (G11): the command-line consumer of external new-message events.
+    "zhiji-events.py",
 )
 BRIDGE = (
     "account_api.py", "account_store.py", "conversation_selection.py",
@@ -69,6 +78,12 @@ BRIDGE = (
     # Modified by Know Your Friends, 2026-10-27: phase-5 application management and the
     # high-impact deletion confirmation service, plus the Electron confirm window presenter.
     "core_mcp_manage.py", "core_mcp_confirm.py", "core_mcp_confirm_window.py",
+    # Modified by Know Your Friends, 2026-11-04 (G12): user-confirmed CLI pairing and its window presenter.
+    "core_mcp_pairing.py", "core_mcp_pairing_window.py",
+    # Modified by Know Your Friends, 2026-11-04 (G11): the external new-message event outlet.
+    "core_mcp_events.py",
+    # Modified by Know Your Friends, 2026-11-04: Agent-openable window modules and the UI host service.
+    "core_ui_modules.py", "core_ui_host.py",
     "model_trace_context.py", "model_traces.py", "model_traces_store.py", "model_traces_http.py",
     "friend_context.py",
     # Modified by Know Your Friends, 2026-10-10: local media and bounded vision context.

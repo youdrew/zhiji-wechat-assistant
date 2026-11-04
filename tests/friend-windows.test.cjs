@@ -12,7 +12,7 @@ const CLIENT = "http://127.0.0.1:34567/";
 const A = { account: "synthetic-account", user: "wxid_friend_a", name: "朋友甲" };
 const B = { account: "synthetic-account", user: "wxid_friend_b", name: "朋友乙" };
 
-function harness({ flush = true, dialogResponse = 0, saved = null } = {}) {
+function harness({ flush = true, dialogResponse = 0, saved = null, withChat = false } = {}) {
   const made = [];
   const handlers = new Map(), listeners = new Map();
   class Window extends EventEmitter {
@@ -62,14 +62,18 @@ function harness({ flush = true, dialogResponse = 0, saved = null } = {}) {
   const dialog = { showMessageBox: async (_window, options) => { dialogs.push(options); return { response: dialogResponse }; } };
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "friend-windows-"));
   if (saved) fs.writeFileSync(path.join(userData, "friend-windows.json"), JSON.stringify(saved));
-  const trusted = event => event.sender === main.webContents;
+  // An independent chat window stands next to the main window when asked for.
+  const chat = withChat ? new Window({ x: 300, y: 200 }) : null;
+  const owners = [main, chat].filter(Boolean);
+  const trusted = event => owners.some(win => event.sender === win.webContents);
   const manager = createFriendWindows({ BrowserWindow: Window, mainWindow: main, clientUrl: CLIENT, ipcMain, dialog,
+    ...(chat ? { openerWindow: event => owners.find(win => win.webContents === event.sender) ?? null } : {}),
     userDataPath: userData, trustedMainFrame: trusted, screen: {
       getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
       getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
       getAllDisplays: () => [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
     } });
-  return { main, manager, made, handlers, listeners, dialogs, userData };
+  return { main, chat, manager, made, handlers, listeners, dialogs, userData };
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
@@ -169,4 +173,21 @@ test("window bounds are remembered per contact and restored only when still visi
   const again = harness({ saved: { [JSON.stringify([B.account, B.user])]: { x: 5000, y: 5000, width: 900, height: 700 } } });
   again.manager.open(B);
   assert.ok(again.made[1].options.x < 1920, "an off-screen saved position falls back to the visible work area");
+});
+
+test("a chat window opens 知己分析; locate returns to it while it is open, then to the main window", async () => {
+  const h = harness({ withChat: true });
+  const event = win => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
+  assert.equal(await h.handlers.get("friend:open")(event(h.chat), A, true), true);
+  const win = h.made[2];
+  const target = { account: A.account, user: A.user, messageId: "synthetic-message", cursor: "synthetic-cursor" };
+  assert.equal(await h.handlers.get("friend:locate")(event(win), target, true), true);
+  assert.deepEqual(h.chat.sent.at(-1), ["friend:locate", target]);
+  assert.equal(h.main.sent.some(([channel]) => channel === "friend:locate"), false);
+  h.chat.destroy();
+  assert.equal(await h.handlers.get("friend:locate")(event(win), target, true), true);
+  assert.deepEqual(h.main.sent.at(-1), ["friend:locate", target]);
+  assert.equal(await h.handlers.get("friend:open")({ sender: {}, senderFrame: {} }, B, true), false);
+  h.manager.destroyAll();
+  fs.rmSync(h.userData, { recursive: true, force: true });
 });

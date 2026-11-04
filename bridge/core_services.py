@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import shutil
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -34,6 +36,7 @@ from usage_ledger import UsageLedger
 
 GRANT_TTL = 15 * 60
 MAX_GRANTS = 16
+_log = logging.getLogger(__name__)
 
 
 class PluginFiles:
@@ -138,6 +141,9 @@ class CoreServices:
         # kyf.mcp plugin removes every callable MCP entry — the registry is the one source
         # of truth, so the proxy asks it per handshake and per authenticated call.
         self.mcp.plugin_gate = self._mcp_plugin_open
+        # Modified 2026-11-04 (G9): tools backed by a business plugin are listed and callable
+        # only while that plugin is installed, enabled and dependency-complete.
+        self.mcp.plugin_enabled = self._mcp_business_plugin_enabled
         # Modified 2026-10-27: MCP analysis-task tools reach the analysis plugins and the
         # shared TaskManager through one narrow business bridge, never arbitrary plugin RPC.
         self.mcp.analysis = McpAnalysisBridge(self, self.root / ".local" / "real-client-data"
@@ -168,12 +174,86 @@ class CoreServices:
         self.mcp.manage = McpManagementBridge(
             self, self.root / ".local" / "real-client-data" / "accounts.json", presenter=presenter)
         self.mcp.confirm = self.mcp.manage.confirm
+        # Modified 2026-11-04 (G11/G13): new-message events for MCP clients and windows an
+        # external Agent may ask Core to open. Both follow MCP authorization changes.
+        self._wire_mcp_events_and_windows(local, core_url, leases)
         self.lock = threading.Lock()
         try:
             from core_migration import migrate_global
             self._global_migration_failures = migrate_global(local)
         except Exception:
             self._global_migration_failures = set()
+
+    # MCP new-message events (G11) and Agent-opened windows (G13) ------------------------------------------------------
+    def _wire_mcp_events_and_windows(self, local, core_url, leases):
+        from core_mcp_events import McpEventOutlet, McpEventStore
+        from core_mcp_offline import registry_records
+        from core_ui_host import UiWindowService
+        registry_path = self.root / ".local" / "real-client-data" / "accounts.json"
+        self.mcp_event_store = None
+        self.mcp_events = None
+        event_store = None
+        try:
+            event_store = McpEventStore(Path(local) / "core" / "mcp" / "events.sqlite3")
+            # The outlet only reads WeChat's session list while an MCP client was recently active.
+            outlet = McpEventOutlet(self._mcp_event_source, event_store, registry_path,
+                                    self.mcp.fingerprint, self.mcp.store.cursor_key,
+                                    self.mcp.recently_active)
+        except (OSError, sqlite3.Error) as exc:
+            if event_store is not None:
+                event_store.close()
+            _log.warning("MCP events unavailable: %s", exc)
+        else:
+            self.mcp_event_store = event_store
+            self.mcp_events = self.mcp.events = outlet
+        self.ui = UiWindowService(
+            registry_lookup=lambda account_id: registry_records(registry_path).get(account_id),
+            scope_for=self.mcp.readable_scope,
+            plugin_enabled=lambda plugin_id, _account=None: self._mcp_business_plugin_enabled(plugin_id),
+            live_account=self._live_account, leases=leases, current_auth=self._ui_current_auth,
+            task_lookup=self.tasks.task, display_name=self._ui_display_name,
+            client_url=str(core_url).rstrip("/") + "/", root=self.root)
+        self.mcp.ui = self.ui
+        # G12 one-command pairing: loopback request/poll/cancel/revoke reach this service;
+        # approval only comes from the Core-spawned pairing window or the kyf.mcp settings page.
+        from core_mcp_pairing import McpPairingService
+        from core_mcp_pairing_window import ElectronPairingPresenter
+        self.mcp.pairing = McpPairingService(self.mcp, ElectronPairingPresenter(self.root, leases=leases))
+        self.mcp.store.add_version_listener(self._mcp_version_changed)
+        if self.mcp_events is not None:
+            self.mcp_events.start()
+
+    def _mcp_event_source(self):
+        return None if getattr(self.backend, "closing", False) else self.source
+
+    def _mcp_version_changed(self, client_id):
+        """Authorization version bump or profile removal: drop saved event positions and windows."""
+        if self.mcp_event_store is not None:
+            try:
+                self.mcp_event_store.forget_client(client_id)
+            except Exception:
+                pass
+        try:
+            self.ui.on_version_change(client_id)
+        except Exception:
+            pass
+
+    def _live_account(self):
+        scope = self.scope()
+        return scope["account"] if scope.get("ready") else None
+
+    def _ui_current_auth(self, client_id):
+        """The guard's re-check: current version + data-root identity while MCP stays open."""
+        store = self.mcp.store
+        if not store.master_enabled() or not self._mcp_plugin_open():
+            return None
+        profile = store.client(client_id)
+        if profile is None or not profile["enabled"]:
+            return None
+        return {"authVersion": profile["auth_version"], "fingerprint": self.mcp.fingerprint() or ""}
+
+    def _ui_display_name(self, account, subject_id):
+        return self.usage_friend_names(account).get(subject_id) or subject_id
 
     # Data views used by the plugin interface ----------------------------------------------------------------------------
     @property
@@ -272,6 +352,11 @@ class CoreServices:
         """Whether the MCP plugin itself is installed and enabled (阶段 6 禁用/卸载门)."""
         return self.registry.enabled("kyf.mcp")
 
+    def _mcp_business_plugin_enabled(self, plugin_id):
+        """G9: a plugin that is absent (e.g. the free edition has no send plugin), disabled,
+        incompatible or missing a dependency counts as not enabled."""
+        return bool(self.registry.enabled(plugin_id)) and self.registry.dependency_error(plugin_id) is None
+
     def _mcp_offline(self):
         """The explicit saved-account scope behind the MCP offline read tools.
 
@@ -281,8 +366,11 @@ class CoreServices:
         if self.backend.closing:
             return None
         from core_mcp_offline import SavedAccountScope
+        # Contact names for find/list come from session names Core already observed
+        # (never a WeChat read here), falling back to the saved projection's sender names.
         return SavedAccountScope(self.backend.account_data().friends,
-                                 self.root / ".local" / "real-client-data" / "accounts.json")
+                                 self.root / ".local" / "real-client-data" / "accounts.json",
+                                 names=self.usage_friend_names)
 
     def _mcp_directory(self):
         """Saved accounts and their added conversations, for the MCP settings page's contact matrix.
@@ -566,12 +654,35 @@ class CoreServices:
                 self.tasks.stop(task["id"])
             self.supervisor.stop(plugin_id, "插件已停用")
             self.supervisor.reconcile_dependencies()
+            self._close_windows_of_unavailable_plugins(plugin_id)
         return result
 
     def refresh_plugins(self):
+        known = set(self.registry.plugins)
         self.registry.refresh()
         self.supervisor.reconcile_dependencies()
+        self._close_windows_of_unavailable_plugins(*known)
         return self.listing()
+
+    def _close_windows_of_unavailable_plugins(self, *plugin_ids):
+        """G13: Agent-opened windows showing a plugin that is now disabled, uninstalled or missing a
+        dependency close at once instead of waiting for their next guarded request."""
+        ui = getattr(self, "ui", None)
+        if ui is None:
+            return
+        if not self._mcp_plugin_open():
+            # kyf.mcp itself is disabled or uninstalled: every Agent-opened window closes.
+            try:
+                ui.close_all()
+            except Exception:
+                pass
+            return
+        for plugin_id in set(plugin_ids) | set(self.registry.plugins):
+            if not self._mcp_business_plugin_enabled(plugin_id):
+                try:
+                    ui.on_plugin_disabled(plugin_id)
+                except Exception:
+                    pass
 
     def restart(self, plugin_id):
         self.supervisor.stop(plugin_id, "正在重新启动")
@@ -594,6 +705,9 @@ class CoreServices:
             self.supervisor.stop(plugin_id, "正在清理账号数据")
         self.store.delete_account(account)
         self.ledger.clear(account)
+        events = getattr(self, "mcp_event_store", None)
+        if events is not None:
+            events.forget_account(account)
         key = self.account_key(account)
         base = self.local / "plugin-data"
         from core_account_db import _long_path
@@ -601,6 +715,12 @@ class CoreServices:
             shutil.rmtree(_long_path(directory), ignore_errors=False)  # Engine caches nest past MAX_PATH.
 
     def close(self):
+        outlet = getattr(self, "mcp_events", None)
+        if outlet is not None:
+            outlet.close()  # wakes long-pollers and joins the watcher thread
+        ui = getattr(self, "ui", None)
+        if ui is not None:
+            ui.shutdown()
         if getattr(self, "mcp", None) is not None:
             self.mcp.close()
         if self._external_import is not None:
@@ -617,3 +737,5 @@ class CoreServices:
         self.gateway.close()
         self.ledger.close()
         self.store.close()
+        if getattr(self, "mcp_event_store", None) is not None:
+            self.mcp_event_store.close()

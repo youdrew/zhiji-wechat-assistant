@@ -27,8 +27,10 @@ function pluginEvent(value) {
   return { type: "plugins-changed", plugins };
 }
 
-function createExternalImportWindows({ BrowserWindow, mainWindow, clientUrl, screen, ipcMain, dialog, trustedMainFrame }) {
-  const windows = new Map(), mainContents = mainWindow.webContents;
+function createExternalImportWindows({ BrowserWindow, mainWindow, clientUrl, screen, ipcMain, dialog, trustedMainFrame,
+  openerWindow = () => mainWindow }) {
+  // Modified 2026-11-04: independent chat windows open these too; navigation returns to the opener.
+  const windows = new Map();
   let closed = false, closeAllPending = null;
   function settleClose(entry, ok) {
     const pending = entry.pendingClose;
@@ -63,12 +65,13 @@ function createExternalImportWindows({ BrowserWindow, mainWindow, clientUrl, scr
     }
     return null;
   }
-  function open(value) {
+  function open(value, opener = mainWindow) {
     const scope = externalImportScope(value);
     if (closed || closeAllPending || !scope || mainWindow.isDestroyed()) return false;
     const key = JSON.stringify([scope.account, scope.user]);
     const existing = windows.get(key);
     if (existing && !existing.window.isDestroyed()) {
+      existing.opener = opener;
       // A later main-window selection must never replace this window's binding.
       existing.scope.name = scope.name;
       existing.scope.theme = scope.theme;
@@ -87,11 +90,11 @@ function createExternalImportWindows({ BrowserWindow, mainWindow, clientUrl, scr
       title: `${scope.name} · 外部聊天`, backgroundColor: scope.theme === "light" ? "#ffffff" : "#1b1b1b",
       show: false, autoHideMenuBar: true, resizable: true,
       webPreferences: { preload: path.join(__dirname, "external-import-preload.cjs"), contextIsolation: true,
-        sandbox: true, nodeIntegration: false, webSecurity: true, devTools: false, session: mainContents.session },
+        sandbox: true, nodeIntegration: false, webSecurity: true, devTools: false, session: mainWindow.webContents.session },
     });
     const target = new URL("external-import.html", clientUrl);
     target.search = new URLSearchParams(scope).toString();
-    const entry = { window: child, scope, url: target.href };
+    const entry = { window: child, scope, url: target.href, opener };
     windows.set(key, entry);
     const contents = child.webContents;
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -123,8 +126,10 @@ function createExternalImportWindows({ BrowserWindow, mainWindow, clientUrl, scr
     for (const entry of windows.values()) entry.scope.theme = theme;
     broadcast({ type: "theme", theme });
   }
-  ipcMain.handle("external-import:open", (event, scope, activated) =>
-    !closed && trustedMainFrame(event) && activated === true ? open(scope) : false);
+  ipcMain.handle("external-import:open", (event, scope, activated) => {
+    const opener = !closed && trustedMainFrame(event) && activated === true ? openerWindow(event) : null;
+    return opener ? open(scope, opener) : false;
+  });
   ipcMain.handle("external-import:context", event => entryFor(event)?.scope ?? null);
   ipcMain.handle("external-import:close", event => {
     const entry = entryFor(event);
@@ -136,9 +141,12 @@ function createExternalImportWindows({ BrowserWindow, mainWindow, clientUrl, scr
     if (!entry || activated !== true || !NAVIGATION_TARGETS.has(target) || mainWindow.isDestroyed()) return false;
     const navigate = () => {
       if (mainWindow.isDestroyed()) return false;
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show(); mainWindow.focus();
-      mainContents.send("external-import:navigate", { target, scope: { ...entry.scope } });
+      // Back to the chat window that opened this one while it is still open; settings, models and plugins
+      // live only in the main window.
+      const host = target === "chat" && entry.opener && !entry.opener.isDestroyed() ? entry.opener : mainWindow;
+      if (host.isMinimized()) host.restore();
+      host.show(); host.focus();
+      host.webContents.send("external-import:navigate", { target, scope: { ...entry.scope } });
       return true;
     };
     return target === "chat" ? requestClose(entry).then(ok => ok ? navigate() : false) : navigate();

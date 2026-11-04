@@ -416,7 +416,8 @@ class DependencyProcessTests(unittest.TestCase):
         self.launch()
         first = self.supervisor.ensure("synthetic.app")
         (leaf / "plugin.json").rename(leaf / "manifest.hidden")
-        core = SimpleNamespace(registry=self.registry, supervisor=self.supervisor, listing=self.registry.listing)
+        core = SimpleNamespace(registry=self.registry, supervisor=self.supervisor, listing=self.registry.listing,
+                               _close_windows_of_unavailable_plugins=mock.Mock())
         core.refresh_plugins = mock.Mock(side_effect=lambda: CoreServices.refresh_plugins(core))
         result = host_post(core, "/api/plugins/refresh", {})
         core.refresh_plugins.assert_called_once_with()

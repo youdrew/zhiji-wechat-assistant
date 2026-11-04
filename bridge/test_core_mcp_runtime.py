@@ -49,8 +49,9 @@ def headers(token):
     return {"Authorization": "Bearer " + token}
 
 
-def pair(mcp, name="合成客户端", mode="full", pid=None):
-    created = mcp.store.create_profile(name, mode)
+def pair(mcp, name="合成客户端", mode="full", pid=None, **capabilities):
+    from test_core_mcp import legacy_capabilities
+    created = mcp.store.create_profile(name, mode, **legacy_capabilities(mode, **capabilities))
     result = mcp.handshake({"clientId": created["clientId"], "credential": created["credential"],
                             **({"pid": pid} if pid is not None else {})})
     return created, result
@@ -224,19 +225,19 @@ class OfflineHandlerTests(unittest.TestCase):
                           "zhiji_delete_assistant_template", "zhiji_delete_memory",
                           "zhiji_delete_observation", "zhiji_edit_self_timeline",
                           "zhiji_enable_assistant_template",
-                          "zhiji_get_assistant_catalog", "zhiji_get_assistant_run",
-                          "zhiji_get_assistant_thread", "zhiji_get_contact_goal",
+                          "zhiji_find_contacts", "zhiji_get_assistant_catalog", "zhiji_get_assistant_run",
+                          "zhiji_get_assistant_thread", "zhiji_get_contact", "zhiji_get_contact_brief", "zhiji_get_contact_goal",
                           "zhiji_get_friend_analysis", "zhiji_get_import_batch",
                           "zhiji_get_import_messages", "zhiji_get_media",
                           "zhiji_get_memory_evidence", "zhiji_get_message_context",
                           "zhiji_get_message_insights", "zhiji_get_model_settings",
-                          "zhiji_get_plugins", "zhiji_get_self_analysis", "zhiji_get_self_profile",
+                          "zhiji_get_plugins", "zhiji_get_recent_messages", "zhiji_get_self_analysis", "zhiji_get_self_profile",
                           "zhiji_get_task", "zhiji_get_usage",
                           "zhiji_import_assistant_skill", "zhiji_list_accounts",
                           "zhiji_list_assistant_friends", "zhiji_list_assistant_threads",
                           "zhiji_list_import_batches", "zhiji_list_import_candidates",
                           "zhiji_list_import_contacts", "zhiji_list_memories",
-                          "zhiji_list_observations", "zhiji_new_assistant_thread", "zhiji_ping",
+                          "zhiji_list_observations", "zhiji_list_recent_conversations", "zhiji_new_assistant_thread", "zhiji_ping",
                           "zhiji_remove_import_material", "zhiji_save_assistant_template",
                           "zhiji_save_contact_goal", "zhiji_save_import_batch",
                           "zhiji_save_model_settings", "zhiji_save_observation",

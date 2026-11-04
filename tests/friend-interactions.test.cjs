@@ -166,7 +166,7 @@ test("another running scheme of the friend offers stopping it or queueing behind
 });
 
 // -- the scheme page (plugins/kyf.friend-analysis/ui) over kyfHost ----------------------------------------------
-function pageHarness(module, respond) {
+function pageHarness(module, respond, extraContext = {}) {
   const nodes = new Map(), calls = [];
   const call = target => async (method, params = {}) => {
     calls.push({ target, method, params: plain(params) });
@@ -175,7 +175,8 @@ function pageHarness(module, respond) {
     return result;
   };
   const host = { rpc: call("plugin"), host: call("host"),
-    context: () => ({ account: "synthetic-account", user: "wxid_friend_a", plugin: "kyf.friend-analysis" }) };
+    context: () => ({ account: "synthetic-account", user: "wxid_friend_a", plugin: "kyf.friend-analysis",
+      ...extraContext }) };
   const { context: ctx, byId } = context(nodes, { kyfHost: host });
   vm.runInContext(readFileSync(path.join(__dirname, "../plugin-sdk/web/persona-charts.js"), "utf8"), ctx);
   for (const file of ["page-core.js", module])
@@ -217,7 +218,7 @@ function personaData() {
     labels: { mbti: "MBTI", ...Object.fromEntries(DIMENSIONS) }, families: FAMILY_LABELS, sources: {},
   };
 }
-function personaHarness(data, drafts = []) {
+function personaHarness(data, drafts = [], extraContext = {}) {
   return pageHarness("friend-persona.js", async (target, method, params) => {
     if (target === "plugin") {
       if (method === "page.persona") return data;
@@ -231,7 +232,7 @@ function personaHarness(data, drafts = []) {
     data.observations.push({ id: "saved-observation", version: 1, judgement: params.judgement, note: params.note,
       dimension: params.dimension });
     return { items: data.observations };
-  });
+  }, extraContext);
 }
 function observationForm(root) { return descendants(root).find(node => node.className === "fa-form"); }
 function chart(root, title) {
@@ -620,6 +621,29 @@ test("deleting an observation asks inside the page and deletes only after 删除
   await pending;
   await settle();
   assert.deepEqual(hostCalls(h, "observations.save").map(call => call.params), [{ action: "delete", id: "existing" }]);
+});
+
+test("a restricted scheme context hides every observation edit control", async () => {
+  const labels = ["记录我的观察", "记录观察", "修正", "编辑", "删除"];
+  const shown = async extra => {
+    const data = personaData();
+    data.observations = [{ id: "existing", version: 2, dimension: "big5_e", judgement: "synthetic observation", note: "" },
+      { id: "other", version: 1, dimension: "", judgement: "free observation", note: "" }];
+    const h = personaHarness(data, [{ entry: "observation:new", generation: 1, seq: 1,
+      payload: { dimension: "mbti", judgement: "restored", note: "" } }], extra);
+    await h.context.FriendPersona.load();
+    await h.context.FriendPersona.restoreDrafts(await h.app.loadDrafts());
+    const page = h.byId("pagePersona");
+    return { h, page, buttons: descendants(page).filter(node => node.tagName === "button").map(node => node.textContent) };
+  };
+  const restricted = await shown({ restricted: true });
+  assert.equal(restricted.h.app.restricted, true);
+  for (const label of labels) assert.ok(!restricted.buttons.includes(label), label);
+  assert.equal(observationForm(restricted.page), undefined, "no draft form reopens in a read-only window");
+  assert.ok(descendants(restricted.page).some(node => node.textContent === "free observation"), "records stay visible");
+  const ordinary = await shown({});
+  assert.equal(ordinary.h.app.restricted, false);
+  for (const label of ["记录观察", "修正", "编辑", "删除"]) assert.ok(ordinary.buttons.includes(label), label);
 });
 
 test("dimension drafts and saved observations remain accessible before the first analysis", async () => {

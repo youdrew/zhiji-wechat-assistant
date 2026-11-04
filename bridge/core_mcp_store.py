@@ -22,7 +22,10 @@ import threading
 import time
 from pathlib import Path
 
-MODES = ("full", "per_contact")
+# 数据范围（G10）：accounts 是新建档案的默认值（按所选账号读取其全部联系人，新增
+# 账号不自动授权）；per_contact 逐联系人；full 是旧档案的全部账号（兼容保留）。
+MODES = ("full", "accounts", "per_contact")
+DEFAULT_MODE = "accounts"
 SUBJECT_TYPES = ("wechat_contact", "external_contact")
 MAX_CALL_RECORDS = 500
 CALL_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -42,6 +45,8 @@ CREATE TABLE IF NOT EXISTS clients (
   enabled INTEGER NOT NULL DEFAULT 1,
   mode TEXT NOT NULL,
   global_management INTEGER NOT NULL DEFAULT 0,
+  allow_write INTEGER NOT NULL DEFAULT 0,
+  allow_send INTEGER NOT NULL DEFAULT 0,
   auth_version INTEGER NOT NULL DEFAULT 1,
   credential_salt TEXT NOT NULL,
   credential_hash TEXT NOT NULL,
@@ -60,6 +65,13 @@ CREATE TABLE IF NOT EXISTS contact_grants (
   subject_id TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL,
   PRIMARY KEY (client_id, source_fingerprint, account_id, subject_type, subject_id)
+);
+CREATE TABLE IF NOT EXISTS account_grants (
+  client_id TEXT NOT NULL,
+  source_fingerprint TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (client_id, source_fingerprint, account_id)
 );
 CREATE TABLE IF NOT EXISTS request_dedup (
   client_id TEXT NOT NULL,
@@ -149,7 +161,12 @@ class McpStore:
         # store pays for FULL synchronous despite being small.
         self.connection.execute("PRAGMA synchronous=FULL")
         self.connection.execute("PRAGMA busy_timeout=5000")
+        # Capability columns arrive after the clients table existed; detect a legacy
+        # table before the schema script (CREATE IF NOT EXISTS leaves it untouched).
+        legacy_clients = self._legacy_clients_without_capabilities()
         self.connection.executescript(SCHEMA)
+        if legacy_clients:
+            self._migrate_capabilities()
         # Listeners run after any authorization version bump or profile removal, so
         # dependent state (task bindings, caches) can be invalidated at the source.
         self.version_listeners = []
@@ -157,6 +174,28 @@ class McpStore:
         names = {row[1] for row in self.connection.execute("PRAGMA table_info(request_dedup)")}
         if "result_json" not in names:
             self.connection.execute("ALTER TABLE request_dedup ADD COLUMN result_json TEXT")
+
+    def _legacy_clients_without_capabilities(self):
+        names = {row[1] for row in self.connection.execute("PRAGMA table_info(clients)")}
+        return bool(names) and "allow_write" not in names
+
+    def _migrate_capabilities(self):
+        """In-place G10 migration that keeps every existing profile's effective permissions.
+
+        Before capabilities existed, full mode implied writes and application management.
+        Per-contact mode implied writes, with management behind its own switch.
+        Versions are not bumped: nothing a token can do changes.
+        """
+        def apply(db):
+            names = {row[1] for row in db.execute("PRAGMA table_info(clients)")}
+            if "allow_write" not in names:
+                db.execute("ALTER TABLE clients ADD COLUMN allow_write INTEGER NOT NULL DEFAULT 0")
+            if "allow_send" not in names:
+                db.execute("ALTER TABLE clients ADD COLUMN allow_send INTEGER NOT NULL DEFAULT 0")
+            db.execute("UPDATE clients SET allow_write=1, global_management=1 WHERE mode='full'")
+            db.execute("UPDATE clients SET allow_write=1 WHERE mode='per_contact'")
+
+        self._write(apply)
 
     def add_version_listener(self, listener):
         """``listener(clientId)`` after a version bump or profile removal; never raises."""
@@ -193,14 +232,21 @@ class McpStore:
             row = self.connection.execute("SELECT * FROM clients WHERE client_id=?", (client_id,)).fetchone()
         return dict(row) if row is not None else None
 
-    def create_profile(self, name, mode, global_management=False):
-        """``{clientId, credential, ...}``; the credential is shown once and never stored."""
+    def create_profile(self, name, mode=DEFAULT_MODE, global_management=False, *, allow_write=False,
+                       allow_send=False):
+        """``{clientId, credential, ...}``; the credential is shown once and never stored.
+
+        A new profile reads only (G10): writes, sends and application management are
+        separate capabilities that stay off unless requested.
+        """
         if not isinstance(name, str) or not name.strip() or len(name.strip()) > NAME_LIMIT:
             raise McpStoreError(400, "invalid-request", "请输入 1-64 字的客户端名称")
         if mode not in MODES:
             raise McpStoreError(400, "invalid-request", "授权模式不正确")
         if not isinstance(global_management, bool):
             raise McpStoreError(400, "invalid-request", "全局管理开关不正确")
+        if not isinstance(allow_write, bool) or not isinstance(allow_send, bool):
+            raise McpStoreError(400, "invalid-request", "操作能力开关不正确")
         name = name.strip()
         stamp = now_ms()
         salt = secrets.token_hex(16)
@@ -211,14 +257,16 @@ class McpStore:
             if db.execute("SELECT 1 FROM retired_clients WHERE client_id=?", (client_id,)).fetchone():
                 raise McpStoreError(409, "client-id-unavailable", "客户端标识不可复用，请重试")
             db.execute(
-                "INSERT INTO clients(client_id,name,enabled,mode,global_management,auth_version,"
-                "credential_salt,credential_hash,created_at_ms,last_used_at_ms)"
-                " VALUES(?,?,1,?,?,1,?,?,?,NULL)",
-                (client_id, name, mode, int(global_management), salt, credential_hash(salt, secret), stamp))
+                "INSERT INTO clients(client_id,name,enabled,mode,global_management,allow_write,allow_send,"
+                "auth_version,credential_salt,credential_hash,created_at_ms,last_used_at_ms)"
+                " VALUES(?,?,1,?,?,?,?,1,?,?,?,NULL)",
+                (client_id, name, mode, int(global_management), int(allow_write), int(allow_send), salt,
+                 credential_hash(salt, secret), stamp))
             return client_id
 
         self._write(apply)
         return {"clientId": client_id, "name": name, "mode": mode, "globalManagement": global_management,
+                "capabilities": {"write": allow_write, "send": allow_send, "manage": global_management},
                 "authVersion": 1, "enabled": True, "createdAt": stamp, "credential": secret}
 
     def regenerate_credential(self, client_id):
@@ -275,19 +323,37 @@ class McpStore:
         return self.client(client_id)
 
     def set_global_management(self, client_id, enabled):
+        """The original switch; now the ``manage`` capability (kept as an alias)."""
         if not isinstance(enabled, bool):
             raise McpStoreError(400, "invalid-request", "全局管理开关不正确")
+        return self.set_capabilities(client_id, manage=enabled)
+
+    CAPABILITY_COLUMNS = {"write": "allow_write", "send": "allow_send", "manage": "global_management"}
+
+    def set_capabilities(self, client_id, *, write=None, send=None, manage=None):
+        """Change operation capabilities; any change bumps the version so old tokens go stale."""
+        requested = {name: value for name, value in (("write", write), ("send", send), ("manage", manage))
+                     if value is not None}
+        if not requested or any(not isinstance(value, bool) for value in requested.values()):
+            raise McpStoreError(400, "invalid-request", "操作能力开关不正确")
 
         def apply(db):
-            found = db.execute("SELECT global_management FROM clients WHERE client_id=?", (client_id,)).fetchone()
+            found = db.execute("SELECT 1 FROM clients WHERE client_id=?", (client_id,)).fetchone()
             if not found:
                 raise McpStoreError(404, "client-not-found", "客户端不存在")
-            db.execute("UPDATE clients SET global_management=?, auth_version=auth_version+1 WHERE client_id=?",
-                       (int(enabled), client_id))
+            assignments = ", ".join(f"{self.CAPABILITY_COLUMNS[name]}=?" for name in requested)
+            db.execute(f"UPDATE clients SET {assignments}, auth_version=auth_version+1 WHERE client_id=?",
+                       (*(int(value) for value in requested.values()), client_id))
 
         self._write(apply)
         self._notify_version(client_id)
         return self.client(client_id)
+
+    @staticmethod
+    def capabilities(row):
+        """``{"write", "send", "manage"}`` of one profile row; reading is always allowed."""
+        return {"write": bool(row["allow_write"]), "send": bool(row["allow_send"]),
+                "manage": bool(row["global_management"])}
 
     def revoke_profile(self, client_id):
         """Delete the profile and keep its id from ever being handed out again."""
@@ -299,6 +365,7 @@ class McpStore:
                 raise McpStoreError(404, "client-not-found", "客户端不存在")
             db.execute("DELETE FROM clients WHERE client_id=?", (client_id,))
             db.execute("DELETE FROM contact_grants WHERE client_id=?", (client_id,))
+            db.execute("DELETE FROM account_grants WHERE client_id=?", (client_id,))
             db.execute("DELETE FROM request_dedup WHERE client_id=?", (client_id,))
             db.execute("INSERT OR IGNORE INTO retired_clients(client_id, retired_at_ms) VALUES(?,?)",
                        (client_id, stamp))
@@ -311,7 +378,7 @@ class McpStore:
     def profile_view(row):
         return {"clientId": row["client_id"], "name": row["name"], "enabled": bool(row["enabled"]),
                 "mode": row["mode"], "globalManagement": bool(row["global_management"]),
-                "authVersion": row["auth_version"], "createdAt": row["created_at_ms"],
+                "capabilities": McpStore.capabilities(row), "authVersion": row["auth_version"], "createdAt": row["created_at_ms"],
                 "lastUsedAt": row["last_used_at_ms"]}
 
     def list_profiles(self):
@@ -323,6 +390,7 @@ class McpStore:
         for row in rows:
             view = self.profile_view(row)
             view["contactCount"] = row["contact_count"]
+            view["accountGrants"] = self.account_grants(row["client_id"])
             views.append(view)
         return views
 
@@ -394,6 +462,64 @@ class McpStore:
                  "sourceFingerprint": row["source_fingerprint"], "createdAt": row["created_at_ms"]}
                 for row in rows]
 
+    # -- account grants (G10 accounts mode) ------------------------------------
+    @staticmethod
+    def _account_grant_values(client_id, source_fingerprint, account_id):
+        if not isinstance(client_id, str) or not 1 <= len(client_id) <= CLIENT_ID_LIMIT:
+            raise McpStoreError(400, "invalid-request", "客户端标识不正确")
+        if not isinstance(source_fingerprint, str) or not source_fingerprint:
+            raise McpStoreError(400, "invalid-request", "安装指纹不正确")
+        if not isinstance(account_id, str) or not 1 <= len(account_id) <= ACCOUNT_ID_LIMIT:
+            raise McpStoreError(400, "invalid-request", "账号标识不正确")
+        return client_id, source_fingerprint, account_id
+
+    def grant_account(self, client_id, source_fingerprint, account_id):
+        """Grant one whole account (all its contacts) under one install + data root.
+
+        Like a contact grant, adding scope does not bump the version; accounts added
+        to the app later are never granted automatically. External imports are
+        granted as the fixed pseudo-account ``external-chat``.
+        """
+        values = self._account_grant_values(client_id, source_fingerprint, account_id)
+        if self.client(client_id) is None:
+            raise McpStoreError(404, "client-not-found", "客户端不存在")
+        self._write(lambda db: db.execute(
+            "INSERT OR IGNORE INTO account_grants(client_id,source_fingerprint,account_id,created_at_ms)"
+            " VALUES(?,?,?,?)", (*values, now_ms())))
+        return {"granted": True}
+
+    def revoke_account(self, client_id, source_fingerprint, account_id):
+        """Revoking raises the auth version so old tokens, cursors and in-flight work stop."""
+        values = self._account_grant_values(client_id, source_fingerprint, account_id)
+
+        def apply(db):
+            removed = db.execute("DELETE FROM account_grants WHERE client_id=? AND source_fingerprint=?"
+                                 " AND account_id=?", values).rowcount
+            db.execute("UPDATE clients SET auth_version=auth_version+1 WHERE client_id=?", (client_id,))
+            return removed
+
+        applied = self._write(apply)
+        self._notify_version(client_id)
+        return {"revoked": bool(applied)}
+
+    def has_account_grant(self, client_id, source_fingerprint, account_id):
+        with self.lock:
+            return self.connection.execute(
+                "SELECT 1 FROM account_grants WHERE client_id=? AND source_fingerprint=? AND account_id=?",
+                (client_id, source_fingerprint, account_id)).fetchone() is not None
+
+    def account_grants(self, client_id, source_fingerprint=None):
+        with self.lock:
+            if source_fingerprint is None:
+                rows = self.connection.execute(
+                    "SELECT * FROM account_grants WHERE client_id=? ORDER BY account_id", (client_id,)).fetchall()
+            else:
+                rows = self.connection.execute(
+                    "SELECT * FROM account_grants WHERE client_id=? AND source_fingerprint=? ORDER BY account_id",
+                    (client_id, source_fingerprint)).fetchall()
+        return [{"accountId": row["account_id"], "sourceFingerprint": row["source_fingerprint"],
+                 "createdAt": row["created_at_ms"]} for row in rows]
+
     def revoke_account_grants(self, account_id):
         """Remove every client's grants for one account and bump each affected auth version.
 
@@ -404,9 +530,11 @@ class McpStore:
             raise McpStoreError(400, "invalid-request", "账号标识不正确")
 
         def apply(db):
-            rows = db.execute("SELECT DISTINCT client_id FROM contact_grants WHERE account_id=?",
-                              (account_id,)).fetchall()
+            rows = db.execute("SELECT DISTINCT client_id FROM contact_grants WHERE account_id=?"
+                              " UNION SELECT DISTINCT client_id FROM account_grants WHERE account_id=?",
+                              (account_id, account_id)).fetchall()
             db.execute("DELETE FROM contact_grants WHERE account_id=?", (account_id,))
+            db.execute("DELETE FROM account_grants WHERE account_id=?", (account_id,))
             for (client_id,) in rows:
                 db.execute("UPDATE clients SET auth_version=auth_version+1 WHERE client_id=?", (client_id,))
             return [row[0] for row in rows]

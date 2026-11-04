@@ -40,6 +40,21 @@ class ForwardingTests(unittest.TestCase):
         core.get.assert_any_call("mcp/calls", limit=50)
         core.get.assert_any_call("mcp/calls", limit=10)
 
+    def test_cli_pairing_requests_are_listed_and_decided(self):
+        service, core = admin({("GET", "mcp/pairing"): {"pairings": [], "accounts": []}})
+        self.assertEqual(service.pairings({}), {"pairings": [], "accounts": []})
+        service.decide_pairing({"pairingId": "zpr_1", "approve": True, "accounts": ["a"],
+                                "capabilities": {"write": True}})
+        core.post.assert_called_with("mcp/pairing/decide", {"pairingId": "zpr_1", "approve": True,
+                                                            "accounts": ["a"], "capabilities": {"write": True}})
+        service.decide_pairing({"pairingId": "zpr_1", "approve": False, "accounts": ["ignored"]})
+        core.post.assert_called_with("mcp/pairing/decide", {"pairingId": "zpr_1", "approve": False})
+        for params in ({"pairingId": "zpr_1"}, {"pairingId": "", "approve": True},
+                       {"pairingId": "zpr_1", "approve": True, "capabilities": {"root": True}},
+                       {"pairingId": "zpr_1", "approve": True, "accounts": "a"}):
+            with self.assertRaises(RpcError):
+                service.decide_pairing(params)
+
     def test_profile_detail_and_writes_carry_the_client_id(self):
         service, core = admin({("GET", f"mcp/profiles/{'mcp_x' * 2}"): {"sourceFingerprint": FINGERPRINT}})
         service.profile({"clientId": "mcp_x" * 2})
@@ -77,6 +92,36 @@ class ForwardingTests(unittest.TestCase):
                 service.grant_contact(broken)
         core.post.assert_called_with("mcp/contacts/revoke", grant)
 
+    def test_scope_and_capability_requests_forward_validated_bodies(self):
+        service, core = admin()
+        # A new profile defaults to the accounts scope and sends no capability it was not given.
+        service.create_profile({"name": "按账号客户端"})
+        core.post.assert_called_with("mcp/profiles", {"name": "按账号客户端", "mode": "accounts"})
+        service.create_profile({"name": "可写客户端", "mode": "accounts", "allowWrite": True,
+                                "allowSend": False, "globalManagement": False})
+        core.post.assert_called_with("mcp/profiles", {"name": "可写客户端", "mode": "accounts",
+                                                      "globalManagement": False, "allowWrite": True,
+                                                      "allowSend": False})
+        service.set_capabilities({"clientId": "c1", "write": True, "send": False})
+        core.post.assert_called_with("mcp/profiles/c1/capabilities", {"write": True, "send": False})
+        service.set_mode({"clientId": "c1", "mode": "accounts"})
+        core.post.assert_called_with("mcp/profiles/c1/mode", {"mode": "accounts"})
+        grant = {"clientId": "c1", "sourceFingerprint": FINGERPRINT, "accountId": "id-A"}
+        service.grant_account(grant)
+        core.post.assert_called_with("mcp/accounts", grant)
+        service.revoke_account(grant)
+        core.post.assert_called_with("mcp/accounts/revoke", grant)
+        calls = core.post.call_count
+        for method, params in (("set_capabilities", {"clientId": "c1"}),
+                               ("set_capabilities", {"clientId": "c1", "write": "yes"}),
+                               ("create_profile", {"name": "x", "allowSend": 1}),
+                               ("grant_account", {**grant, "accountId": ""}),
+                               ("grant_account", {**grant, "sourceFingerprint": None}),
+                               ("revoke_account", {**grant, "clientId": ""})):
+            with self.assertRaises(RpcError):
+                getattr(service, method)(params)
+        self.assertEqual(core.post.call_count, calls)
+
     def test_core_errors_reach_the_page_with_their_code(self):
         service, core = admin()
         core.post.side_effect = CoreError(403, "mcp-admin-forbidden", "MCP 授权只能由本机设置界面管理")
@@ -84,13 +129,15 @@ class ForwardingTests(unittest.TestCase):
             service.revoke({"clientId": "c1"})
         self.assertEqual(caught.exception.code, "mcp-admin-forbidden")
 
-    def test_settings_preselect_defaults_to_full_on_unexpected_shapes(self):
+    def test_settings_preselect_defaults_to_accounts_on_unexpected_shapes(self):
         service, core = admin({("GET", "settings"): {"values": {"defaultMode": "per_contact"}}})
         self.assertEqual(service.settings({}), {"defaultMode": "per_contact"})
         core.get.assert_called_once_with("settings")
         for reply in (None, {}, {"values": {}}, {"values": {"defaultMode": "everything"}}):
             service, core = admin({("GET", "settings"): reply})
-            self.assertEqual(service.settings({})["defaultMode"], "full")
+            self.assertEqual(service.settings({})["defaultMode"], "accounts")
+        service, core = admin({("GET", "settings"): {"values": {"defaultMode": "full"}}})
+        self.assertEqual(service.settings({})["defaultMode"], "full", "legacy full stays selectable")
 
     def test_invalid_shapes_never_reach_core(self):
         service, core = admin()

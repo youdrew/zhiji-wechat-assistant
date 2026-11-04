@@ -312,6 +312,20 @@ class CleanPortableBuildTests(unittest.TestCase):
             self.assertIn(relative, staged)
         self.assertFalse(any("/tests/" in name or "/.local/" in name or name.endswith(".sqlite3") for name in staged))
 
+    def test_client_stage_ships_public_notices_but_no_private_development_docs(self):
+        # Modified by Know Your Friends, 2026-11-04: root docs/ is private development documentation.
+        stage = load("stage_docs_boundary_check", "stage-real-client.py")
+        staged = [relative for _source, relative, _base in stage.public_mappings(builder.ROOT)]
+        # docs covers docs/loop review notes; benchmarks holds analysis outputs.
+        private_roots = {"docs", ".local", "benchmarks", "tests", "release-real-client", "dist"}
+        leaked = [path.as_posix() for path in staged
+                  if path.parts[0].casefold() in private_roots or ".local" in path.parts]
+        self.assertEqual([], leaked)
+        names = {path.as_posix() for path in staged}
+        for public in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "native-reader/THIRD_PARTY_NOTICES.md"):
+            self.assertIn(public, names)
+            self.assertTrue((builder.ROOT / public).is_file())
+
     def test_self_analysis_native_window_ships_main_preload_and_host_page(self):
         actual_stage = load("stage_self_analysis_window", "stage-real-client.py")
         release = load("release_self_analysis_window", "build-windows-release.py")

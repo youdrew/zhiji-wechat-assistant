@@ -170,6 +170,8 @@
     loadDrafts, draft, updateDraft, closeDraft, flushDrafts, savedDrafts: () => drafts.saved,
     selectTab: tab => { void host("tab.select", { tab }).catch(() => { }); },
     get scope() { return window.kyfHost.context() || {}; },
+    // An Agent-opened (read-only) 知己分析 window: no edit controls (its host refuses saves anyway).
+    get restricted() { return (window.kyfHost.context() || {}).restricted === true; },
     get masked() { return masked; },
     get sheetOwner() { return sheetOwner; },
   };

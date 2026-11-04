@@ -12,11 +12,11 @@
 
 适用于 **Windows 10/11 x64、Windows 微信 4.x**。
 
-**2.0.2 免费开源版。** Windows 安装包以[官方发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases)实际提供的附件为准；也可以按下方步骤从源码运行。
+Windows 安装包和校验文件见[最新正式版本](https://github.com/youdrew/zhiji-wechat-assistant/releases/latest)。也可以按下方步骤从源码运行。
 
 下载安装：
 
-1. [直接下载 Windows 2.0.2 安装包](https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.0.2/Zhiji-WeChat-Assistant-2.0.2-Setup-x64.exe)，或到[版本发布页](https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.0.2)查看校验文件和发行说明。
+1. 从[最新正式版本](https://github.com/youdrew/zhiji-wechat-assistant/releases/latest)下载 Windows x64 安装包。
 2. 双击安装，完成后从桌面或开始菜单打开“知己微信助手”。
 3. 按下面的步骤连接模型服务，开始使用。
 
@@ -26,7 +26,7 @@ AI 功能需要自行配置兼容的模型服务；软件不附带模型账号�
 
 ## 能帮你做什么
 
-- **回看聊天**：查看单聊与群聊，按关键词和日期查找，浏览图片、语音与视频。
+- **回看聊天**：查看单聊与群聊，按关键词和日期查找，浏览图片、语音与视频。双击会话可在独立窗口打开。
 - **记住朋友**：整理偏好、边界和共同经历；记忆由你确认，可以编辑、删除并回查原文。
 - **理解交流**：查看好友概述、聊天分析和关系趋势，结合依据了解互动方式。
 - **准备回复**：向聊天助手提问，或按联系人开启“分析与建议”，获取解读和三条可复制回复。
@@ -44,6 +44,19 @@ AI 分析可能有误，请结合实际语境核对。回复建议可复制后�
 4. 打开好友聊天，使用“知己分析”整理记忆，或向聊天助手提问。需要持续建议时，在好友姓名右侧开启“分析与建议”。
 
 聊天助手需要模型支持工具调用；图片及录屏识别需要支持图片输入的模型。API 协议兼容不代表所有模型服务都已验证。
+
+## 连接本机 AI 客户端
+
+安装知己后，在同一台 Windows 电脑运行以下 PowerShell 命令。将 `<安装目录>` 替换为实际安装路径。
+
+```powershell
+$client = "<安装目录>\resources\client"
+& "$client\runtime\python\python.exe" "$client\scripts\zhiji-mcp-cli.py" connect --client claude-code
+```
+
+在知己弹出的窗口选择允许读取的账号，确认后重新打开客户端。默认只读。基础读取无需在知己配置模型，专项分析仍使用知己的模型设置。客户端可选择 `claude-code`、`codex`、`cursor`、`deepseek-harness` 或 `generic`。通用模式会输出配置片段，需要粘贴到客户端。
+
+Claude Code 可加 `--install-hook`，在下一次提问时接收新消息提醒。图片通过 `zhiji_get_media` 返回，显示和识别取决于客户端及所用模型。Agent 可打开授权联系人的只读聊天记录窗口。你也可以在知己设置里撤销客户端授权。
 
 ## 源码运行
 

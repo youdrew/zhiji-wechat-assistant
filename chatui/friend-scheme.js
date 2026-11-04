@@ -49,6 +49,9 @@
     "observations.save": params => A.api("/api/friend/observation", { method: "POST",
       body: pick(params, ["action", "id", "judgement", "note", "dimension", "expectedVersion"]) }),
     "drafts.list": async () => {
+      // A restricted (Agent-opened, read-only) window has no drafts; its UI session refuses
+      // /api/friend/drafts and that refusal would mask the whole window.
+      if (A.restricted) return { drafts: [], closedGenerations: {} };
       const data = await A.api("/api/friend/drafts?" + A.query());
       return { drafts: (data.drafts || []).filter(item => ownDraft(item.entry)),
         closedGenerations: Object.fromEntries(Object.entries(data.closedGenerations || {}).filter(([entry]) => ownDraft(entry))) };
@@ -75,7 +78,9 @@
   function context() {
     return { account: A.scope.account, user: A.scope.user, name: A.scope.name, scheme: S.scheme?.id, tab: S.tab,
       theme: document.body.classList.contains("theme-light") ? "light" : "dark", surface: "scheme",
-      trendSettings: trendSettings() };
+      trendSettings: trendSettings(),
+      // An Agent-opened (read-only) window tells its scheme page to hide edit controls.
+      ...(A.restricted ? { restricted: true } : {}) };
   }
   function postContext() { if (S.frame && S.scheme) S.frame.post(context()); }
   function event(value) { S.frame?.event(value); }

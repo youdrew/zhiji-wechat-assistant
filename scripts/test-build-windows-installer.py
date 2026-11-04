@@ -247,6 +247,30 @@ class BuildOrchestrationTests(unittest.TestCase):
         self.assertIs(result["appUpdatesEnabled"], False)
         record = Path(result["installerBuildDirectory"]) / "installer-verification.json"
         self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["installerSha256"], result["installerSha256"])
+        bootstrap = Path(result["bootstrap"])
+        content = bootstrap.read_bytes()
+        self.assertEqual(bootstrap, Path(result["installer"]).with_name("install-zhiji.ps1"))
+        self.assertTrue(content.startswith(b"\xef\xbb\xbf"))
+        self.assertIn(f"$InstallerSha256 = '{result['installerSha256']}'".encode(), content)
+        self.assertIn(f"$InstallerFileName = '{Path(result['installer']).name}'".encode(), content)
+        self.assertIn(b"$DownloadUrl = '__ZHIJI_DOWNLOAD_URL__'", content)
+        self.assertEqual(result["bootstrapSha256"], hashlib.sha256(content).hexdigest())
+        self.assertIsNone(result["bootstrapDownloadUrl"])
+
+    def test_bootstrap_uses_only_an_explicit_https_asset_url(self):
+        asset = "Zhiji-WeChat-Assistant-1.3.6-Setup-x64.exe"
+        invalid = (f"http://example.test/{asset}", f"https://user@example.test/{asset}",
+                   f"https://example.test/{asset}?expires=1", f"https://example.test/{asset}#fragment",
+                   f"https://example.test/\n{asset}", "https://example.test/other.exe")
+        for url in invalid:
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, "HTTPS URL"):
+                installer.build_installer(self.build, Path("node.exe"), installer_url=url)
+        self.builder.assert_not_called()
+        url = f"https://example.test/publisher's-release/{asset}"
+        result = installer.build_installer(self.build, Path("node.exe"), installer_url=url)
+        self.assertEqual(result["bootstrapDownloadUrl"], url)
+        escaped_url = url.replace("'", "''")
+        self.assertIn(f"$DownloadUrl = '{escaped_url}'", Path(result["bootstrap"]).read_text(encoding="utf-8-sig"))
 
     def test_invalid_clean_stage_or_unstable_version_stops_before_builder(self):
         self.verify.side_effect = ValueError("client hash differs")

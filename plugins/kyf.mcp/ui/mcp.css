@@ -72,6 +72,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .mcp-fieldline select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
 .mcp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .mcp-check input { accent-color: var(--green); }
+.mcp-capabilities { flex-wrap: wrap; gap: 6px 16px; }
+.mcp-matrix-note { padding: 0 10px 8px; }
+.mcp-dialog-accounts { padding: 0; max-height: 180px; overflow: auto; }
+.mcp-dialog-capabilities { display: flex; flex-direction: column; gap: 6px; }
 
 .mcp-matrix { border: 1px solid var(--line); border-radius: 4px; }
 .mcp-matrix-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }

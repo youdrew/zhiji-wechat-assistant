@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import backend_contracts
 import model_source
@@ -29,7 +30,8 @@ CORE_MODULES = ("backend_contracts", "backend_service", "message_input", "wechat
 # the on-demand confirm window, with every bridge module they newly import.
 MCP_RUNTIME_MODULES = ("core_mcp_proxy", "core_mcp_store", "core_mcp_admin", "core_mcp_offline",
                        "core_mcp_tasks", "core_mcp_assistant", "core_mcp_import",
-                       "core_mcp_manage", "core_mcp_confirm", "core_mcp_confirm_window", "core_leases")
+                       "core_mcp_manage", "core_mcp_confirm", "core_mcp_confirm_window", "core_mcp_pairing",
+                       "core_mcp_pairing_window", "core_leases")
 RETIRED_MODULES = ("api_portrait_ledger", "api_portrait_statistics", "api_tasks", "batch_engine", "batch_state",
                    "message_results", "node_analysis", "local_model_source", "model_bundle", "model_install",
                    "portrait_contracts", "profile_state", "real_backend", "result_store", "message_contracts")
@@ -218,6 +220,33 @@ print('STAGED_MCP_IMPORTS_OK')
             empty = ElectronConfirmPresenter(root / "nowhere", "http://127.0.0.1:9")
             with self.assertRaises(ConfirmUnavailable):
                 empty._spawn({"confirmId": "c", "expiresAtMs": 0})
+
+    def test_packaged_confirmation_helpers_use_the_outer_app(self):
+        from core_mcp_confirm_window import ElectronConfirmPresenter
+        from core_mcp_pairing_window import ElectronPairingPresenter
+        from core_runtime import electron_sidecar_command
+
+        with tempfile.TemporaryDirectory() as temporary, patch.dict("os.environ", {"KYF_ELECTRON": ""}):
+            install = Path(temporary)
+            root = install / "resources" / "client"
+            root.mkdir(parents=True)
+            executable = install / "KnowYourFriends.exe"
+            executable.touch()
+            self.assertIsNone(electron_sidecar_command(root, "pairing-window"))
+            (root.parent / "app.asar").touch()
+
+            commands = []
+
+            def launch(command, _line):
+                commands.append(command)
+
+            ElectronPairingPresenter(root, launcher=launch)._spawn({"pairingId": "synthetic"})
+            ElectronConfirmPresenter(root, "http://127.0.0.1:9", launcher=launch)._spawn({"confirmId": "synthetic"})
+            self.assertEqual(commands, [[str(executable), "--kyf-sidecar", "pairing-window"],
+                                        [str(executable), "--kyf-sidecar", "confirm-window"]])
+            self.assertIsNone(electron_sidecar_command(root / "elsewhere", "pairing-window"))
+            with self.assertRaises(ValueError):
+                electron_sidecar_command(root, "../arbitrary-script")
 
     def test_analysis_modules_live_in_their_plugin_and_ship_with_the_sdk(self):
         for name in PLUGIN_MODULES:

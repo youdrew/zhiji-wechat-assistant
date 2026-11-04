@@ -69,7 +69,8 @@ class McpRouteTests(unittest.TestCase):
                             {"clientId": client_id, "credential": credential})
 
     def pair(self, name, mode="per_contact"):
-        created = self.mcp.store.create_profile(name, mode)
+        from test_core_mcp import legacy_capabilities
+        created = self.mcp.store.create_profile(name, mode, **legacy_capabilities(mode))
         status, result = self.handshake(created["clientId"], created["credential"])
         self.assertEqual(status, 200)
         return created, result
@@ -95,16 +96,16 @@ class McpRouteTests(unittest.TestCase):
                           'zhiji_delete_account', 'zhiji_delete_assistant_skill', 'zhiji_delete_assistant_template',
                           'zhiji_delete_memory', 'zhiji_delete_observation', 'zhiji_edit_self_timeline',
                           'zhiji_enable_assistant_template',
-                          'zhiji_get_assistant_catalog', 'zhiji_get_assistant_run', 'zhiji_get_assistant_thread',
-                          'zhiji_get_contact_goal', 'zhiji_get_friend_analysis', 'zhiji_get_import_batch',
+                          'zhiji_find_contacts', 'zhiji_get_assistant_catalog', 'zhiji_get_assistant_run', 'zhiji_get_assistant_thread',
+                          'zhiji_get_contact', 'zhiji_get_contact_brief', 'zhiji_get_contact_goal', 'zhiji_get_friend_analysis', 'zhiji_get_import_batch',
                           'zhiji_get_import_messages', 'zhiji_get_media', 'zhiji_get_memory_evidence',
                           'zhiji_get_message_context', 'zhiji_get_message_insights', 'zhiji_get_model_settings',
-                          'zhiji_get_plugins', 'zhiji_get_self_analysis', 'zhiji_get_self_profile',
+                          'zhiji_get_plugins', 'zhiji_get_recent_messages', 'zhiji_get_self_analysis', 'zhiji_get_self_profile',
                           'zhiji_get_task', 'zhiji_get_usage',
                           'zhiji_import_assistant_skill', 'zhiji_list_accounts', 'zhiji_list_assistant_friends',
                           'zhiji_list_assistant_threads', 'zhiji_list_import_batches', 'zhiji_list_import_candidates',
                           'zhiji_list_import_contacts', 'zhiji_list_memories', 'zhiji_list_observations',
-                          'zhiji_new_assistant_thread', 'zhiji_ping', 'zhiji_remove_import_material',
+                          'zhiji_list_recent_conversations', 'zhiji_new_assistant_thread', 'zhiji_ping', 'zhiji_remove_import_material',
                           'zhiji_save_assistant_template', 'zhiji_save_contact_goal', 'zhiji_save_import_batch',
                           'zhiji_save_model_settings', 'zhiji_save_observation', 'zhiji_save_self_profile',
                           'zhiji_search_messages', 'zhiji_set_plugin_enabled',
@@ -258,6 +259,78 @@ class ControlLeaseTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["mcpConnections"], 0)
         self.assertEqual(self.request("/api/control/background", {"extra": 1})[0], 400)
+
+
+class McpPairingRouteTests(McpRouteTests):
+    """G12 loopback pairing routes: request/poll/cancel/revoke only, never an approval."""
+
+    def setUp(self):
+        super().setUp()
+        from core_mcp_pairing import McpPairingService
+        self.mcp.pairing = McpPairingService(self.mcp, presenter=None)
+
+    def test_request_poll_cancel_roundtrip(self):
+        status, started = self.request("POST", "/api/mcp/pairing/request", {"name": "Claude Code", "client": "claude-code"})
+        self.assertEqual(status, 200)
+        self.assertEqual(started["state"], "pending")
+        owned = {"pairingId": started["pairingId"], "pollSecret": started["pollSecret"]}
+        status, polled = self.request("POST", "/api/mcp/pairing/poll", owned)
+        self.assertEqual((status, polled["state"]), (200, "pending"))
+        self.assertNotIn("credential", polled)
+        status, wrong = self.request("POST", "/api/mcp/pairing/poll", {**owned, "pollSecret": "zps_x"})
+        self.assertEqual((status, wrong["error"]), (403, "pairing-poll-invalid"))
+        status, cancelled = self.request("POST", "/api/mcp/pairing/cancel", owned)
+        self.assertEqual((status, cancelled["state"]), (200, "cancelled"))
+
+    def test_disabling_mcp_blocks_pairing_approval_and_credential_delivery(self):
+        from core_mcp_proxy import McpError
+        for gate, code in (("master", "mcp-disabled"), ("plugin", "mcp-plugin-disabled")):
+            with self.subTest(gate=gate):
+                status, approved = self.request("POST", "/api/mcp/pairing/request",
+                                                {"name": "approved", "client": "generic"})
+                self.assertEqual(status, 200)
+                self.mcp.pairing.decide(approved["pairingId"], True)
+                status, pending = self.request("POST", "/api/mcp/pairing/request",
+                                               {"name": "pending", "client": "generic"})
+                self.assertEqual(status, 200)
+                if gate == "master":
+                    self.mcp.store.set_master_enabled(False)
+                else:
+                    self.mcp.plugin_gate = lambda: False
+                try:
+                    with self.assertRaises(McpError) as caught:
+                        self.mcp.pairing.decide(pending["pairingId"], True)
+                    self.assertEqual(caught.exception.code, code)
+                    for ticket in (approved, pending):
+                        owned = {key: ticket[key] for key in ("pairingId", "pollSecret")}
+                        status, body = self.request("POST", "/api/mcp/pairing/poll", owned)
+                        self.assertEqual((status, body["error"]), (403, code))
+                        self.assertNotIn("credential", body)
+                    self.assertEqual(self.mcp.store.list_profiles(), [])
+                finally:
+                    self.mcp.store.set_master_enabled(True)
+                    self.mcp.plugin_gate = None
+
+    def test_loopback_cannot_approve_and_shapes_are_checked(self):
+        status, started = self.request("POST", "/api/mcp/pairing/request", {"name": "合成", "client": "generic"})
+        owned = {"pairingId": started["pairingId"], "pollSecret": started["pollSecret"]}
+        for route in ("decide", "approve", "request/extra"):
+            status, body = self.request("POST", "/api/mcp/pairing/" + route,
+                                        {**owned, "approve": True, "accounts": ["external-chat"]})
+            self.assertEqual((status, body["error"]), (404, "not-found"), route)
+        self.assertEqual(self.request("POST", "/api/mcp/pairing/poll", owned)[1]["state"], "pending")
+        self.assertEqual(self.request("GET", "/api/mcp/pairing/poll")[0], 405)
+        status, body = self.request("POST", "/api/mcp/pairing/request", {"name": "x"})
+        self.assertEqual((status, body["error"]), (400, "invalid-request"))
+        # An MCP connection token grants nothing on these routes either.
+        created, token = self.pair("已配对客户端", mode="full")
+        status, body = self.request("POST", "/api/mcp/pairing/decide", owned,
+                                    headers={"Authorization": "Bearer " + token["token"]})
+        self.assertEqual(status, 404)
+        # Without the service the routes report unavailable instead of falling through.
+        self.mcp.pairing = None
+        status, body = self.request("POST", "/api/mcp/pairing/poll", owned)
+        self.assertEqual((status, body["error"]), (503, "pairing-unavailable"))
 
 
 if __name__ == "__main__":

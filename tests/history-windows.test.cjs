@@ -11,7 +11,7 @@ const CLIENT = "http://127.0.0.1:34567/";
 const A = { account: "synthetic-account", user: "wxid_a", name: "联系人甲", theme: "light" };
 const B = { ...A, user: "group@chatroom", name: "合成群聊" };
 
-function harness() {
+function harness({ withChat = false } = {}) {
   const made = [], handlers = new Map(), images = [];
   class Window extends EventEmitter {
     constructor(options) {
@@ -36,15 +36,21 @@ function harness() {
   const main = new Window({});
   main.webContents.mainFrame.url = CLIENT;
   main.webContents.session = { synthetic: true };
-  const trustedMainFrame = event => event.sender === main.webContents && event.senderFrame === main.webContents.mainFrame &&
-    event.senderFrame.url === CLIENT;
+  // An independent chat window stands next to the main window when asked for.
+  const chat = withChat ? new Window({}) : null;
+  if (chat) chat.webContents.mainFrame.url = CLIENT + "index.html?window=chat";
+  const owners = [main, chat].filter(Boolean);
+  const trustedMainFrame = event => owners.some(win => event.sender === win.webContents &&
+    event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === win.webContents.mainFrame.url) &&
+    (event.sender !== main.webContents || event.senderFrame.url === CLIENT);
   const manager = createHistoryWindows({ BrowserWindow: Window, mainWindow: main, clientUrl: CLIENT,
+    ...(chat ? { openerWindow: event => owners.find(win => win.webContents === event.sender) ?? null } : {}),
     trustedMainFrame, ipcMain: { handle: (name, callback) => handlers.set(name, callback), removeHandler: name => handlers.delete(name) },
     openImagePreview: scope => { images.push(scope); return true; }, screen: {
       getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
     } });
   const event = win => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
-  return { manager, main, made, handlers, images, event };
+  return { manager, main, chat, made, handlers, images, event };
 }
 
 test("history is a sandboxed independent window reused only for the same account and conversation", () => {
@@ -227,4 +233,21 @@ test("portable and update packages include the complete history window runtime",
     assert.ok(stagedUi.includes(relative), `client resources include ${relative}`);
     assert.equal(fs.existsSync(path.join(projectRoot, relative)), true);
   }
+});
+
+test("a chat window opens history; locate returns to it while it is open, then to the main window", () => {
+  const h = harness({ withChat: true });
+  assert.equal(h.handlers.get("history:open")(h.event(h.chat), A, true), true);
+  const win = h.made[2], target = { account: A.account, user: A.user, cursor: "synthetic-cursor", messageId: "synthetic-message" };
+  h.chat.minimized = true;
+  assert.equal(h.handlers.get("history:locate")(h.event(win), target, true), true);
+  assert.deepEqual(h.chat.sent.at(-1), ["history:locate", target]);
+  assert.equal(h.chat.minimized, false);
+  assert.equal(h.main.sent.length, 0);
+  h.chat.destroy();
+  assert.equal(h.handlers.get("history:locate")(h.event(win), target, true), true);
+  assert.deepEqual(h.main.sent.at(-1), ["history:locate", target]);
+  // Reopening from the main window makes it the opener again.
+  assert.equal(h.handlers.get("history:open")(h.event(h.main), A, true), true);
+  assert.equal(h.made.length, 3);
 });

@@ -1,9 +1,10 @@
 /* Know Your Friends, 2026-10-13. Apache-2.0. Local conversation pin and delete menu. */
+/* Modified 2026-11-04: 在独立窗口中打开 pops the conversation out when the desktop host offers it. */
 (function (host) {
   "use strict";
 
   const attachedRows = new WeakSet();
-  let config = null, menu = null, pinButton = null, deleteButton = null;
+  let config = null, menu = null, pinButton = null, windowButton = null, deleteButton = null;
   let target = null, initialized = false;
   const storageKey = account => `conversation-pins-v1:${account}`;
   const epoch = state => state.conversationSelectionEpoch ?? 0;
@@ -72,7 +73,9 @@
     if (!target) return;
     if (!validTarget()) { close(); return; }
     pinButton.textContent = isPinned(config.state.sessions.get(target.user)) ? "取消置顶" : "置顶";
+    if (windowButton) windowButton.hidden = typeof config.openChatWindow !== "function";
   }
+  const menuItems = () => [pinButton, windowButton, deleteButton].filter(item => item && !item.hidden);
 
   function open(row, x, y) {
     close();
@@ -137,6 +140,13 @@
     config.setStatus(pinned ? "会话已置顶" : "已取消置顶");
   }
 
+  function openWindow() {
+    if (!validTarget() || typeof config.openChatWindow !== "function") { close(); return; }
+    const captured = target;
+    close();
+    config.openChatWindow(captured.user);
+  }
+
   function removeConversation() {
     if (!validTarget()) { close(); return; }
     const captured = target;
@@ -152,9 +162,11 @@
     pinButton = config.byId("btnPinConversation");
     deleteButton = config.byId("btnDeleteConversation");
     if (!menu || !pinButton || !deleteButton) return;
+    windowButton = config.byId("btnOpenConversationWindow") || null;
     initialized = true;
     menu.hidden = true;
     pinButton.addEventListener("click", togglePin);
+    windowButton?.addEventListener("click", openWindow);
     deleteButton.addEventListener("click", removeConversation);
     menu.addEventListener("contextmenu", event => event.preventDefault());
     menu.addEventListener("keydown", event => {
@@ -162,7 +174,7 @@
       if (!validTarget()) { close(); return; }
       event.preventDefault();
       event.stopPropagation();
-      const items = [pinButton, deleteButton];
+      const items = menuItems();
       const current = items.indexOf(document.activeElement);
       let next;
       if (event.key === "Home") next = 0;

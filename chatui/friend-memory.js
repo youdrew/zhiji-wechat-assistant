@@ -71,13 +71,16 @@
     body.append(meta);
     const actions = A.el("div", "fa-item-actions");
     if (item.evidenceCount) actions.append(A.button("原文", "fa-plain", () => openEvidence(item)));
-    if (item.status === "pending" && item.relation !== "conflict") {
-      actions.append(A.button(item.relation === "supplement" ? "确认合并" : "确认", "fa-plain", () => decide(item, "confirm")),
-        A.button("忽略", "fa-plain", () => decide(item, "ignore")));
-    } else if (item.status === "pending") {
-      actions.append(A.button("忽略", "fa-plain", () => decide(item, "ignore")));
-    } else if (item.status === "confirmed") {
-      actions.append(A.button("编辑", "fa-plain", () => startEdit(item)), A.button("删除", "fa-plain", () => remove(item)));
+    // A restricted (Agent-opened, read-only) window shows records without review or edit actions.
+    if (!A.restricted) {
+      if (item.status === "pending" && item.relation !== "conflict") {
+        actions.append(A.button(item.relation === "supplement" ? "确认合并" : "确认", "fa-plain", () => decide(item, "confirm")),
+          A.button("忽略", "fa-plain", () => decide(item, "ignore")));
+      } else if (item.status === "pending") {
+        actions.append(A.button("忽略", "fa-plain", () => decide(item, "ignore")));
+      } else if (item.status === "confirmed") {
+        actions.append(A.button("编辑", "fa-plain", () => startEdit(item)), A.button("删除", "fa-plain", () => remove(item)));
+      }
     }
     main.append(body, actions);
     row.append(main);
@@ -90,7 +93,7 @@
     const block = A.el("div", "fa-related", "相关原记录读取中…");
     void A.api("/api/friend/memory?" + A.query({ id: item.relatedId })).then(data => {
       block.textContent = (item.relation === "supplement" ? "将合并到：" : "原记录：") + data.memory.text;
-      if (item.relation === "conflict") {
+      if (item.relation === "conflict" && !A.restricted) {
         const choice = A.el("div", "fa-choice");
         choice.append(A.button("保留原记录", "fa-secondary", () => decide(item, "confirm", "keep")),
           A.button("采用新说法", "fa-secondary", () => decide(item, "confirm", "adopt")),
@@ -105,7 +108,7 @@
     const fragment = document.createDocumentFragment();
     const head = A.el("div", "fa-group");
     head.append(A.el("span", "", title), A.el("span", "fa-spacer"));
-    if (batch) for (const [label, action] of batch) head.append(A.button(label, "fa-plain", action));
+    if (batch && !A.restricted) for (const [label, action] of batch) head.append(A.button(label, "fa-plain", action));
     const list = A.el("div", "fa-list");
     for (const item of items) list.append(itemRow(item));
     fragment.append(head, list);
@@ -136,7 +139,8 @@
       segment.append(A.button(label, "", () => { if (M.view !== view) { M.view = view; void load(); } },
         { "aria-pressed": String(M.view === view) }));
     // Analysis schemes propose candidates; this host page reviews and edits the user's memories.
-    bar.append(segment, A.el("span", "fa-spacer"), A.button("新增", "fa-plain", () => startAdd()));
+    bar.append(segment, A.el("span", "fa-spacer"));
+    if (!A.restricted) bar.append(A.button("新增", "fa-plain", () => startAdd()));
     root.append(bar);
     if (M.adding) {
       const block = A.el("div", "fa-list");
@@ -151,7 +155,7 @@
         root.append(A.el("div", "fa-group", `待确认 ${M.pending.length} 条`));
         const head = root.lastChild;
         head.append(A.el("span", "fa-spacer"));
-        for (const [label, action] of all) head.append(A.button(label, "fa-plain", action));
+        if (!A.restricted) for (const [label, action] of all) head.append(A.button(label, "fa-plain", action));
         for (const tag of TAGS) {
           const items = shown.filter(item => firstTag(item) === tag);
           if (items.length) root.append(group(`${tag} · ${items.length}`, items, [
@@ -350,7 +354,7 @@
         row.append(A.el("div", "fa-msg-text", message.media ? `[${message.media.kind === "voice" ? "语音" : "媒体"}，内容未在此加载]` : message.text));
         container.append(row);
       }
-      if (data.locatable && window.friendHost?.locate) {
+      if (data.locatable && window.friendHost?.locate && !A.restricted) {
         container.append(A.button("在聊天中定位", "fa-secondary", async () => {
           try {
             const target = await A.api("/api/friend/locate", { method: "POST", body: { id: item.id, ordinal: evidence.ordinal } });

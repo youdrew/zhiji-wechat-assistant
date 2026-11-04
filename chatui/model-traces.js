@@ -3,6 +3,7 @@
 // The main page keeps the developer-mode settings and opens the 模型调用 window. In that window a
 // call record shows the captured request, response and errors of its attempt through this viewer.
 (function () {
+  if (window.desktopHost?.isChatWindow) return;
   const $ = id => document.getElementById(id);
   const UNKNOWN = "未采集";
   const KINDS = { request: [["request", "原始请求"]], response: [["text", "模型正文"], ["response", "原始返回"], ["result", "应用结果"]] };

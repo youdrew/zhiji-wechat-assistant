@@ -8,16 +8,18 @@ const source = fs.readFileSync(path.join(__dirname, 'desktop-main.cjs'), 'utf8')
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 async function launch(isPackaged, stdout, options = {}) {
-  const calls = { errors: [], launches: [], shellLoads: 0, profiles: [], quit: 0 };
+  const calls = { errors: [], launches: [], shellLoads: 0, profiles: [], quit: 0, sidecars: [], output: [], exits: [] };
   const env = { CHATUI_PORT: '8805', PATH: 'synthetic-path', ...options.env };
   const processStub = {
-    env, argv: [], resourcesPath: path.join(__dirname, 'synthetic-resources'),
+    env, argv: options.argv || [], resourcesPath: path.join(__dirname, 'synthetic-resources'),
+    stdout: { write: (line, done) => { calls.output.push(JSON.parse(line)); done(); } },
   };
   const app = {
     isPackaged,
     setPath: (name, value) => calls.profiles.push({ name, value }),
     whenReady: () => Promise.resolve(),
     quit: () => { calls.quit += 1; },
+    exit: code => calls.exits.push(code),
   };
   const fakeFs = { existsSync: () => true, mkdirSync: () => {} };
   const fakeChild = {
@@ -26,13 +28,18 @@ async function launch(isPackaged, stdout, options = {}) {
       queueMicrotask(() => done(options.execError || null, stdout));
     },
   };
-  vm.runInNewContext(source, {
+  // Match the CommonJS wrapper: the packaged sidecar may return without starting the desktop.
+  vm.runInNewContext(`(function () {\n${source}\n})()`, {
     require: name => {
       if (name === 'electron') return { app, dialog: { showErrorBox: (...args) => calls.errors.push(args) } };
       if (name === 'node:child_process') return fakeChild;
       if (name === 'node:fs') return fakeFs;
       if (name === 'node:path') return path;
       if (name === './real-client-recovery.cjs') return require('./real-client-recovery.cjs');
+      if (name.startsWith(path.join(clientRoot(true), 'scripts') + path.sep)) {
+        calls.sidecars.push(name);
+        return {};
+      }
       if (name === './real-client-shell.cjs') {
         calls.shellLoads += 1;
         if (options.shellThrows) throw new Error('synthetic shell init failure');
@@ -61,7 +68,54 @@ function cleanupLaunches(calls) {
 }
 
 async function main() {
+  for (const kind of ['ui-host', 'pairing-window', 'confirm-window']) {
+    const args = kind === 'ui-host' ? ['--client-url', 'http://127.0.0.1:34567/'] : [];
+    const { calls, processStub } = await launch(true, '', { argv: ['KnowYourFriends.exe', '--kyf-sidecar', kind, ...args] });
+    const entry = path.join(clientRoot(true), 'scripts', `${kind}.cjs`);
+    assert.deepEqual(calls.sidecars, [entry]);
+    assert.deepEqual(processStub.argv.slice(1), [entry, ...args]);
+    assert.equal(calls.launches.length, 0);
+    assert.equal(calls.profiles.length, 0);
+  }
+  for (const bad of [['../arbitrary'], ['pairing-window', '--user-data', 'elsewhere'],
+    ['ui-host', '--client-url', 'http://example.invalid:34567/'], ['ui-host', '--client-url', 'http://127.0.0.1:65536/']]) {
+    const { calls } = await launch(true, '', { argv: ['KnowYourFriends.exe', '--kyf-sidecar', ...bad] });
+    assert.deepEqual(calls.sidecars, []);
+    assert.deepEqual(calls.exits, [2]);
+    assert.equal(calls.output[0].code, 'sidecar-unavailable');
+    assert.equal(calls.launches.length, 0);
+  }
+
   const instanceId = 'a'.repeat(64);
+  // Core hands a running GUI a module: the shell starts at once, without the launcher.
+  for (const extra of [[], ['--open-module', 'settings']]) {
+    const args = ['--client-url', 'http://127.0.0.1:34567/', ...extra];
+    const { calls, processStub } = await launch(true, '', {
+      argv: ['KnowYourFriends.exe', '--kyf-shell', ...args], env: { KYF_INSTANCE_ID: instanceId } });
+    assert.equal(calls.launches.length, 0);
+    assert.equal(calls.shellLoads, 1);
+    assert.deepEqual(processStub.argv.slice(1), args);
+    assert.equal(processStub.env.CHATUI_PORT, '34567');
+    assert.equal(processStub.env.KYF_BRIDGE_CREATED, '0');
+    assert.equal(processStub.env.KYF_CLIENT_ROOT, clientRoot(true));
+    assert.equal(calls.profiles[0].name, 'userData');
+    assert.deepEqual(calls.exits, []);
+  }
+  for (const [argv, env] of [
+    [['--client-url', 'http://example.invalid:34567/'], { KYF_INSTANCE_ID: instanceId }],
+    [['--client-url', 'http://127.0.0.1:34567/', '--open-module', '../x'], { KYF_INSTANCE_ID: instanceId }],
+    [['--client-url', 'http://127.0.0.1:34567/', '--user-data', 'x'], { KYF_INSTANCE_ID: instanceId }],
+    [['--client-url', 'http://127.0.0.1:34567/', '--open-module', 'chat', '--chat-account=a', '--chat-user=u'], { KYF_INSTANCE_ID: instanceId }],
+    [['--client-url', 'http://127.0.0.1:34567/'], {}]]) {
+    const { calls } = await launch(true, '', { argv: ['KnowYourFriends.exe', '--kyf-shell', ...argv], env });
+    assert.equal(calls.shellLoads, 0);
+    assert.equal(calls.launches.length, 0);
+    assert.deepEqual(calls.exits, [2]);
+  }
+  // Only the installed build has this entry; development keeps the normal launch.
+  const devShell = await launch(false, validResult(false), { argv: ['electron', '--kyf-shell'] });
+  assert.equal(devShell.calls.launches.length, 1);
+
   for (const isPackaged of [false, true]) {
     const { calls, processStub } = await launch(isPackaged, validResult(true));
     assert.equal(calls.launches.length, 1);

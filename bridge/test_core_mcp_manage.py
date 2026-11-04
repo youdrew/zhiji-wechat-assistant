@@ -64,7 +64,8 @@ def handshake(mcp, created):
 
 
 def pair(mcp, name="合成客户端", mode="full", **kwargs):
-    created = mcp.store.create_profile(name, mode, **kwargs)
+    from test_core_mcp import legacy_capabilities
+    created = mcp.store.create_profile(name, mode, **legacy_capabilities(mode, **kwargs))
     return handshake(mcp, created), created
 
 
@@ -514,6 +515,37 @@ class DeletionConfirmationTests(unittest.TestCase):
             self.mcp.call(self.principal, {"action": "zhiji_delete_account", "account": "acc-z",
                                            "requestId": "req-del-1", "params": {}})
         self.assertEqual(caught.exception.code, "account-unknown")
+
+    def test_delete_account_requires_the_account_in_scope_in_every_mode(self):
+        # accounts / per_contact 统一：manage 能力 + 目标账号在可读范围内；完全访问=任意账号。
+        cases = []
+        accounts_principal, accounts = pair(self.mcp, "按账号客户端", "accounts", global_management=True)
+        self.store.grant_account(accounts["clientId"], FINGERPRINT, "acc-a")
+        cases.append(("accounts", handshake(self.mcp, accounts)))
+        _per_principal, per = pair(self.mcp, "逐联系人管理客户端", "per_contact", global_management=True)
+        self.store.grant_contact(per["clientId"], FINGERPRINT, "acc-a", "wechat_contact", "好友1")
+        cases.append(("per_contact", handshake(self.mcp, per)))
+        for mode, principal in cases:
+            with self.subTest(mode=mode):
+                for step in ({}, {"confirmationId": "c-forged"}):
+                    with self.assertRaises(McpError) as caught:
+                        self.mcp.call(principal, {"action": "zhiji_delete_account", "account": "acc-b",
+                                                  "requestId": f"req-{mode}-{len(step)}", "params": step})
+                    self.assertEqual(caught.exception.code, "account-not-authorized")
+                window = FakeWindow(self.bridge.confirm, True)
+                self.bridge.confirm.presenter = window
+                result = self.mcp.call(principal, {"action": "zhiji_delete_account", "account": "acc-a",
+                                                   "requestId": f"req-{mode}-ok", "params": {}})
+                self.assertEqual(result["state"], "pending_confirmation")
+                window.wait_shown()
+        # Without manage the capability check refuses first, in every mode.
+        _plain, plain = pair(self.mcp, "逐联系人只读", "per_contact")
+        self.store.grant_contact(plain["clientId"], FINGERPRINT, "acc-a", "wechat_contact", "好友1")
+        with self.assertRaises(McpError) as caught:
+            self.mcp.call(handshake(self.mcp, plain), {"action": "zhiji_delete_account", "account": "acc-a",
+                                                       "requestId": "req-plain", "params": {}})
+        self.assertEqual(caught.exception.code, "management-not-enabled")
+        self.assertEqual(self.deleted, [])
 
     def test_deletion_records_only_ids_in_the_call_log(self):
         result, _payload = self.begin()

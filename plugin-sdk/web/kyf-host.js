@@ -20,7 +20,8 @@
 //                                       "directory"} -> {token, label} | null (token = one-time Core file
 //                                       grant for this plugin); panel only: "panel.close" -> {ok}.
 //   kyfHost.context()                -> {account, user, name, plugin, theme, surface: "nav" | "panel" | "scheme",
-//                                       ...surface fields, e.g. scheme and tab in the 知己分析 window}
+//                                       ...surface fields, e.g. scheme and tab in the 知己分析 window;
+//                                       restricted: true in an Agent-opened read-only window}
 //   kyfHost.on(listener)             -> context changes and host events ({type: "context" | "event", ...}).
 //                                       Events: "account-cleared" {account}; panel: "visibility" {visible},
 //                                       "quote" {account, user, messageId, text, side?: "self" | "other",

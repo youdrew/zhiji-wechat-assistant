@@ -246,6 +246,7 @@
       } catch (error) {
         if (!current()) return;
         if (["AccountChangedError", "AccountUnavailableError", "account-paused", "account-closed"].includes(error.code)) { suspend(); return; }
+        if (error.code === "ui-session-forbidden") { suspend("此聊天记录窗口的授权已失效。"); return; }
         status.textContent = "读取失败，请重试"; retry.hidden = false;
       } finally {
         if (request === serial) { pending = false; controller = null; updatePaging(); }
@@ -278,7 +279,9 @@
 
   if (document.body.classList.contains("history-window")) void (async () => {
     const params = new URLSearchParams(window.location.hash.slice(1));
-    const scope = await window.historyHost?.getContext?.() || Object.fromEntries(params);
+    const host = window.historyHost;
+    const restricted = !host && params.get("restricted") === "1";
+    const scope = await host?.getContext?.() || Object.fromEntries(params);
     if (![scope.account, scope.user].every(value => typeof value === "string" && value && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value))) {
       document.getElementById("historyRoot").textContent = "请从聊天打开聊天记录。"; return;
     }
@@ -288,11 +291,17 @@
       if (!response.ok || data?.error) throw Object.assign(new Error("History request failed"), { code: data?.error });
       return data;
     };
+    // The Agent host isolates storage and Core pins every history/media request to this account and contact.
+    if (restricted) {
+      const browser = create({ container: document.getElementById("historyRoot"), scope, api });
+      window.addEventListener("beforeunload", browser.destroy);
+      return;
+    }
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(scope.account));
     const accountId = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
     const validateScope = async signal => (await api("/api/accounts", {}, signal)).currentAccountId === accountId;
     const browser = create({ container: document.getElementById("historyRoot"), scope, api, validateScope,
-      onLocate: target => { void window.historyHost?.locate?.(target); } });
+      onLocate: target => { void host?.locate?.(target); } });
     let channel;
     try { channel = new BroadcastChannel("kyf-friend-analysis"); } catch { }
     channel?.addEventListener("message", event => {
@@ -301,7 +310,7 @@
       if (message?.type === "account" && typeof message.value === "string" && message.value !== scope.account ||
           message?.type === "account-cleared" && message.value === accountId || message?.type === "host-gone") browser.suspend();
     });
-    const unsubscribe = window.historyHost?.onHostEvent?.(event => {
+    const unsubscribe = host?.onHostEvent?.(event => {
       if (event?.theme) theme(event.theme);
       if (event?.type === "focus" || event?.type === "service-restored") void browser.refresh();
     });

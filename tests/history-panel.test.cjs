@@ -83,11 +83,13 @@ function harness(options = {}) {
     } } };
   // A standalone history window bootstraps itself from the desktop host context.
   const channels = [], standalone = {};
-  if (options.standalone) {
+  if (options.standalone || options.restricted) {
     body.classList.add("history-window");
     document.getElementById = id => id === "historyRoot" ? container : null;
-    Object.assign(window, { addEventListener() {}, historyHost: { getContext: async () => ({ ...scope, theme: "dark" }),
-      locate: async target => { locates.push(target); return true; }, onHostEvent: () => () => {} } });
+    window.addEventListener = () => {};
+    if (options.restricted) window.location.hash = "#" + new URLSearchParams({ ...scope, restricted: "1" });
+    else window.historyHost = { getContext: async () => ({ ...scope, theme: "dark" }),
+      locate: async target => { locates.push(target); return true; }, onHostEvent: () => () => {} };
     const accountId = require("node:crypto").createHash("sha256").update(scope.account).digest("hex");
     Object.assign(standalone, { TextEncoder,
       crypto: { subtle: { digest: async (_name, data) => require("node:crypto").createHash("sha256").update(data).digest() } },
@@ -95,7 +97,8 @@ function harness(options = {}) {
         addEventListener(_type, callback) { this.listeners.push(callback); } close() {} },
       fetch: async (url, init = {}) => {
         const target = new URL(url, window.location.href);
-        if (target.pathname === "/api/accounts") return { ok: true, json: async () => ({ currentAccountId: accountId }) };
+        if (target.pathname === "/api/accounts" && !options.restricted)
+          return { ok: true, json: async () => ({ currentAccountId: accountId }) };
         requests.push({ url: target, signal: init.signal });
         const value = await responder({ url: target, signal: init.signal }, requests.length);
         return { ok: true, json: async () => value };
@@ -110,7 +113,7 @@ function harness(options = {}) {
     const request = { url: new URL(url, window.location.href), signal }; requests.push(request);
     return responder(request, requests.length);
   };
-  const browser = options.standalone ? null : window.ChatHistory.create({ container, scope: { ...scope }, api,
+  const browser = options.standalone || options.restricted ? null : window.ChatHistory.create({ container, scope: { ...scope }, api,
     onLocate: target => locates.push(target), onClose: () => { env.closed = true; },
     ...(options.validateScope ? { validateScope: options.validateScope } : {}) });
   const root = () => container.querySelector(".history-browser");
@@ -136,6 +139,21 @@ test("opens with current conversation history and all requested categories witho
   assert.equal(h.control("上一页").hidden, true); assert.equal(h.control("下一页").hidden, true);
   assert.equal(h.find("textarea"), null);
   assert.match(h.find("h1").textContent, /合成朋友/);
+});
+
+test("the restricted history page has no account directory, shared channel, locate or composer", async () => {
+  const h = harness({ restricted: true }); await settle();
+  assert.deepEqual(h.requests.map(request => request.url.pathname), ["/api/history/search"]);
+  assert.equal(h.find(".history-records").children.length, 1);
+  assert.equal(h.channels.length, 0);
+  assert.equal(h.find(".history-locate"), null);
+  assert.equal(h.find("textarea"), null);
+  assert.equal(h.mediaRenders[0].captured.account, scope.account);
+  assert.equal(h.mediaRenders[0].captured.user, scope.user);
+  h.setResponse(() => ({ error: "ui-session-forbidden" }));
+  h.category("media").click(); await settle();
+  assert.equal(h.find(".history-records").children.length, 0);
+  assert.match(h.container.textContent, /授权已失效/);
 });
 
 test("category changes abort pending work and discard late results from the previous filter", async () => {

@@ -2,7 +2,8 @@
 
 Uninstall removes only files shipped in that package. Runtime data and other
 files created after installation stay in place; no data-directory migration is
-performed. This command neither signs updates nor publishes a release.
+performed. A companion PowerShell bootstrap pins the generated installer's hash.
+This command neither signs updates nor publishes a release.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -147,13 +149,45 @@ def package_inventory(unpacked: Path, version: str, node: Path) -> dict[str, dic
             for source, relative, directory, info in rows if not directory}
 
 
-def build_installer(build_dir: Path, node: Path, *, require_clean=False) -> dict:
+def validate_installer_url(value: str, artifact_name: str) -> None:
+    url = urlsplit(value)
+    if (url.scheme != 'https' or not url.hostname or url.username is not None or
+            url.password is not None or url.query or url.fragment or url.port == 0 or
+            any(ord(char) <= 32 or ord(char) == 127 or char == '\\' for char in value) or
+            url.path.rsplit('/', 1)[-1] != artifact_name):
+        raise ValueError(f'installer URL must be an HTTPS URL for {artifact_name}, without credentials, query or fragment')
+
+
+def write_bootstrap(artifact: Path, sha256: str, download_url: str | None) -> Path:
+    template = (ROOT / 'scripts' / 'install-zhiji.ps1').read_text(encoding='utf-8-sig')
+    replacements = {
+        '__ZHIJI_INSTALLER_FILE_NAME__': artifact.name,
+        '__ZHIJI_INSTALLER_SHA256__': sha256,
+    }
+    if download_url is not None:
+        replacements['__ZHIJI_DOWNLOAD_URL__'] = download_url
+    for marker, value in replacements.items():
+        literal = f"'{marker}'"
+        if template.count(literal) != 1:
+            raise ValueError(f'bootstrap template must define exactly one {marker}')
+        template = template.replace(literal, "'" + value.replace("'", "''") + "'", 1)
+    bootstrap = artifact.with_name('install-zhiji.ps1')
+    # Windows PowerShell 5.1 needs the UTF-8 BOM to read the Chinese script text.
+    with bootstrap.open('x', encoding='utf-8-sig', newline='\r\n') as stream:
+        stream.write(template)
+    return bootstrap
+
+
+def build_installer(build_dir: Path, node: Path, *, require_clean=False, installer_url: str | None = None) -> dict:
     build_dir = build_dir.resolve()
     node = node.resolve()
     result = clean.verify_package(ROOT, build_dir, node, require_clean=require_clean)
     version = result['version']
     if not re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', version):
         raise ValueError('installer version must be stable X.Y.Z')
+    artifact_name = f'Zhiji-WeChat-Assistant-{version}-Setup-x64.exe'
+    if installer_url is not None:
+        validate_installer_url(installer_url, artifact_name)
     unpacked = build_dir / 'release' / 'win-unpacked'
     before = package_inventory(unpacked, version, node)
     asar_policy = subprocess.check_output([
@@ -180,15 +214,19 @@ def build_installer(build_dir: Path, node: Path, *, require_clean=False) -> dict
         raise ValueError('verified package changed during installer build')
     if require_clean:
         clean.check_source_snapshot(result, clean.source_revision(ROOT, require_clean=True), require_clean=True)
-    artifact = working / 'release' / f'Zhiji-WeChat-Assistant-{version}-Setup-x64.exe'
+    artifact = working / 'release' / artifact_name
     if not artifact.is_file() or artifact.stat().st_size == 0:
         raise ValueError('Windows installer output is missing')
     with artifact.open('rb') as stream:
         if stream.read(2) != b'MZ':
             raise ValueError('Windows installer header is invalid')
+    sha256 = clean.digest(artifact)
+    bootstrap = write_bootstrap(artifact, sha256, installer_url)
     installer = {
         **result, 'installer': str(artifact), 'installerBytes': artifact.stat().st_size,
-        'installerSha256': clean.digest(artifact), 'installedFileCount': len(before),
+        'installerSha256': sha256, 'installedFileCount': len(before),
+        'bootstrap': str(bootstrap), 'bootstrapSha256': clean.digest(bootstrap),
+        'bootstrapDownloadUrl': installer_url,
         'installerBuildDirectory': str(working), 'appUpdatesEnabled': False,
         'uninstallPolicy': 'remove shipped files only; retain runtime data and unshipped files',
         'published': False,
@@ -206,6 +244,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--node-exe', type=Path)
     parser.add_argument('--node-license', type=Path)
     parser.add_argument('--require-clean', action='store_true', help='require committed, clean source for a formal installer')
+    parser.add_argument('--installer-url', help='optional final HTTPS URL of the generated installer for the bootstrap')
     args = parser.parse_args(argv)
     node = args.node_exe or os.environ.get('KYF_BUILD_NODE') or shutil.which('node')
     if not node:
@@ -213,7 +252,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         clean.source_revision(ROOT, require_clean=args.require_clean)
         build_dir = args.build_dir or Path(clean.build(args)['buildDirectory'])
-        result = build_installer(build_dir, Path(node), require_clean=args.require_clean)
+        result = build_installer(build_dir, Path(node), require_clean=args.require_clean,
+                                 installer_url=args.installer_url)
     except (OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'Windows installer build rejected: {error}\n')
     print(json.dumps(result, ensure_ascii=True))
