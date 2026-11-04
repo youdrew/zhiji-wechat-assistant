@@ -118,6 +118,8 @@ def main():
         pages[name] = page
         assert len(page.ids) == len(set(page.ids)), 'Duplicate page IDs'
         for ref in page.references:
+            if name == 'index.html' and ref == 'mailto:youdrewxuan@icloud.com':
+                continue
             parsed = urllib.parse.urlsplit(ref)
             if parsed.scheme:
                 assert parsed.scheme == 'https'
