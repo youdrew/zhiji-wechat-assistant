@@ -17,7 +17,7 @@ SITE = ROOT / 'site'
 ASSETS = {
     'chat-suggestions.png', 'friend-overview.png', 'relationship-memories.png',
     'chat-assistant.png', 'interaction-trends.png', 'self-timeline.png',
-    'self-personality.png', 'model-settings.png',
+    'self-personality.png', 'model-settings.png', 'plugin-management.png',
 }
 EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json', 'favicon.svg'} | {
     'assets/' + name for name in ASSETS
@@ -133,10 +133,13 @@ def main():
                 assert target.is_relative_to(SITE.resolve()) and target.is_file(), 'Broken local file link'
             if parsed.fragment and not parsed.path:
                 assert parsed.fragment in page.ids, 'Broken local anchor'
-    assert len(pages['index.html'].images) == 8
+    screenshots = pages['index.html'].images
+    assert len(screenshots) == len(ASSETS)
+    assert {urllib.parse.urlsplit(image['src']).path for image in screenshots} == {'assets/' + name for name in ASSETS}
     assert not pages['install.html'].images
-    for image in pages['index.html'].images:
-        assert image_dimensions(SITE / image['src']) == (int(image['width']), int(image['height'])), 'Screenshot aspect ratio metadata differs'
+    for image in screenshots:
+        path = urllib.parse.urlsplit(image['src']).path
+        assert image_dimensions(SITE / path) == (int(image['width']), int(image['height'])), 'Screenshot aspect ratio metadata differs'
     release = validate_release(json.loads((SITE / 'release.json').read_text(encoding='utf-8')), required=args.require_download)
     print(json.dumps({'siteFiles': len(actual), 'screenshots': len(pages['index.html'].images), 'download': release, 'publicAssetVerified': args.require_download}))
 

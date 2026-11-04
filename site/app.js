@@ -8,9 +8,10 @@ const featureButtons = [...document.querySelectorAll('[data-feature]')];
 function selectScreen(index) {
   imageButtons.forEach((button, position) => { button.closest('figure').hidden = position !== index; });
   slideButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.slide) === index)));
-  const feature = [0, 3, 4].includes(index) ? 0 : [1, 2].includes(index) ? 1 : [5, 6].includes(index) ? 5 : -1;
-  featureButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.feature) === feature)));
-  document.querySelector('.screen-number').textContent = `${String(index + 1).padStart(2, '0')} / 08`;
+  const feature = imageButtons[index].closest('figure').dataset.featureGroup;
+  featureButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.feature === feature)));
+  const total = String(imageButtons.length).padStart(2, '0');
+  document.querySelector('.screen-number').textContent = `${String(index + 1).padStart(2, '0')} / ${total}`;
 }
 
 slideButtons.forEach(button => button.addEventListener('click', () => selectScreen(Number(button.dataset.slide))));
