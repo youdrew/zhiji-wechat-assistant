@@ -4,12 +4,14 @@
 const imageButtons = [...document.querySelectorAll('[data-image]')];
 const slideButtons = [...document.querySelectorAll('[data-slide]')];
 const featureButtons = [...document.querySelectorAll('[data-feature]')];
+const featureOptions = [...document.querySelectorAll('[data-feature-options]')];
 
 function selectScreen(index) {
   imageButtons.forEach((button, position) => { button.closest('figure').hidden = position !== index; });
   slideButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.slide) === index)));
   const feature = imageButtons[index].closest('figure').dataset.featureGroup;
   featureButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.feature === feature)));
+  featureOptions.forEach(group => { group.hidden = group.dataset.featureOptions !== feature; });
   const total = String(imageButtons.length).padStart(2, '0');
   document.querySelector('.screen-number').textContent = `${String(index + 1).padStart(2, '0')} / ${total}`;
 }

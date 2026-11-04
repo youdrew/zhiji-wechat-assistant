@@ -63,9 +63,15 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .install-guide table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
 .install-guide th, .install-guide td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .install-guide li { padding-left: 4px; margin-bottom: 10px; }
-.feature-switch { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 36px; margin-bottom: 22px; }
+.gallery-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 20px; margin-bottom: 18px; }
+.feature-switch, .screen-options { display: flex; flex-wrap: wrap; justify-content: center; }
+.feature-switch { gap: 4px 24px; }
 .feature-switch button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 2px; font-size: 15px; color: #5c6258; }
 .feature-switch button[aria-pressed="true"] { border-bottom-color: var(--green); color: var(--ink); }
+.screen-options { gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #f0f3ec; }
+.screen-options button { min-height: 40px; padding: 8px 11px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #5c6258; font-size: 12px; }
+.screen-options button:hover { color: var(--green); }
+.screen-options button[aria-pressed="true"] { border-color: #cad4c3; background: var(--paper); color: var(--green); }
 .screen-stage { overflow: hidden; border: 1px solid #dfe5da; border-radius: 9px; background: #eef1eb; box-shadow: 0 16px 52px -36px #33482f66; }
 .screen-panel { margin: 0; }
 .screen-benefit { margin: 0; padding: 16px 20px; background: var(--paper); font-size: 15px; line-height: 1.6; text-align: center; }
@@ -74,7 +80,7 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .image-excerpt { aspect-ratio: auto; }
 .image-excerpt img { height: auto; }
 .image-button:focus-visible { outline-offset: -4px; }
-.plugin-notes { padding: 16px 20px; background: var(--paper); text-align: center; font-size: 13px; line-height: 1.7; }
+.plugin-notes { padding: 0 20px 16px; background: var(--paper); text-align: center; font-size: 13px; line-height: 1.7; }
 .plugin-notes p { margin: 0 0 4px; }
 .plugin-notes summary { display: list-item; width: fit-content; margin-inline: auto; padding-block: 12px; color: var(--green); cursor: pointer; }
 .plugin-notes dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 14px 20px; max-width: 760px; margin: 6px auto; text-align: left; }
@@ -83,10 +89,6 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .screen-caption { display: flex; justify-content: space-between; gap: 16px; margin-top: 13px; font-size: 10px; color: #8a9084; }
 .screen-number { font-variant-numeric: tabular-nums; }
 .zoom-hint { margin-left: 25px; }
-.screen-switch { display: flex; justify-content: center; gap: 6px; margin-top: 24px; padding: 2px 0 12px; overflow-x: auto; scrollbar-width: thin; }
-.screen-switch button { flex: 0 0 auto; padding: 10px 13px; min-height: 40px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; }
-.screen-switch button[aria-pressed="true"] { color: var(--green); border-color: #cad4c3; background: #edf0e9; }
-.screen-switch button:hover { color: var(--green); }
 .practical { max-width: 760px; padding-block: 42px 53px; text-align: center; }
 .release-details summary { display: inline-flex; align-items: center; gap: 20px; cursor: pointer; font-size: 11px; color: #70786a; list-style: none; padding: 10px; }
 .release-details summary::-webkit-details-marker { display: none; }
@@ -119,8 +121,6 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 @media (max-width: 900px) {
   .shell { width: calc(100% - 64px); }
   .hero { padding: 52px 0 46px; }
-  .screen-switch { justify-content: flex-start; }
-  .screen-switch button { padding-inline: 12px; }
 }
 @media (max-width: 600px) {
   .shell { width: calc(100% - 36px); }
@@ -134,14 +134,13 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
   .hero-description { font-size: 12px; margin: 18px 0 23px; letter-spacing: 0; }
   .download-button { min-height: 47px; font-size: 12px; padding-inline: 21px; }
   .hero-meta { font-size: 9px; gap: 8px; margin-top: 13px; }
-  .feature-switch { gap: 4px 12px; margin-bottom: 16px; }
+  .gallery-nav { margin-bottom: 14px; }
+  .feature-switch { gap: 4px 12px; }
   .feature-switch button { font-size: 13px; padding-block: 11px; }
   .screen-stage { border-radius: 5px; }
   .screen-benefit { padding: 12px 10px; font-size: 13px; }
   .screen-caption { margin-top: 10px; font-size: 9px; }
   .zoom-hint { display: none; }
-  .screen-switch { margin-top: 17px; gap: 4px; }
-  .screen-switch button { font-size: 10px; padding-inline: 10px; }
   .practical { padding-block: 30px 36px; }
   .details-body { padding: 20px; font-size: 11px; }
   .site-footer { padding-block: 21px; font-size: 10px; }

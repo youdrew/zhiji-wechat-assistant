@@ -17,7 +17,7 @@ SITE = ROOT / 'site'
 ASSETS = {
     'chat-suggestions.png', 'friend-overview.png', 'relationship-memories.png',
     'chat-assistant.png', 'interaction-trends.png', 'self-timeline.png',
-    'self-personality.png', 'model-settings.png', 'plugin-management.png',
+    'self-personality.png', 'model-settings.png', 'plugin-management.png', 'self-chat.png',
 }
 EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json', 'favicon.svg'} | {
     'assets/' + name for name in ASSETS
