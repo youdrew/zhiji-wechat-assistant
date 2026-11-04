@@ -36,6 +36,27 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .download-button { min-height: 49px; display: inline-flex; align-items: center; justify-content: center; gap: 25px; padding: 14px 24px; background: var(--green); color: #fff; border-radius: 5px; font-size: 13px; transition: background .18s; }
 .download-button:hover { color: #fff; background: #354b33; }
 .hero-meta { display: flex; justify-content: center; gap: 10px; margin: 15px 0 0; color: var(--muted); font-size: 10px; }
+.hero-actions { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 18px; }
+.agent-link { color: var(--green); padding: 12px 0; font-size: 13px; }
+.agent-install { max-width: 760px; padding-bottom: 48px; }
+.agent-intro h2 { margin: 0 0 10px; font-size: 23px; font-weight: 600; }
+.agent-intro>p, .agent-note { font-size: 12px; color: #687360; line-height: 1.8; }
+.agent-note a, .install-guide a { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
+.prompt-box { border: 1px solid #d8e0d1; border-radius: 7px; padding: 18px 22px; background: #f0f3ec; }
+.prompt-box>p { margin: 0 0 14px; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
+.copy-text { border: 1px solid #c0ceb8; border-radius: 4px; padding: 9px 14px; min-height: 40px; font-size: 12px; background: #fafcf7; }
+.copy-status { margin-left: 12px; font-size: 12px; color: var(--green); }
+.install-guide { max-width: 860px; padding-block: 35px 70px; font-size: 15px; line-height: 1.9; }
+.install-guide h1 { font-size: clamp(30px, 5vw, 48px); letter-spacing: -.035em; }
+.install-guide h2 { font-size: 23px; margin-top: 36px; line-height: 1.5; }
+.guide-eyebrow, .guide-sources { font-size: 12px; color: #687360; }
+.install-guide code { font-family: Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
+.install-guide pre { overflow-x: auto; padding: 18px; border: 1px solid var(--line); border-radius: 5px; background: #f0f3ec; line-height: 1.7; }
+.install-guide pre code { overflow-wrap: normal; }
+.table-scroll { overflow-x: auto; }
+.install-guide table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.install-guide th, .install-guide td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.install-guide li { padding-left: 4px; margin-bottom: 10px; }
 .feature-switch { display: flex; justify-content: center; gap: 36px; margin-bottom: 22px; }
 .feature-switch button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 2px; font-size: 15px; color: #92988e; }
 .feature-switch button[aria-pressed="true"] { border-bottom-color: var(--green); color: var(--ink); }

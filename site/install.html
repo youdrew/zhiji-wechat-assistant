@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="用一句话让 Claude Code、Codex、Cursor 或 WorkBuddy 安装知己微信助手并接入 MCP。">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>接入你的 AI 助手 · 知己微信助手</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="copy.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header shell"><a class="brand" href="index.html"><span class="brand-symbol" aria-hidden="true">知</span><span>知己<span class="brand-description">微信助手</span></span></a><a class="source-link" href="https://github.com/youdrew/zhiji-wechat-assistant">GitHub ↗</a></header>
+  <main class="install-guide shell" id="main">
+    <p class="guide-eyebrow">v2.1.0 · Windows 10/11 x64 · 本机 MCP</p>
+    <h1>让 AI 帮你安装知己</h1>
+    <p>把下面这句话发送给你正在使用的 AI 客户端。Agent 按本页选择安装方式、合并配置并检查连接，你在安装界面及知己授权窗口完成确认。</p>
+    <div class="prompt-box"><p id="agent-prompt">请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端，等我确认账号授权后验证 MCP 连接。</p><button type="button" class="copy-text" data-copy-target="agent-prompt" aria-describedby="agent-copy-status" hidden>复制这句话</button><span class="copy-status" id="agent-copy-status" role="status"></span></div>
+
+    <h2>先确认运行环境和客户端</h2>
+    <p>安装与 MCP 进程运行在同一台 Windows 10/11 x64 电脑、同一个 Windows 用户下。Agent 需要能够访问网络、运行 PowerShell 和编辑该客户端的配置。仅有网页聊天、远程 Linux 或 WSL 环境时，请转到 Windows 本机执行。知己自带 Python 与 Node.js。</p>
+    <p>以当前对话所在的客户端为准。如果无法识别，请向用户询问。每个客户端使用独立连接档案。以下选择对应 v2.1.0 已发布脚本。</p>
+    <div class="table-scroll"><table><thead><tr><th>当前客户端</th><th>安装参数</th><th>配置方式</th></tr></thead><tbody>
+      <tr><td>Claude Code</td><td><code>-Client claude-code</code></td><td>脚本合并用户级 MCP 配置</td></tr>
+      <tr><td>Codex</td><td><code>-Client codex</code></td><td>脚本合并 <code>~/.codex/config.toml</code>，尊重 <code>CODEX_HOME</code></td></tr>
+      <tr><td>Cursor</td><td><code>-Client cursor</code></td><td>脚本合并 <code>~/.cursor/mcp.json</code></td></tr>
+      <tr><td>DeepSeek Harness</td><td><code>-Client deepseek-harness</code></td><td>脚本合并对应的用户级 MCP 配置</td></tr>
+      <tr><td>WorkBuddy</td><td><code>-Client generic --name workbuddy</code></td><td>配对后，由 Agent 将生成片段合并到 <code>~/.workbuddy/mcp.json</code></td></tr>
+      <tr><td>其他支持本机 stdio MCP 的客户端</td><td><code>-Client generic --name &lt;独立连接名&gt;</code></td><td>按客户端官方说明合并生成的配置</td></tr>
+    </tbody></table></div>
+    <p>Claude Code 已做真实客户端图像传递验证。Codex、Cursor 和 DeepSeek Harness 提供配置适配。WorkBuddy 路径与 stdio 格式依据官方说明，尚未完成真实 WorkBuddy 客户端验收。图片显示、新消息提示及配置热加载取决于客户端。</p>
+
+    <h2>下载安装脚本并校验</h2>
+    <p>使用官方 v2.1.0 附件。下面的 PowerShell 命令把脚本存到本机临时目录，并核对 SHA-256。该脚本还会校验它下载的 Windows 安装包。</p>
+    <pre><code id="download-command">$ErrorActionPreference = 'Stop'
+$zhijiInstaller = Join-Path ([IO.Path]::GetTempPath()) ('install-zhiji-' + [guid]::NewGuid().ToString('N') + '.ps1')
+Invoke-WebRequest 'https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/install-zhiji.ps1' -OutFile $zhijiInstaller -UseBasicParsing
+if ((Get-FileHash -LiteralPath $zhijiInstaller -Algorithm SHA256).Hash -ne '648b291c941968918ea7dbab7eba2d6bd59d22d281969d28bec2f122ac452d25') { throw '知己安装脚本校验失败' }</code></pre>
+    <p><a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/install-zhiji.ps1">下载脚本</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/SHA256SUMS.txt">校验文件</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.1.0">版本说明</a></p>
+    <h2>安装、配对并连接</h2>
+    <p>在同一个 PowerShell 会话中，选择当前客户端的命令。如果 Agent 的命令工具每次新建 shell，请将下载校验和所选安装命令放在同一次调用中，或在后续调用使用脚本的实际绝对路径。例如 Codex 使用</p>
+    <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File $zhijiInstaller -Client codex -Yes</code></pre>
+    <p>Claude Code 使用</p>
+    <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File $zhijiInstaller -Client claude-code -Yes</code></pre>
+    <p>WorkBuddy 使用</p>
+    <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File $zhijiInstaller -Client generic -Yes --name workbuddy</code></pre>
+    <p><code>-Yes</code> 省去脚本重复询问是否下载，安装程序和账号授权仍需用户操作。需要先看计划时使用 <code>-WhatIf</code>。已装 v2.1.0 会复用安装；如检测到旧版本，请先通过官方安装包升级。安装在自定义目录时可加 <code>-InstallRoot</code>。</p>
+    <p>保持安装任务运行，等待用户在知己窗口选择允许读取的账号并确认。默认只读。配对期间 Agent 应提示用户查看窗口，保持进程存活并等待结果。授权应由用户确认。遇到超时可重新运行同一命令。</p>
+    <p>基础查询使用当前 AI 客户端的模型。用到好友分析、自我分析等知己专项能力时，再配置知己的模型服务。</p>
+
+    <h2>WorkBuddy 与其他客户端的配置合并</h2>
+    <p>通用模式输出一个包含 <code>mcpServers</code> 的 JSON 片段，其中的 <code>command</code> 和 <code>args</code> 已指向安装自带的 Python、MCP 启动脚本和此次连接档案。保留输出中的完整命令与参数，使用 stdio 传输。</p>
+    <ol>
+      <li>WorkBuddy 默认使用当前 Windows 用户的 <code>~/.workbuddy/mcp.json</code>。如果当前项目有 <code>.workbuddy/mcp.json</code>，检查同名条目是否覆盖用户配置。</li>
+      <li>修改前备份原文件，解析原 JSON，只合并本次生成的知己条目，保留其他服务器和顶层字段。写入前复查文件没有被其他进程改动，再原子替换。遇到损坏或无法解析的配置，先报告具体问题。</li>
+      <li>如果客户端限制修改配置，使用它的“插件 → MCP 服务器 → 配置 MCP”入口导入该片段。其他客户端按官方文档选择配置路径及包装格式。</li>
+      <li>客户端配置只需保存启动命令与档案名。配对凭据由知己在本机加密保存。</li>
+    </ol>
+    <p>WorkBuddy 此时走通用模式。脚本的“连通已验证”只证明生成的 MCP 命令可用，配置合并和客户端实际加载仍要完成。</p>
+
+    <h2>确认接入成功</h2>
+    <p>脚本会实际运行 MCP 的 <code>initialize</code>、<code>tools/list</code>、<code>zhiji_ping</code> 与 <code>zhiji_list_accounts</code>。随后按客户端要求重新加载 MCP 或新开会话。在当前客户端调用 <code>zhiji_ping</code>，确认服务可用及授权范围。需要检查账号时只向用户报告数量和范围。</p>
+    <p>如果本轮对话无法加载新工具，明确告知“安装和配置已完成，等待重新加载后验证”，并给出重新打开会话后的验证步骤。最终成功应以当前客户端实际调用工具为准。</p>
+    <p>Claude Code 用户可选择额外添加 <code>--install-hook</code>，在下一次提问时收到新消息提示。其他客户端可通过 MCP 查询与补拉事件。用户可在知己“设置 → 插件 → MCP”中撤销授权。</p>
+    <p class="guide-sources">客户端配置参考 <a href="https://developers.openai.com/codex/mcp">OpenAI 的 Codex MCP 文档</a> · <a href="https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide">WorkBuddy MCP 文档</a> · <a href="https://open.workbuddy.cn/docs/connector">WorkBuddy stdio 连接器说明</a></p>
+    <p><a href="index.html">← 返回知己首页</a></p>
+  </main>
+</body>
+</html>
