@@ -1,10 +1,10 @@
 {
   "state": "published",
-  "version": "2.0.2",
-  "filename": "Zhiji-WeChat-Assistant-2.0.2-Setup-x64.exe",
-  "downloadUrl": "https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.0.2/Zhiji-WeChat-Assistant-2.0.2-Setup-x64.exe",
-  "notesUrl": "https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.0.2",
-  "sha256": "97d7349bed301f7f10f0728cce91b1cc4c0fc9a2cd7355c1dfc8e292f5cb282c",
-  "sizeBytes": 447007745,
+  "version": "2.1.0",
+  "filename": "Zhiji-WeChat-Assistant-2.1.0-Setup-x64.exe",
+  "downloadUrl": "https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/Zhiji-WeChat-Assistant-2.1.0-Setup-x64.exe",
+  "notesUrl": "https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.1.0",
+  "sha256": "4d93ddd1adca021d4165d5d1d2313df5d361597340cce42bdbda0a003fd22060",
+  "sizeBytes": 447139492,
   "signed": false
 }
