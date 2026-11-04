@@ -49,7 +49,7 @@ AI 分析可能有误，请结合实际语境核对。回复建议可复制后�
 
 在同一台 Windows 电脑的 Claude Code、Codex、Cursor 或 WorkBuddy 中发送这一句话。Agent 需要联网、运行命令及编辑配置的权限。
 
-> 请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端，等我确认账号授权后验证 MCP 连接。
+> 请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端。
 
 安装脚本可下载知己、检查安装包哈希并发起账号配对。你在安装界面和知己授权窗口确认后，Agent 继续检查连接。详细步骤及当前验收范围见[安装说明](https://zhiji.eugenepage.com/install.html)。
 
