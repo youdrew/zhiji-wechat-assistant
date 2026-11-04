@@ -1,0 +1,47 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+.demo-note {
+  flex: none;
+  margin: 0;
+  padding: 8px 16px;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-size: 12px;
+}
+
+.demo-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.demo-prompts button {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  white-space: normal;
+  text-align: left;
+}
+
+.run-control,
+#saveProfile,
+#addTag,
+#tagActions,
+#reset,
+#timelineAdd,
+.tl-manage-toggle,
+.persona-edit,
+#personaPeriodSettings,
+#valuesPeriodSettings {
+  display: none !important;
+}
+
+.tl-month:disabled,
+.tl-mark:disabled {
+  opacity: 1;
+}
+
+@media (max-width: 720px) {
+  .chat-log {
+    height: 240px;
+  }
+}

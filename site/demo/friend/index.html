@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>知己分析 · 互动演示</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="renderer.js" defer></script>
+  <script src="analysis-fixtures.js" defer></script>
+  <script src="demo.js" defer></script>
+</head>
+<body class="theme-light demo-window">
+  <!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+  <header class="fa-header">
+    <div class="fa-who">
+      <span class="fa-avatar" aria-hidden="true">林</span>
+      <div class="fa-who-text"><h1>林沐 · 知己分析</h1></div>
+    </div>
+    <span class="demo-badge">演示数据 · 全部虚构</span>
+  </header>
+  <nav class="fa-tabs" role="tablist" aria-label="知己分析栏目">
+    <button type="button" id="tab-overview" role="tab" aria-selected="true" aria-controls="pageOverview" data-tab="overview">好友概述</button>
+    <button type="button" id="tab-memories" role="tab" aria-selected="false" aria-controls="pageMemory" data-tab="memories" tabindex="-1">关系记忆</button>
+    <button type="button" id="tab-persona" role="tab" aria-selected="false" aria-controls="pagePersona" data-tab="persona" tabindex="-1">性格分析</button>
+    <button type="button" id="tab-values" role="tab" aria-selected="false" aria-controls="pageValues" data-tab="values" tabindex="-1">三观分析</button>
+    <button type="button" id="tab-chat" role="tab" aria-selected="false" aria-controls="pageChat" data-tab="chat" tabindex="-1">聊天分析</button>
+    <button type="button" id="tab-trend" role="tab" aria-selected="false" aria-controls="pageTrend" data-tab="trend" tabindex="-1">关系趋势</button>
+  </nav>
+  <main class="fa-main">
+    <section id="pageOverview" class="fa-page" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+      <p class="fa-note">正在载入演示资料…</p>
+      <noscript><p>启用 JavaScript 后可浏览演示内容。</p></noscript>
+    </section>
+    <section id="pageMemory" class="fa-page" role="tabpanel" aria-labelledby="tab-memories" tabindex="0" hidden></section>
+    <section id="pagePersona" class="fa-page" role="tabpanel" aria-labelledby="tab-persona" tabindex="0" hidden></section>
+    <section id="pageValues" class="fa-page" role="tabpanel" aria-labelledby="tab-values" tabindex="0" hidden></section>
+    <section id="pageChat" class="fa-page" role="tabpanel" aria-labelledby="tab-chat" tabindex="0" hidden></section>
+    <section id="pageTrend" class="fa-page" role="tabpanel" aria-labelledby="tab-trend" tabindex="0" hidden></section>
+  </main>
+  <aside id="faSheet" class="fa-sheet" role="dialog" aria-modal="false" aria-labelledby="faSheetTitle" hidden>
+    <div class="fa-sheet-head">
+      <h2 id="faSheetTitle"></h2>
+      <button type="button" id="faSheetClose" class="fa-plain" aria-label="关闭原文面板">关闭</button>
+    </div>
+    <div id="faSheetBody" class="fa-sheet-body"></div>
+  </aside>
+  <div id="faToast" class="fa-toast" role="status" hidden></div>
+</body>
+</html>

@@ -74,6 +74,7 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .screen-options button[aria-pressed="true"] { border-color: #cad4c3; background: var(--paper); color: var(--green); }
 .screen-stage { overflow: hidden; border: 1px solid #dfe5da; border-radius: 9px; background: #eef1eb; box-shadow: 0 16px 52px -36px #33482f66; }
 .screen-panel { margin: 0; }
+.demo-frame { display: block; width: 100%; height: 680px; border: 0; background: var(--paper); }
 .screen-benefit { margin: 0; padding: 16px 20px; background: var(--paper); font-size: 15px; line-height: 1.6; text-align: center; }
 .image-button { display: block; width: 100%; aspect-ratio: 16 / 10; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .image-button img { width: 100%; height: 100%; object-fit: contain; }
@@ -138,6 +139,7 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
   .feature-switch { gap: 4px 12px; }
   .feature-switch button { font-size: 13px; padding-block: 11px; }
   .screen-stage { border-radius: 5px; }
+  .demo-frame { height: 740px; }
   .screen-benefit { padding: 12px 10px; font-size: 13px; }
   .screen-caption { margin-top: 10px; font-size: 9px; }
   .zoom-hint { display: none; }

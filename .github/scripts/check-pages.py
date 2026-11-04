@@ -19,8 +19,17 @@ ASSETS = {
     'chat-assistant.png', 'interaction-trends.png', 'self-timeline.png',
     'self-personality.png', 'model-settings.png', 'plugin-management.png', 'self-chat.png',
 }
+DEMO_FILES = {
+    'chat': {'index.html', 'demo.css', 'demo.js', 'message-analysis.css'},
+    'friend': {'index.html', 'styles.css', 'renderer.js', 'demo.js', 'analysis-fixtures.js'},
+    'self': {'index.html', 'demo.css', 'demo-host.js', 'page.css', 'page.js',
+             'persona-charts.css', 'persona-charts.js'},
+}
+DEMO_PAGES = {f'demo/{demo}/index.html' for demo in DEMO_FILES}
 EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json', 'favicon.svg'} | {
     'assets/' + name for name in ASSETS
+} | {
+    f'demo/{demo}/{name}' for demo, names in DEMO_FILES.items() for name in names
 }
 
 
@@ -30,6 +39,7 @@ class Page(HTMLParser):
         self.ids = []
         self.references = []
         self.images = []
+        self.frames = []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -41,6 +51,8 @@ class Page(HTMLParser):
         if tag == 'img' and attrs.get('src'):
             assert attrs.get('alt'), 'A screenshot is missing its description'
             self.images.append(attrs)
+        if tag == 'iframe':
+            self.frames.append(attrs)
 
 
 def image_dimensions(path):
@@ -110,17 +122,29 @@ def main():
             actual.add(path.relative_to(SITE).as_posix())
     assert actual == EXPECTED, 'Website artifact contains unexpected or missing files'
     pages = {}
-    for name in ('index.html', 'install.html'):
-        html = (SITE / name).read_text(encoding='utf-8')
-        assert not re.search(r'\bpro\b', html, re.I), 'Public copy must describe shipped features'
+    for name in ('index.html', 'install.html', *sorted(DEMO_PAGES)):
+        path = SITE / name
+        html = path.read_text(encoding='utf-8')
+        is_demo = name in DEMO_PAGES
+        if not is_demo:
+            assert not re.search(r'\bpro\b', html, re.I), 'Public copy must describe shipped features'
         page = Page()
         page.feed(html)
         pages[name] = page
         assert len(page.ids) == len(set(page.ids)), 'Duplicate page IDs'
+        if name == 'index.html':
+            assert len(page.frames) == len(DEMO_PAGES)
+            assert {frame.get('src') for frame in page.frames} == DEMO_PAGES
+            assert all(frame.get('sandbox') == 'allow-scripts' and frame.get('title')
+                       for frame in page.frames), 'Demo frames must be isolated and labeled'
+        else:
+            assert not page.frames, 'Unexpected nested frame'
         for ref in page.references:
             if name == 'index.html' and ref == 'mailto:youdrewxuan@icloud.com':
                 continue
             parsed = urllib.parse.urlsplit(ref)
+            if is_demo:
+                assert not parsed.scheme and not parsed.netloc, 'Demo references must stay local'
             if parsed.scheme:
                 assert parsed.scheme == 'https'
                 assert parsed.hostname in ('github.com', 'eugenepage.com', 'developers.openai.com',
@@ -129,8 +153,8 @@ def main():
                 continue
             assert not parsed.netloc, 'Protocol-relative URLs are not allowed'
             if parsed.path:
-                target = (SITE / urllib.parse.unquote(parsed.path)).resolve()
-                assert target.is_relative_to(SITE.resolve()) and target.is_file(), 'Broken local file link'
+                target = (path.parent / urllib.parse.unquote(parsed.path)).resolve()
+                assert target.is_relative_to(path.parent.resolve()) and target.is_file(), 'Broken local file link'
             if parsed.fragment and not parsed.path:
                 assert parsed.fragment in page.ids, 'Broken local anchor'
     screenshots = pages['index.html'].images
