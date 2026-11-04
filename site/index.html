@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="聊过那么多，你真的了解 TA 吗？知己微信助手：读懂聊天，记住朋友，了解自己。免费开源的 Windows 桌面助手。">
+  <meta name="description" content="聊过那么多，你真的了解 TA 吗？知己微信助手帮你读懂聊天、分析自己、了解他人。免费开源的 Windows 桌面助手。">
   <meta name="theme-color" content="#faf9f6">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="referrer" content="strict-origin-when-cross-origin">
@@ -12,8 +12,8 @@
   <meta property="og:description" content="回看聊天，记住细节，也看看自己。">
   <title>知己微信助手 · 你真的了解 TA 吗？</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=contact-email-1">
-  <script src="app.js" defer></script>
+  <link rel="stylesheet" href="styles.css?v=feature-gallery-1">
+  <script src="app.js?v=feature-gallery-1" defer></script>
   <script src="copy.js" defer></script>
 </head>
 <body>
@@ -40,56 +40,76 @@
       <div class="prompt-box"><p id="agent-prompt">请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端。</p><div class="prompt-actions"><button type="button" class="copy-text" data-copy-target="agent-prompt" aria-describedby="agent-copy-status" hidden>复制</button><span class="copy-status" id="agent-copy-status" role="status"></span><a class="install-details-link" href="install.html">安装详情 ↗</a></div></div>
     </section>
 
-    <section class="showcase shell" aria-label="功能界面展示">
-      <div class="feature-switch" aria-label="三个功能重点">
-        <button type="button" data-feature="0" aria-pressed="true">读懂聊天</button>
-        <button type="button" data-feature="1" aria-pressed="false">记住朋友</button>
-        <button type="button" data-feature="5" aria-pressed="false">了解自己</button>
+    <section class="showcase shell" id="showcase" aria-label="功能界面展示">
+      <div class="feature-switch" role="group" aria-label="选择功能主题">
+        <button type="button" data-feature="0" aria-pressed="true" aria-controls="screen-0 screen-1">读懂聊天</button>
+        <button type="button" data-feature="2" aria-pressed="false" aria-controls="screen-2 screen-3">分析自己</button>
+        <button type="button" data-feature="4" aria-pressed="false" aria-controls="screen-4 screen-5 screen-6">了解他人</button>
+        <button type="button" data-feature="7" aria-pressed="false" aria-controls="screen-7 screen-8">扩展功能</button>
       </div>
       <div class="screen-stage">
-        <figure class="screen-panel" id="screen-0">
-          <button class="image-button" type="button" data-image="0" aria-label="放大查看聊天与回复建议界面"><img src="assets/chat-suggestions.png" width="1600" height="1000" alt="虚构好友邀请周末散步，聊天窗口展示三条可复制回复建议" fetchpriority="high"></button>
-          <figcaption class="shot-index sr-only">聊天与回复建议</figcaption>
+        <figure class="screen-panel" id="screen-0" data-feature-group="0">
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">聊天助手</span>结合来龙去脉，找到合适的回应。</figcaption>
+          <button class="image-button image-excerpt" type="button" data-image="0" aria-label="放大查看聊天助手界面"><img src="assets/chat-assistant.png?v=feature-gallery-1" width="1040" height="510" alt="聊天助手结合虚构的聊天记录和好友资料，建议周末散步后一起喝咖啡" fetchpriority="high"></button>
         </figure>
-        <figure class="screen-panel" id="screen-1" hidden>
-          <button class="image-button" type="button" data-image="1" aria-label="放大查看关系记忆界面"><img src="assets/relationship-memories.png" width="1120" height="900" alt="关系记忆按经历、爱好、偏好与边界整理虚构好友资料" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">关系记忆</figcaption>
+        <figure class="screen-panel" id="screen-1" data-feature-group="0" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">回复建议</span>从三条建议里，挑一句合适的回复。</figcaption>
+          <button class="image-button" type="button" data-image="1" aria-label="放大查看聊天与回复建议界面"><img src="assets/chat-suggestions.png" width="1600" height="1000" alt="虚构好友邀请周末散步，聊天窗口展示三条可复制回复建议" loading="lazy"></button>
         </figure>
-        <figure class="screen-panel" id="screen-2" hidden>
-          <button class="image-button" type="button" data-image="2" aria-label="放大查看好友概述界面"><img src="assets/friend-overview.png" width="1120" height="900" alt="好友概述展示虚构好友的近况、共同话题和下一次交流建议" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">好友概述</figcaption>
+        <figure class="screen-panel" id="screen-2" data-feature-group="2" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">个人时间线</span>从聊过的话，看见自己的变化。</figcaption>
+          <button class="image-button" type="button" data-image="2" aria-label="放大查看个人时间线界面"><img src="assets/self-timeline.png" width="1440" height="1000" alt="虚构个人时间线展示工作、兴趣和关系事件，以及聊天原文依据" loading="lazy"></button>
         </figure>
-        <figure class="screen-panel" id="screen-3" hidden>
-          <button class="image-button" type="button" data-image="3" aria-label="放大查看聊天助手界面"><img src="assets/chat-assistant.png" width="1080" height="820" alt="聊天助手结合虚构对话，讨论如何自然地回应朋友" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">聊天助手</figcaption>
+        <figure class="screen-panel" id="screen-3" data-feature-group="2" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">自我剖析</span>看见自己的性格倾向，也能回看分析依据。</figcaption>
+          <button class="image-button" type="button" data-image="3" aria-label="放大查看自我剖析界面"><img src="assets/self-personality.png" width="1440" height="1000" alt="自我剖析使用虚构内容展示性格倾向、变化和分析依据" loading="lazy"></button>
         </figure>
-        <figure class="screen-panel" id="screen-4" hidden>
-          <button class="image-button" type="button" data-image="4" aria-label="放大查看互动统计界面"><img src="assets/interaction-trends.png" width="1120" height="1080" alt="互动统计以虚构数据展示交流频率和变化" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">互动统计</figcaption>
+        <figure class="screen-panel" id="screen-4" data-feature-group="4" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">好友概述</span>想找 TA 聊聊？先看看近况和共同话题。</figcaption>
+          <button class="image-button" type="button" data-image="4" aria-label="放大查看好友概述界面"><img src="assets/friend-overview.png" width="1120" height="900" alt="好友概述展示虚构好友的近况、共同话题和下一次交流建议" loading="lazy"></button>
         </figure>
-        <figure class="screen-panel" id="screen-5" hidden>
-          <button class="image-button" type="button" data-image="5" aria-label="放大查看个人时间线界面"><img src="assets/self-timeline.png" width="1440" height="1000" alt="虚构个人时间线展示工作、兴趣和关系事件，以及聊天原文依据" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">个人时间线</figcaption>
+        <figure class="screen-panel" id="screen-5" data-feature-group="4" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">关系记忆</span>记住 TA 的偏好和你们共同的经历。</figcaption>
+          <button class="image-button" type="button" data-image="5" aria-label="放大查看关系记忆界面"><img src="assets/relationship-memories.png" width="1120" height="900" alt="关系记忆按经历、爱好、偏好与边界整理虚构好友资料" loading="lazy"></button>
         </figure>
-        <figure class="screen-panel" id="screen-6" hidden>
-          <button class="image-button" type="button" data-image="6" aria-label="放大查看自我剖析界面"><img src="assets/self-personality.png" width="1440" height="1000" alt="自我剖析使用虚构内容展示性格倾向、变化和分析依据" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">自我剖析</figcaption>
+        <figure class="screen-panel" id="screen-6" data-feature-group="4" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">互动统计</span>看看你们的交流频率如何变化。</figcaption>
+          <button class="image-button" type="button" data-image="6" aria-label="放大查看互动统计界面"><img src="assets/interaction-trends.png" width="1120" height="1080" alt="互动统计以虚构数据展示交流频率和变化" loading="lazy"></button>
         </figure>
-        <figure class="screen-panel" id="screen-7" hidden>
-          <button class="image-button" type="button" data-image="7" aria-label="放大查看模型设置界面"><img src="assets/model-settings.png" width="1080" height="900" alt="模型设置展示虚构配置，不含真实服务凭据" loading="lazy"></button>
-          <figcaption class="shot-index sr-only">模型设置</figcaption>
+        <figure class="screen-panel" id="screen-7" data-feature-group="7" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">插件管理</span>更多能力，按需开启。</figcaption>
+          <button class="image-button" type="button" data-image="7" aria-label="放大查看插件管理界面"><img src="assets/plugin-management.png" width="1040" height="660" alt="插件管理页显示聊天助手、分析与建议、知己分析、自我剖析、外部聊天识别和 MCP 的开关与设置" loading="lazy"></button>
+          <div class="plugin-notes">
+            <p>解读消息、识别聊天截图与录屏，也可接入本机 AI 助手。</p>
+            <details>
+              <summary>查看 6 个内置插件</summary>
+              <dl>
+                <div><dt>聊天助手</dt><dd>结合聊天资料回答问题。</dd></div>
+                <div><dt>分析与建议</dt><dd>解读新消息，给出三条可复制的回复建议。</dd></div>
+                <div><dt>知己分析</dt><dd>整理好友近况、关系记忆与互动趋势。</dd></div>
+                <div><dt>自我剖析</dt><dd>回看个人经历、性格倾向与变化。</dd></div>
+                <div><dt>外部聊天识别</dt><dd>把截图和录屏转成可核对的聊天记录。</dd></div>
+                <div><dt>MCP</dt><dd>授权本机 AI 客户端读取资料、运行分析。</dd></div>
+              </dl>
+            </details>
+          </div>
+        </figure>
+        <figure class="screen-panel" id="screen-8" data-feature-group="7" hidden>
+          <figcaption class="screen-benefit"><span class="shot-index sr-only">模型设置</span>在一个地方管理知己使用的模型。</figcaption>
+          <button class="image-button" type="button" data-image="8" aria-label="放大查看模型设置界面"><img src="assets/model-settings.png" width="1080" height="900" alt="模型设置展示虚构配置，不含真实服务凭据" loading="lazy"></button>
         </figure>
       </div>
-      <div class="screen-caption"><span>演示数据 · 全部虚构</span><span><span class="screen-number" aria-live="polite">01 / 08</span><span class="zoom-hint">点击图片放大 ↗</span></span></div>
+      <div class="screen-caption"><span>演示数据 · 全部虚构</span><span><span class="screen-number" aria-live="polite">01 / 09</span><span class="zoom-hint">点击图片放大 ↗</span></span></div>
       <nav class="screen-switch" aria-label="切换功能截图">
-        <button type="button" data-slide="0" aria-pressed="true" aria-controls="screen-0">回复建议</button>
-        <button type="button" data-slide="1" aria-pressed="false" aria-controls="screen-1">关系记忆</button>
-        <button type="button" data-slide="2" aria-pressed="false" aria-controls="screen-2">好友概述</button>
-        <button type="button" data-slide="3" aria-pressed="false" aria-controls="screen-3">聊天助手</button>
-        <button type="button" data-slide="4" aria-pressed="false" aria-controls="screen-4">互动统计</button>
-        <button type="button" data-slide="5" aria-pressed="false" aria-controls="screen-5">个人时间线</button>
-        <button type="button" data-slide="6" aria-pressed="false" aria-controls="screen-6">自我剖析</button>
-        <button type="button" data-slide="7" aria-pressed="false" aria-controls="screen-7">模型设置</button>
+        <button type="button" data-slide="0" aria-pressed="true" aria-controls="screen-0">聊天助手</button>
+        <button type="button" data-slide="1" aria-pressed="false" aria-controls="screen-1">回复建议</button>
+        <button type="button" data-slide="2" aria-pressed="false" aria-controls="screen-2">个人时间线</button>
+        <button type="button" data-slide="3" aria-pressed="false" aria-controls="screen-3">自我剖析</button>
+        <button type="button" data-slide="4" aria-pressed="false" aria-controls="screen-4">好友概述</button>
+        <button type="button" data-slide="5" aria-pressed="false" aria-controls="screen-5">关系记忆</button>
+        <button type="button" data-slide="6" aria-pressed="false" aria-controls="screen-6">互动统计</button>
+        <button type="button" data-slide="7" aria-pressed="false" aria-controls="screen-7">插件管理</button>
+        <button type="button" data-slide="8" aria-pressed="false" aria-controls="screen-8">模型设置</button>
       </nav>
       <noscript><p>更多界面请看 <a href="https://github.com/youdrew/zhiji-wechat-assistant/tree/main/site/assets">全部截图</a>。</p></noscript>
     </section>

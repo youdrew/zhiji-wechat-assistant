@@ -63,14 +63,23 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .install-guide table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
 .install-guide th, .install-guide td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .install-guide li { padding-left: 4px; margin-bottom: 10px; }
-.feature-switch { display: flex; justify-content: center; gap: 36px; margin-bottom: 22px; }
-.feature-switch button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 2px; font-size: 15px; color: #92988e; }
+.feature-switch { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 36px; margin-bottom: 22px; }
+.feature-switch button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 2px; font-size: 15px; color: #5c6258; }
 .feature-switch button[aria-pressed="true"] { border-bottom-color: var(--green); color: var(--ink); }
 .screen-stage { overflow: hidden; border: 1px solid #dfe5da; border-radius: 9px; background: #eef1eb; box-shadow: 0 16px 52px -36px #33482f66; }
 .screen-panel { margin: 0; }
+.screen-benefit { margin: 0; padding: 16px 20px; background: var(--paper); font-size: 15px; line-height: 1.6; text-align: center; }
 .image-button { display: block; width: 100%; aspect-ratio: 16 / 10; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .image-button img { width: 100%; height: 100%; object-fit: contain; }
+.image-excerpt { aspect-ratio: auto; }
+.image-excerpt img { height: auto; }
 .image-button:focus-visible { outline-offset: -4px; }
+.plugin-notes { padding: 16px 20px; background: var(--paper); text-align: center; font-size: 13px; line-height: 1.7; }
+.plugin-notes p { margin: 0 0 4px; }
+.plugin-notes summary { display: list-item; width: fit-content; margin-inline: auto; padding-block: 12px; color: var(--green); cursor: pointer; }
+.plugin-notes dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 14px 20px; max-width: 760px; margin: 6px auto; text-align: left; }
+.plugin-notes dt { font-weight: 600; }
+.plugin-notes dd { margin: 3px 0 0; color: #5c6258; }
 .screen-caption { display: flex; justify-content: space-between; gap: 16px; margin-top: 13px; font-size: 10px; color: #8a9084; }
 .screen-number { font-variant-numeric: tabular-nums; }
 .zoom-hint { margin-left: 25px; }
@@ -125,9 +134,10 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
   .hero-description { font-size: 12px; margin: 18px 0 23px; letter-spacing: 0; }
   .download-button { min-height: 47px; font-size: 12px; padding-inline: 21px; }
   .hero-meta { font-size: 9px; gap: 8px; margin-top: 13px; }
-  .feature-switch { gap: 26px; margin-bottom: 16px; }
+  .feature-switch { gap: 4px 12px; margin-bottom: 16px; }
   .feature-switch button { font-size: 13px; padding-block: 11px; }
   .screen-stage { border-radius: 5px; }
+  .screen-benefit { padding: 12px 10px; font-size: 13px; }
   .screen-caption { margin-top: 10px; font-size: 9px; }
   .zoom-hint { display: none; }
   .screen-switch { margin-top: 17px; gap: 4px; }
