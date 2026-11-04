@@ -36,6 +36,12 @@ h1 { font-size: clamp(44px, 6.4vw, 78px); font-weight: 700; letter-spacing: -.05
 .download-button { min-height: 49px; display: inline-flex; align-items: center; justify-content: center; gap: 25px; padding: 14px 24px; background: var(--green); color: #fff; border-radius: 5px; font-size: 13px; transition: background .18s; }
 .download-button:hover { color: #fff; background: #354b33; }
 .hero-meta { display: flex; justify-content: center; gap: 10px; margin: 15px 0 0; color: var(--muted); font-size: 10px; }
+.mac-wish { max-width: 700px; margin: 27px auto 0; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px 20px; border: 1px solid var(--line); border-radius: 6px; text-align: left; }
+.mac-wish p { margin: 0; font-size: 12px; line-height: 1.8; }
+.mac-wish strong { display: block; font-size: 14px; font-weight: 600; }
+.mac-wish p span { color: #687360; }
+.star-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 10px 13px; border: 1px solid #c0ceb8; border-radius: 4px; color: var(--green); background: #f0f3ec; font-size: 12px; white-space: nowrap; }
+.star-button:hover { background: #e5ebdf; }
 .hero-actions { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 18px; }
 .agent-link { color: var(--green); padding: 12px 0; font-size: 13px; }
 .agent-install { max-width: 760px; padding-bottom: 48px; }
