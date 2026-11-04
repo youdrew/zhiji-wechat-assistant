@@ -14,6 +14,7 @@
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
+  <script src="copy.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -26,8 +27,14 @@
     <section class="hero shell" id="download" aria-labelledby="hero-heading">
       <h1 id="hero-heading">聊过那么多，<br>你真的<span class="accent">了解 TA</span> 吗？</h1>
       <p class="hero-description">回看聊天，记住细节，也看看自己。</p>
-      <a class="download-button" data-download href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.0.2/Zhiji-WeChat-Assistant-2.0.2-Setup-x64.exe">下载 Windows 版 <span aria-hidden="true">↓</span></a>
-      <p class="hero-meta">免费开源 <span aria-hidden="true">·</span> 一台电脑 <span aria-hidden="true">·</span> 自备 API Key</p>
+      <div class="hero-actions"><a class="download-button" data-download href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/Zhiji-WeChat-Assistant-2.1.0-Setup-x64.exe">下载 Windows 版 <span aria-hidden="true">↓</span></a><a class="agent-link" href="#agent-install">让 AI 帮我安装 ↗</a></div>
+      <p class="hero-meta">免费开源 <span aria-hidden="true">·</span> Windows <span aria-hidden="true">·</span> 支持 MCP</p>
+    </section>
+
+    <section class="agent-install shell" id="agent-install" aria-labelledby="agent-heading">
+      <div class="agent-intro"><h2 id="agent-heading">一句话，接入你的 AI 助手</h2><p>在 Claude Code、Codex、Cursor 或 WorkBuddy 中发送</p></div>
+      <div class="prompt-box"><p id="agent-prompt">请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端，等我确认账号授权后验证 MCP 连接。</p><button type="button" class="copy-text" data-copy-target="agent-prompt" aria-describedby="agent-copy-status" hidden>复制这句话</button><span class="copy-status" id="agent-copy-status" role="status"></span></div>
+      <p class="agent-note">支持本机 Windows 客户端。Agent 需要联网、运行命令和编辑配置的权限。<a href="install.html">安装步骤与兼容说明 ↗</a></p>
     </section>
 
     <section class="showcase shell" aria-label="功能界面展示">
@@ -89,12 +96,12 @@
       <details class="release-details">
         <summary>下载与使用说明 <span aria-hidden="true">＋</span></summary>
         <div class="details-body">
-          <p class="release-meta" data-release-meta>v2.0.2 · Windows 10/11 x64 · 自带运行环境</p>
-          <p>适用于 Windows 微信 4.x。软件免费，模型服务和所需 API Key 由你提供。回复可复制后自行使用，应用不会操作微信发送。</p>
+          <p class="release-meta" data-release-meta>v2.1.0 · Windows 10/11 x64 · 自带运行环境</p>
+          <p>适用于 Windows 微信 4.x。MCP 基础读取使用你当前 AI 客户端的模型；知己内的 AI 分析需要你配置模型服务和所需 API Key。回复可复制后自行使用，应用不会操作微信发送。</p>
           <p>使用 AI 时，必要的文本、摘要或图片会发往你配置的模型服务；外部搜索默认关闭。分析仅供参考。截图中的人物、聊天与分析均为虚构演示。</p>
           <div class="checksum" hidden><span>SHA-256</span><code data-sha256></code><button type="button" class="copy-checksum">复制</button><span class="sr-only" data-copy-status role="status"></span></div>
           <p data-signing-note hidden></p>
-          <a class="release-link" href="https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.0.2" target="_blank" rel="noopener noreferrer" data-release-notes>版本说明与校验文件 ↗</a>
+          <a class="release-link" href="https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.1.0" target="_blank" rel="noopener noreferrer" data-release-notes>版本说明与校验文件 ↗</a>
         </div>
       </details>
     </section>

@@ -19,7 +19,7 @@ ASSETS = {
     'chat-assistant.png', 'interaction-trends.png', 'self-timeline.png',
     'self-personality.png', 'model-settings.png',
 }
-EXPECTED = {'index.html', 'styles.css', 'app.js', 'release.json', 'favicon.svg'} | {
+EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json', 'favicon.svg'} | {
     'assets/' + name for name in ASSETS
 }
 
@@ -109,29 +109,34 @@ def main():
         if path.is_file():
             actual.add(path.relative_to(SITE).as_posix())
     assert actual == EXPECTED, 'Website artifact contains unexpected or missing files'
-    html = (SITE / 'index.html').read_text(encoding='utf-8')
-    assert not re.search(r'\bpro\b', html, re.I), 'Public copy must describe shipped features'
-    page = Page()
-    page.feed(html)
-    assert len(page.ids) == len(set(page.ids)), 'Duplicate page IDs'
-    for ref in page.references:
-        parsed = urllib.parse.urlsplit(ref)
-        if parsed.scheme:
-            assert parsed.scheme == 'https'
-            assert parsed.hostname in ('github.com', 'eugenepage.com')
-            assert not parsed.username and not parsed.password
-            continue
-        assert not parsed.netloc, 'Protocol-relative URLs are not allowed'
-        if parsed.path:
-            target = (SITE / urllib.parse.unquote(parsed.path)).resolve()
-            assert target.is_relative_to(SITE.resolve()) and target.is_file(), 'Broken local file link'
-        if parsed.fragment and not parsed.path:
-            assert parsed.fragment in page.ids, 'Broken local anchor'
-    assert len(page.images) == 8
-    for image in page.images:
+    pages = {}
+    for name in ('index.html', 'install.html'):
+        html = (SITE / name).read_text(encoding='utf-8')
+        assert not re.search(r'\bpro\b', html, re.I), 'Public copy must describe shipped features'
+        page = Page()
+        page.feed(html)
+        pages[name] = page
+        assert len(page.ids) == len(set(page.ids)), 'Duplicate page IDs'
+        for ref in page.references:
+            parsed = urllib.parse.urlsplit(ref)
+            if parsed.scheme:
+                assert parsed.scheme == 'https'
+                assert parsed.hostname in ('github.com', 'eugenepage.com', 'developers.openai.com',
+                                           'www.codebuddy.cn', 'open.workbuddy.cn')
+                assert not parsed.username and not parsed.password
+                continue
+            assert not parsed.netloc, 'Protocol-relative URLs are not allowed'
+            if parsed.path:
+                target = (SITE / urllib.parse.unquote(parsed.path)).resolve()
+                assert target.is_relative_to(SITE.resolve()) and target.is_file(), 'Broken local file link'
+            if parsed.fragment and not parsed.path:
+                assert parsed.fragment in page.ids, 'Broken local anchor'
+    assert len(pages['index.html'].images) == 8
+    assert not pages['install.html'].images
+    for image in pages['index.html'].images:
         assert image_dimensions(SITE / image['src']) == (int(image['width']), int(image['height'])), 'Screenshot aspect ratio metadata differs'
     release = validate_release(json.loads((SITE / 'release.json').read_text(encoding='utf-8')), required=args.require_download)
-    print(json.dumps({'siteFiles': len(actual), 'screenshots': len(page.images), 'download': release, 'publicAssetVerified': args.require_download}))
+    print(json.dumps({'siteFiles': len(actual), 'screenshots': len(pages['index.html'].images), 'download': release, 'publicAssetVerified': args.require_download}))
 
 
 if __name__ == '__main__':

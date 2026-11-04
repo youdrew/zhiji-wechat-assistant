@@ -47,7 +47,30 @@ AI 分析可能有误，请结合实际语境核对。回复建议可复制后�
 
 ## 连接本机 AI 客户端
 
-安装知己后，在同一台 Windows 电脑运行以下 PowerShell 命令。将 `<安装目录>` 替换为实际安装路径。
+在同一台 Windows 电脑的 Claude Code、Codex、Cursor 或 WorkBuddy 中发送这一句话。Agent 需要联网、运行命令及编辑配置的权限。
+
+> 请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端，等我确认账号授权后验证 MCP 连接。
+
+安装脚本可下载知己、检查安装包哈希并发起账号配对。你在安装界面和知己授权窗口确认后，Agent 继续检查连接。详细步骤及当前验收范围见[安装说明](https://zhiji.eugenepage.com/install.html)。
+
+从[官方 v2.1.0 发布附件](https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.1.0)下载 `install-zhiji.ps1`，也可以自行运行。例如 Codex 使用
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-zhiji.ps1 -Client codex
+```
+
+| 客户端 | 参数 | 配置方式 |
+| --- | --- | --- |
+| Claude Code | `-Client claude-code` | 脚本自动合并 |
+| Codex | `-Client codex` | 脚本自动合并 |
+| Cursor | `-Client cursor` | 脚本自动合并 |
+| DeepSeek Harness | `-Client deepseek-harness` | 脚本自动合并 |
+| WorkBuddy | `-Client generic --name workbuddy` | 由 Agent 将输出片段合并到 `~/.workbuddy/mcp.json` |
+| 其他本机 stdio MCP 客户端 | `-Client generic --name <独立连接名>` | 按其官方配置格式导入 |
+
+WorkBuddy 按官方 MCP 文档提供接入步骤，尚未完成真实客户端验收。需要重新加载 MCP 或新开会话的客户端，加载后还应实际调用 `zhiji_ping` 验证。
+
+已安装知己时，也可直接调用自带工具。将 `<安装目录>` 替换为实际安装路径。
 
 ```powershell
 $client = "<安装目录>\resources\client"
