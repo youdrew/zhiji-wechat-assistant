@@ -5,19 +5,31 @@ const imageButtons = [...document.querySelectorAll('[data-image]')];
 const slideButtons = [...document.querySelectorAll('[data-slide]')];
 const featureButtons = [...document.querySelectorAll('[data-feature]')];
 const featureOptions = [...document.querySelectorAll('[data-feature-options]')];
+const screenPanels = [...document.querySelectorAll('.screen-panel')];
+const screenNumber = document.querySelector('.screen-number');
+const zoomHint = document.querySelector('.zoom-hint');
 
-function selectScreen(index) {
-  imageButtons.forEach((button, position) => { button.closest('figure').hidden = position !== index; });
-  slideButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.slide) === index)));
-  const feature = imageButtons[index].closest('figure').dataset.featureGroup;
+function selectScreen(id) {
+  const selected = document.getElementById(id);
+  screenPanels.forEach(panel => { panel.hidden = panel !== selected; });
+  slideButtons.forEach(button => button.setAttribute('aria-pressed', String(button.getAttribute('aria-controls') === id)));
+  const feature = selected.dataset.featureGroup;
   featureButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.feature === feature)));
   featureOptions.forEach(group => { group.hidden = group.dataset.featureOptions !== feature; });
-  const total = String(imageButtons.length).padStart(2, '0');
-  document.querySelector('.screen-number').textContent = `${String(index + 1).padStart(2, '0')} / ${total}`;
+  const image = selected.querySelector('[data-image]');
+  screenNumber.hidden = zoomHint.hidden = !image;
+  if (image) {
+    const index = String(Number(image.dataset.image) + 1).padStart(2, '0');
+    const total = String(imageButtons.length).padStart(2, '0');
+    screenNumber.textContent = `${index} / ${total}`;
+  }
 }
 
-slideButtons.forEach(button => button.addEventListener('click', () => selectScreen(Number(button.dataset.slide))));
-featureButtons.forEach(button => button.addEventListener('click', () => selectScreen(Number(button.dataset.feature))));
+slideButtons.forEach(button => button.addEventListener('click', () => selectScreen(button.getAttribute('aria-controls'))));
+featureButtons.forEach(button => button.addEventListener('click', () => {
+  const options = featureOptions.find(group => group.dataset.featureOptions === button.dataset.feature);
+  selectScreen(options.querySelector('[data-slide]').getAttribute('aria-controls'));
+}));
 
 const viewer = document.querySelector('.image-viewer');
 const viewerImage = viewer.querySelector('img');

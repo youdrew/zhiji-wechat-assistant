@@ -12,8 +12,8 @@
   <meta property="og:description" content="回看聊天，记住细节，也看看自己。">
   <title>知己微信助手 · 你真的了解 TA 吗？</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=feature-gallery-2">
-  <script src="app.js?v=feature-gallery-2" defer></script>
+  <link rel="stylesheet" href="styles.css?v=interactive-gallery-1">
+  <script src="app.js?v=interactive-gallery-1" defer></script>
   <script src="copy.js" defer></script>
 </head>
 <body>
@@ -43,32 +43,47 @@
     <section class="showcase shell" id="showcase" aria-label="功能界面展示">
       <nav class="gallery-nav" aria-label="切换功能展示">
         <div class="feature-switch" role="group" aria-label="功能主题">
-          <button type="button" data-feature="0" aria-pressed="true" aria-controls="options-chat screen-0 screen-1">读懂聊天</button>
-          <button type="button" data-feature="2" aria-pressed="false" aria-controls="options-self screen-2 screen-3 screen-4">分析自己</button>
-          <button type="button" data-feature="5" aria-pressed="false" aria-controls="options-friends screen-5 screen-6 screen-7">了解他人</button>
+          <button type="button" data-feature="0" aria-pressed="true" aria-controls="options-chat demo-chat screen-0 screen-1">读懂聊天</button>
+          <button type="button" data-feature="2" aria-pressed="false" aria-controls="options-self demo-self screen-2 screen-3 screen-4">分析自己</button>
+          <button type="button" data-feature="5" aria-pressed="false" aria-controls="options-friends demo-friend screen-5 screen-6 screen-7">了解他人</button>
           <button type="button" data-feature="8" aria-pressed="false" aria-controls="options-extensions screen-8 screen-9">扩展功能</button>
         </div>
-        <div class="screen-options" id="options-chat" data-feature-options="0" role="group" aria-label="读懂聊天的截图">
-          <button type="button" data-slide="0" aria-pressed="true" aria-controls="screen-0">聊天助手</button>
-          <button type="button" data-slide="1" aria-pressed="false" aria-controls="screen-1">回复建议</button>
+        <div class="screen-options" id="options-chat" data-feature-options="0" role="group" aria-label="读懂聊天的展示">
+          <button type="button" data-slide aria-pressed="true" aria-controls="demo-chat">互动演示</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-0">聊天助手截图</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-1">回复建议截图</button>
         </div>
-        <div class="screen-options" id="options-self" data-feature-options="2" role="group" aria-label="分析自己的截图" hidden>
-          <button type="button" data-slide="2" aria-pressed="false" aria-controls="screen-2">和自己对话</button>
-          <button type="button" data-slide="3" aria-pressed="false" aria-controls="screen-3">个人时间线</button>
-          <button type="button" data-slide="4" aria-pressed="false" aria-controls="screen-4">自我剖析</button>
+        <div class="screen-options" id="options-self" data-feature-options="2" role="group" aria-label="分析自己的展示" hidden>
+          <button type="button" data-slide aria-pressed="false" aria-controls="demo-self">互动演示</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-2">和自己对话</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-3">个人时间线</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-4">自我剖析</button>
         </div>
-        <div class="screen-options" id="options-friends" data-feature-options="5" role="group" aria-label="了解他人的截图" hidden>
-          <button type="button" data-slide="5" aria-pressed="false" aria-controls="screen-5">好友概述</button>
-          <button type="button" data-slide="6" aria-pressed="false" aria-controls="screen-6">关系记忆</button>
-          <button type="button" data-slide="7" aria-pressed="false" aria-controls="screen-7">互动统计</button>
+        <div class="screen-options" id="options-friends" data-feature-options="5" role="group" aria-label="了解他人的展示" hidden>
+          <button type="button" data-slide aria-pressed="false" aria-controls="demo-friend">互动演示</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-5">好友概述</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-6">关系记忆</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-7">互动统计</button>
         </div>
         <div class="screen-options" id="options-extensions" data-feature-options="8" role="group" aria-label="扩展功能的截图" hidden>
-          <button type="button" data-slide="8" aria-pressed="false" aria-controls="screen-8">插件管理</button>
-          <button type="button" data-slide="9" aria-pressed="false" aria-controls="screen-9">模型设置</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-8">插件管理</button>
+          <button type="button" data-slide aria-pressed="false" aria-controls="screen-9">模型设置</button>
         </div>
       </nav>
       <div class="screen-stage">
-        <figure class="screen-panel" id="screen-0" data-feature-group="0">
+        <figure class="screen-panel" id="demo-chat" data-feature-group="0">
+          <iframe class="demo-frame" title="读懂聊天互动演示" src="demo/chat/index.html" loading="lazy" sandbox="allow-scripts"></iframe>
+          <figcaption class="screen-benefit">点开「分析与建议」或「聊天助手」，体验如何理解这段对话并准备回复。</figcaption>
+        </figure>
+        <figure class="screen-panel" id="demo-self" data-feature-group="2" hidden>
+          <iframe class="demo-frame" title="自我剖析互动演示" src="demo/self/index.html" loading="lazy" sandbox="allow-scripts"></iframe>
+          <figcaption class="screen-benefit">浏览自我剖析的各个栏目，或在「聊天试用」中看看知己会怎样用你的口吻回复。</figcaption>
+        </figure>
+        <figure class="screen-panel" id="demo-friend" data-feature-group="5" hidden>
+          <iframe class="demo-frame" title="知己分析互动演示" src="demo/friend/index.html" loading="lazy" sandbox="allow-scripts"></iframe>
+          <figcaption class="screen-benefit">从好友概述看到近况，切换到关系记忆，回看聊天里的共同经历。</figcaption>
+        </figure>
+        <figure class="screen-panel" id="screen-0" data-feature-group="0" hidden>
           <button class="image-button image-excerpt" type="button" data-image="0" aria-label="放大查看聊天助手界面"><img src="assets/chat-assistant.png?v=feature-gallery-1" width="1040" height="510" alt="聊天助手结合虚构的聊天记录和好友资料，建议周末散步后一起喝咖啡" fetchpriority="high"></button>
           <figcaption class="screen-benefit"><span class="shot-index sr-only">聊天助手</span>结合来龙去脉，找到合适的回应。</figcaption>
         </figure>
@@ -125,7 +140,7 @@
           <figcaption class="screen-benefit"><span class="shot-index sr-only">模型设置</span>在一个地方管理知己使用的模型。</figcaption>
         </figure>
       </div>
-      <div class="screen-caption"><span>演示数据 · 全部虚构</span><span><span class="screen-number" aria-live="polite">01 / 10</span><span class="zoom-hint">点击图片放大 ↗</span></span></div>
+      <div class="screen-caption"><span>演示数据 · 全部虚构</span><span><span class="screen-number" aria-live="polite" hidden></span><span class="zoom-hint" hidden>点击图片放大 ↗</span></span></div>
       <noscript><p>更多界面请看 <a href="https://github.com/youdrew/zhiji-wechat-assistant/tree/main/site/assets">全部截图</a>。</p></noscript>
     </section>
 

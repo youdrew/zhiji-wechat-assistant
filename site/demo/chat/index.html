@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>读懂聊天 · 知己演示</title>
+  <link rel="stylesheet" href="message-analysis.css">
+  <link rel="stylesheet" href="demo.css">
+  <script src="demo.js" defer></script>
+</head>
+<body>
+  <div class="demo-window">
+    <header class="demo-title">
+      <span class="app-mark" aria-hidden="true">知</span>
+      <strong>知己微信助手</strong>
+      <span class="demo-badge">演示数据 · 全部虚构</span>
+    </header>
+
+    <div class="demo-content">
+      <aside class="session-pane" aria-label="演示会话">
+        <h2>会话</h2>
+        <div id="session-list" role="group" aria-label="选择演示好友"></div>
+      </aside>
+
+      <main class="chat-pane">
+        <header class="chat-header">
+          <h1 id="chat-title">林沐</h1>
+          <div class="chat-actions">
+            <button id="analysis-toggle" class="message-analysis-toggle" type="button" role="switch" aria-checked="true">
+              <span class="message-analysis-switch" aria-hidden="true"></span>分析与建议
+            </button>
+            <button id="assistant-toggle" class="tool-button" type="button" aria-controls="assistant" aria-expanded="false">聊天助手</button>
+          </div>
+        </header>
+
+        <div id="workspace" class="workspace">
+          <section class="chat-main" aria-label="好友聊天">
+            <div class="chat-messages" aria-label="聊天消息与分析" tabindex="0">
+              <p class="chat-time">周五 18:42</p>
+              <div id="messages"></div>
+              <section id="analysis-panel" class="message-analysis-body" aria-labelledby="analysis-title">
+                <h2 id="analysis-title">分析与建议</h2>
+                <p id="analysis-text" class="message-analysis-paragraph"></p>
+                <details class="message-analysis-details">
+                  <summary>参考聊天</summary>
+                  <p id="analysis-source" class="message-analysis-evidence"></p>
+                </details>
+                <h3>回复建议</h3>
+                <div id="suggestions" class="message-analysis-candidates"></div>
+              </section>
+            </div>
+            <footer class="chat-composer">
+              <label for="draft">演示草稿</label>
+              <p id="draft-status" role="status">点击一条建议试填草稿。</p>
+              <textarea id="draft" rows="2" readonly placeholder="选中的回复会显示在这里"></textarea>
+            </footer>
+          </section>
+
+          <section id="assistant" class="assistant" aria-labelledby="assistant-title" hidden>
+            <header class="assistant-header">
+              <div>
+                <h2 id="assistant-title" tabindex="-1">聊天助手</h2>
+                <p id="assistant-context"></p>
+              </div>
+              <button id="assistant-close" class="tool-button" type="button">返回聊天</button>
+            </header>
+            <div id="assistant-log" class="assistant-log" role="log" aria-label="助手对话" tabindex="0"></div>
+            <footer class="assistant-input">
+              <p>试问一个预设问题</p>
+              <div id="assistant-questions" class="assistant-questions" role="group" aria-label="可试用的问题"></div>
+            </footer>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
