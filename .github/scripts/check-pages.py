@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 from html.parser import HTMLParser
 import json
 import os
@@ -22,7 +23,13 @@ DEMO_FILES = {
                    'demo.css', 'demo.js'},
 }
 DEMO_PAGES = {f'demo/{demo}/index.html' for demo in DEMO_FILES}
-EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json', 'favicon.svg'} | {
+OFFICIAL_ICONS = {
+    'app-icon.png': '79fa0c600fb087e25e8271a0af5a074f52068231f18ae6cc4f7357e22c983929',
+    'favicon.ico': '5cc524c4266f32a0d88ec0e0eb4b367e86c2bb075ff685c9c92cc4822bd49bd2',
+}
+BRAND_IMAGE = {'class': 'brand-symbol', 'src': 'app-icon.png', 'alt': '',
+               'width': '32', 'height': '32', 'aria-hidden': 'true'}
+EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json'} | OFFICIAL_ICONS.keys() | {
     f'demo/{demo}/{name}' for demo, names in DEMO_FILES.items() for name in names
 }
 
@@ -98,6 +105,8 @@ def main():
         if path.is_file():
             actual.add(path.relative_to(SITE).as_posix())
     assert actual == EXPECTED, 'Website artifact contains unexpected or missing files'
+    for name, digest in OFFICIAL_ICONS.items():
+        assert sha256((SITE / name).read_bytes()).hexdigest() == digest, 'Website icon differs from the official application asset'
     pages = {}
     for name in ('index.html', 'install.html', *sorted(DEMO_PAGES)):
         path = SITE / name
@@ -109,7 +118,7 @@ def main():
         page.feed(html)
         pages[name] = page
         assert len(page.ids) == len(set(page.ids)), 'Duplicate page IDs'
-        assert not page.images, 'Website showcases must use interactive demos, not screenshots'
+        assert page.images == ([] if is_demo else [BRAND_IMAGE]), 'Only the official header icon is allowed; showcases must use interactive demos'
         if is_demo:
             directives = {parts[0]: parts[1:] for entry in page.csp.split(';') if (parts := entry.split())}
             assert directives.get('default-src') == ["'none'"]
