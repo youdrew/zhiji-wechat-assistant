@@ -7,28 +7,22 @@ import json
 import os
 from pathlib import Path
 import re
-import struct
 import urllib.parse
 import urllib.request
-import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 SITE = ROOT / 'site'
-ASSETS = {
-    'chat-suggestions.png', 'friend-overview.png', 'relationship-memories.png',
-    'chat-assistant.png', 'interaction-trends.png', 'self-timeline.png',
-    'self-personality.png', 'model-settings.png', 'plugin-management.png', 'self-chat.png',
-}
 DEMO_FILES = {
-    'chat': {'index.html', 'demo.css', 'demo.js', 'message-analysis.css'},
+    'chat': {'index.html', 'demo.css', 'demo.js', 'message-analysis.css', 'advisor-panel.css'},
     'friend': {'index.html', 'styles.css', 'renderer.js', 'demo.js', 'analysis-fixtures.js'},
-    'self': {'index.html', 'demo.css', 'demo-host.js', 'page.css', 'page.js',
+    'self': {'index.html', 'demo.css', 'demo-host.js', 'demo-data.js', 'page.css', 'page.js',
              'persona-charts.css', 'persona-charts.js'},
+    'extensions': {'index.html', 'core-ui.css', 'plugin-settings.css', 'settings-window.css',
+                   'plugin-settings.js', 'plugin-configuration.js', 'plugin-fixtures.js',
+                   'demo.css', 'demo.js'},
 }
 DEMO_PAGES = {f'demo/{demo}/index.html' for demo in DEMO_FILES}
 EXPECTED = {'index.html', 'install.html', 'styles.css', 'app.js', 'copy.js', 'release.json', 'favicon.svg'} | {
-    'assets/' + name for name in ASSETS
-} | {
     f'demo/{demo}/{name}' for demo, names in DEMO_FILES.items() for name in names
 }
 
@@ -40,38 +34,21 @@ class Page(HTMLParser):
         self.references = []
         self.images = []
         self.frames = []
+        self.csp = ''
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == 'meta' and attrs.get('http-equiv', '').lower() == 'content-security-policy':
+            self.csp = attrs.get('content', '')
         if 'id' in attrs:
             self.ids.append(attrs['id'])
         for field in ('href', 'src'):
             if attrs.get(field):
                 self.references.append(attrs[field])
         if tag == 'img' and attrs.get('src'):
-            assert attrs.get('alt'), 'A screenshot is missing its description'
             self.images.append(attrs)
         if tag == 'iframe':
             self.frames.append(attrs)
-
-
-def image_dimensions(path):
-    data = path.read_bytes()
-    assert data[:8] == b'\x89PNG\r\n\x1a\n', 'Unexpected screenshot format'
-    offset = 8
-    dimensions = None
-    while offset < len(data):
-        size = int.from_bytes(data[offset:offset + 4], 'big')
-        kind = data[offset + 4:offset + 8]
-        payload = data[offset + 8:offset + 8 + size]
-        crc = int.from_bytes(data[offset + 8 + size:offset + 12 + size], 'big')
-        assert kind in (b'IHDR', b'IDAT', b'IEND'), 'Unexpected screenshot metadata'
-        assert zlib.crc32(kind + payload) & 0xffffffff == crc, 'Screenshot CRC differs'
-        if kind == b'IHDR':
-            dimensions = struct.unpack('>II', payload[:8])
-        offset += size + 12
-    assert offset == len(data) and dimensions
-    return dimensions
 
 
 def validate_release(value, *, required):
@@ -132,9 +109,15 @@ def main():
         page.feed(html)
         pages[name] = page
         assert len(page.ids) == len(set(page.ids)), 'Duplicate page IDs'
+        assert not page.images, 'Website showcases must use interactive demos, not screenshots'
+        if is_demo:
+            directives = {parts[0]: parts[1:] for entry in page.csp.split(';') if (parts := entry.split())}
+            assert directives.get('default-src') == ["'none'"]
+            assert directives.get('connect-src', directives.get('default-src')) == ["'none'"]
+            assert directives.get('script-src') == ["'self'"]
         if name == 'index.html':
             assert len(page.frames) == len(DEMO_PAGES)
-            assert {frame.get('src') for frame in page.frames} == DEMO_PAGES
+            assert {urllib.parse.urlsplit(frame.get('src', '')).path for frame in page.frames} == DEMO_PAGES
             assert all(frame.get('sandbox') == 'allow-scripts' and frame.get('title')
                        for frame in page.frames), 'Demo frames must be isolated and labeled'
         else:
@@ -157,15 +140,9 @@ def main():
                 assert target.is_relative_to(path.parent.resolve()) and target.is_file(), 'Broken local file link'
             if parsed.fragment and not parsed.path:
                 assert parsed.fragment in page.ids, 'Broken local anchor'
-    screenshots = pages['index.html'].images
-    assert len(screenshots) == len(ASSETS)
-    assert {urllib.parse.urlsplit(image['src']).path for image in screenshots} == {'assets/' + name for name in ASSETS}
-    assert not pages['install.html'].images
-    for image in screenshots:
-        path = urllib.parse.urlsplit(image['src']).path
-        assert image_dimensions(SITE / path) == (int(image['width']), int(image['height'])), 'Screenshot aspect ratio metadata differs'
     release = validate_release(json.loads((SITE / 'release.json').read_text(encoding='utf-8')), required=args.require_download)
-    print(json.dumps({'siteFiles': len(actual), 'screenshots': len(pages['index.html'].images), 'download': release, 'publicAssetVerified': args.require_download}))
+    print(json.dumps({'siteFiles': len(actual), 'interactiveDemos': len(DEMO_PAGES), 'screenshots': 0,
+                      'download': release, 'publicAssetVerified': args.require_download}))
 
 
 if __name__ == '__main__':

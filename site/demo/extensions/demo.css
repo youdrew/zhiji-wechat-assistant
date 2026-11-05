@@ -1,0 +1,30 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+html.settings-window body { display: block; background: #fff; }
+.demo-title { display: flex; justify-content: space-between; align-items: center; height: 36px; padding: 0 16px; background: var(--bg-chat-header); border-bottom: 1px solid var(--border-color); font-size: 12px; }
+.demo-title small { color: var(--text-secondary); font-weight: 400; font-size: 11px; }
+html.settings-window .settings-modal-overlay { top: 36px; }
+.settings-tab-btn { border: 0; background: transparent; text-align: left; font: inherit; font-size: 13px; border-left: 3px solid transparent; }
+.settings-tab-btn svg { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; }
+.settings-title h1, h1.settings-title { font: inherit; font-weight: 600; margin: 0; }
+.settings-row select { min-width: 0; max-width: 65%; }
+.settings-panel section + section { margin-top: 20px; }
+.model-traces-settings { display: flex; flex-direction: column; gap: 14px; padding-block: 0 18px; border-bottom: 1px solid var(--border-color); }
+#modelDetailView { display: flex; flex-direction: column; gap: 18px; }
+.model-source-panel { padding: 18px; }
+.model-source-field input { user-select: text; }
+#relatedDemo { position: fixed; margin: auto; width: min(580px, calc(100% - 32px)); max-height: calc(100% - 32px); padding: 20px; color: var(--text-main); background: #fff; border: 1px solid var(--border-color); border-radius: 8px; }
+#relatedDemo::backdrop { background: #18232c70; }
+#relatedDemo header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+#relatedDemo h2 { font-size: 16px; }
+#relatedDemo p { font-size: 13px; line-height: 1.8; margin: 10px 0; }
+.demo-related-card { padding: 12px; border: 1px solid var(--border-color); border-radius: 5px; margin: 8px 0; font-size: 13px; }
+button, input, select { font-family: inherit; }
+button:focus-visible { outline: 2px solid var(--color-green); outline-offset: 2px; }
+@media (max-width: 520px) {
+  html.settings-window .settings-sidebar { flex-basis: 88px; }
+  html.settings-window .settings-tab-btn { padding: 12px 5px; gap: 4px; font-size: 12px; }
+  html.settings-window .settings-content { padding: 20px 12px; }
+  .settings-title { font-size: 18px; }
+  .model-source-panel { padding: 12px; }
+  .demo-title { padding-inline: 12px; }
+}

@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
+<html lang="zh-CN" class="settings-window">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>插件与模型设置 · 知己演示</title>
+  <link rel="stylesheet" href="core-ui.css?v=interactive-only-2">
+  <link rel="stylesheet" href="plugin-settings.css?v=interactive-only-2">
+  <link rel="stylesheet" href="settings-window.css?v=interactive-only-2">
+  <link rel="stylesheet" href="demo.css?v=interactive-only-2">
+  <script src="plugin-fixtures.js?v=interactive-only-2" defer></script>
+  <script src="plugin-configuration.js?v=interactive-only-2" defer></script>
+  <script src="plugin-settings.js?v=interactive-only-2" defer></script>
+  <script src="demo.js?v=interactive-only-2" defer></script>
+</head>
+<body class="theme-light">
+  <header class="demo-title"><span>设置</span><small>演示数据 · 刷新还原</small></header>
+  <div class="settings-modal-overlay show" id="settingsModal">
+    <div class="settings-modal-card">
+      <nav class="settings-sidebar" aria-label="设置栏目" role="tablist" aria-orientation="vertical">
+        <button class="settings-tab-btn active" id="navPlugins" type="button" data-tab="plugins" role="tab" aria-selected="true" aria-controls="panelPlugins"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4c-1.1 0-2 .9-2 2v3.8h1.5a2.7 2.7 0 0 1 0 5.4H2V20c0 1.1.9 2 2 2h3.8v-1.5a2.7 2.7 0 0 1 5.4 0V22H17c1.1 0 2-.9 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"/></svg>插件</button>
+        <button class="settings-tab-btn" id="navModels" type="button" data-tab="models" role="tab" aria-selected="false" aria-controls="panelModels" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h2v2h2V3h2v2h2a2 2 0 0 1 2 2v2h2v2h-2v2h2v2h-2v2a2 2 0 0 1-2 2h-2v2h-2v-2h-2v2H9v-2H7a2 2 0 0 1-2-2v-2H3v-2h2v-2H3V9h2V7a2 2 0 0 1 2-2h2V3Zm-2 4v10h10V7H7Zm2 2h6v6H9V9Z"/></svg>模型设置</button>
+      </nav>
+      <main class="settings-content">
+        <section class="settings-panel active" id="panelPlugins" role="tabpanel" aria-labelledby="navPlugins">
+          <div id="pluginLeaveConfirm" class="plugin-leave-confirm" role="alertdialog" aria-labelledby="pluginLeaveTitle" hidden>
+            <p id="pluginLeaveTitle">还有未保存的更改</p>
+            <div class="plugin-config-buttons">
+              <button type="button" class="settings-action-btn model-source-primary" id="pluginLeaveSave">保存并离开</button>
+              <button type="button" class="settings-action-btn" id="pluginLeaveDiscard">放弃更改</button>
+              <button type="button" class="settings-action-btn" id="pluginLeaveStay">继续编辑</button>
+            </div>
+          </div>
+          <div id="pluginOverview" class="plugin-overview">
+            <div class="settings-title plugin-settings-title"><h1>插件</h1><button type="button" class="settings-action-btn" id="btnRescanPlugins">重新扫描</button></div>
+            <p class="model-source-status">每个插件可独立设置。试着切换开关，或打开设置看看。</p>
+            <div id="pluginStatus" class="model-source-status" role="status" aria-live="polite"></div>
+            <div class="plugin-list" id="pluginList"></div>
+          </div>
+          <section id="pluginDetail" class="plugin-detail" aria-label="插件设置" hidden></section>
+        </section>
+        <section class="settings-panel" id="panelModels" role="tabpanel" aria-labelledby="navModels" hidden>
+          <h1 class="settings-title">模型设置</h1>
+          <div id="modelHomeView">
+            <section class="model-traces-settings">
+              <div class="settings-row"><label for="selectRoleMain">主模型</label><select id="selectRoleMain"></select></div>
+              <div class="settings-row"><label for="selectRoleJudge">判断模型</label><select id="selectRoleJudge"></select></div>
+              <div class="settings-row"><label for="selectRoleImage">图片模型</label><select id="selectRoleImage"></select></div>
+            </section>
+            <section class="model-traces-settings"><div id="modelListRows"></div><button type="button" class="settings-action-btn" id="btnAddModel">添加模型</button></section>
+            <section class="model-traces-settings"><div class="settings-row"><label for="demoSearch">联网搜索</label><select id="demoSearch"><option value="none">关闭</option><option value="searxng">SearXNG</option></select></div><p class="model-source-status" id="searchStatus"></p></section>
+            <p id="modelHomeStatus" class="model-source-status" role="status"></p>
+          </div>
+          <form id="modelDetailView" hidden>
+            <div class="settings-row"><button type="button" class="settings-action-btn" id="btnBackModelHome">返回</button><span id="modelDetailTitle">编辑模型</span></div>
+            <section class="model-source-panel api-model-settings">
+              <div class="settings-row"><label for="selectApiProtocol">接口协议</label><select id="selectApiProtocol"><option value="anthropic">Anthropic 兼容</option><option value="responses">Responses 兼容</option><option value="chat_completions">Completions（旧版）</option><option value="gemini">Gemini 兼容</option><option value="ollama">Ollama 兼容</option></select></div>
+              <div class="model-source-field"><label for="inputApiBaseUrl">Base URL</label><input id="inputApiBaseUrl" type="text" readonly value="https://model.example.invalid/v1"></div>
+              <div class="model-source-field"><label for="inputApiKey">API Key</label><input id="inputApiKey" type="password" readonly placeholder="演示无需填写密钥" autocomplete="off"></div>
+              <div class="model-source-discovery"><button type="button" class="settings-action-btn" id="btnFetchApiModels">获取模型列表</button><span id="apiModelCount" role="status"></span></div>
+              <div class="model-source-field"><label for="selectApiModel">模型列表</label><select id="selectApiModel" disabled><option value="">获取列表后选择</option></select></div>
+              <div class="model-source-field"><label for="inputApiModelId">模型 ID</label><input id="inputApiModelId" type="text" maxlength="80" required autocomplete="off"></div>
+              <div class="model-source-field"><label for="inputApiConcurrency">同时请求数</label><input id="inputApiConcurrency" type="number" min="1" max="8" step="1" value="4" required></div>
+              <details class="model-source-field"><summary>高级</summary><div class="model-source-field"><label for="inputApiContextTokens">上下文大小（tokens）</label><input id="inputApiContextTokens" type="number" min="4096" max="1000000" value="32768" required></div><div class="model-source-field"><label for="inputApiTimeoutMinutes">生成超时（分钟）</label><input id="inputApiTimeoutMinutes" type="number" min="1" max="180" value="60" required></div></details>
+              <div class="model-source-actions"><button type="button" class="settings-action-btn" id="btnTestApiModel">测试连接</button><button type="button" class="settings-action-btn model-source-primary" id="btnSaveApiModel">保存</button></div>
+              <p id="apiModelTestStatus" class="model-source-status" role="status"></p>
+            </section>
+          </form>
+        </section>
+      </main>
+    </div>
+  </div>
+  <dialog id="relatedDemo" aria-labelledby="relatedTitle"><header><h2 id="relatedTitle"></h2><button type="button" id="relatedClose" class="settings-action-btn">关闭</button></header><div id="relatedBody"></div></dialog>
+</body>
+</html>

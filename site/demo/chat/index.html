@@ -6,11 +6,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>读懂聊天 · 知己演示</title>
-  <link rel="stylesheet" href="message-analysis.css">
-  <link rel="stylesheet" href="demo.css">
-  <script src="demo.js" defer></script>
+  <link rel="stylesheet" href="message-analysis.css?v=interactive-only-2">
+  <link rel="stylesheet" href="advisor-panel.css?v=interactive-only-2">
+  <link rel="stylesheet" href="demo.css?v=interactive-only-2">
+  <script src="demo.js?v=interactive-only-2" defer></script>
 </head>
-<body>
+<body class="theme-light">
   <div class="demo-window">
     <header class="demo-title">
       <span class="app-mark" aria-hidden="true">知</span>
@@ -19,62 +20,91 @@
     </header>
 
     <div class="demo-content">
+      <aside class="nav-rail" aria-hidden="true">
+        <span class="rail-avatar">知</span>
+        <svg class="rail-chat" viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4V4Z"/></svg>
+        <svg viewBox="0 0 24 24"><path d="M8 9a4 4 0 1 0 8 0 4 4 0 0 0-8 0Zm-3 11a7 7 0 0 1 14 0"/></svg>
+      </aside>
       <aside class="session-pane" aria-label="演示会话">
-        <h2>会话</h2>
+        <div class="search-header"><label class="search-box">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg>
+          <input id="session-search" type="search" aria-label="搜索演示好友" placeholder="搜索">
+        </label></div>
         <div id="session-list" role="group" aria-label="选择演示好友"></div>
+        <p id="session-empty" class="session-empty" hidden>没有找到这位演示好友</p>
       </aside>
 
       <main class="chat-pane">
         <header class="chat-header">
-          <h1 id="chat-title">林沐</h1>
-          <div class="chat-actions">
+          <div class="chat-title-group">
+            <h1 id="chat-title">林沐</h1>
             <button id="analysis-toggle" class="message-analysis-toggle" type="button" role="switch" aria-checked="true">
               <span class="message-analysis-switch" aria-hidden="true"></span>分析与建议
             </button>
-            <button id="assistant-toggle" class="tool-button" type="button" aria-controls="assistant" aria-expanded="false">聊天助手</button>
           </div>
+          <span id="chat-topic" class="chat-topic">周末散步</span>
         </header>
 
         <div id="workspace" class="workspace">
           <section class="chat-main" aria-label="好友聊天">
             <div class="chat-messages" aria-label="聊天消息与分析" tabindex="0">
-              <p class="chat-time">周五 18:42</p>
               <div id="messages"></div>
               <section id="analysis-panel" class="message-analysis-body" aria-labelledby="analysis-title">
                 <h2 id="analysis-title">分析与建议</h2>
                 <p id="analysis-text" class="message-analysis-paragraph"></p>
                 <details class="message-analysis-details">
-                  <summary>参考聊天</summary>
-                  <p id="analysis-source" class="message-analysis-evidence"></p>
+                  <summary>参考聊天原文</summary>
+                  <div id="analysis-source" class="message-analysis-evidence"></div>
                 </details>
                 <h3>回复建议</h3>
                 <div id="suggestions" class="message-analysis-candidates"></div>
               </section>
             </div>
             <footer class="chat-composer">
-              <label for="draft">演示草稿</label>
-              <p id="draft-status" role="status">点击一条建议试填草稿。</p>
-              <textarea id="draft" rows="2" readonly placeholder="选中的回复会显示在这里"></textarea>
+              <label class="sr-only" for="draft">演示草稿</label>
+              <textarea id="draft" rows="2" readonly placeholder="选中的建议会显示在这里"></textarea>
+              <div class="composer-tools">
+                <button id="assistant-toggle" class="tool-button" type="button" aria-controls="assistant" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4V4Z"/><path d="M8 9h8m-8 3h5"/></svg>聊天助手
+                </button>
+                <p id="draft-status" role="status">点击一条建议试填草稿</p>
+                <button id="draft-clear" class="tool-button" type="button">清空草稿</button>
+              </div>
             </footer>
           </section>
 
-          <section id="assistant" class="assistant" aria-labelledby="assistant-title" hidden>
-            <header class="assistant-header">
-              <div>
-                <h2 id="assistant-title" tabindex="-1">聊天助手</h2>
-                <p id="assistant-context"></p>
-              </div>
-              <button id="assistant-close" class="tool-button" type="button">返回聊天</button>
-            </header>
-            <div id="assistant-log" class="assistant-log" role="log" aria-label="助手对话" tabindex="0"></div>
-            <footer class="assistant-input">
-              <p>试问一个预设问题</p>
-              <div id="assistant-questions" class="assistant-questions" role="group" aria-label="可试用的问题"></div>
-            </footer>
-          </section>
         </div>
       </main>
     </div>
   </div>
+  <dialog id="assistant" class="assistant-window" aria-labelledby="assistant-title">
+    <section class="advisor-frame-body theme-light">
+      <header class="advisor-frame-top">
+        <div class="advisor-heading">
+          <h2 id="assistant-title" class="advisor-session-title">聊聊和林沐的周末安排</h2>
+          <span class="advisor-agent-name">交流助手</span>
+        </div>
+        <nav class="advisor-session-actions" aria-label="助手会话操作">
+          <button id="assistant-new" class="advisor-icon-btn" type="button" aria-label="新讨论" title="新讨论">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button id="assistant-close" class="advisor-text-btn" type="button">返回聊天</button>
+        </nav>
+      </header>
+      <div id="assistant-log" class="advisor-timeline" role="log" aria-label="助手对话" tabindex="0"></div>
+      <footer class="advisor-input-area">
+        <div id="assistant-context" class="advisor-participants"></div>
+        <div id="assistant-questions" class="assistant-questions" role="group" aria-label="可试用的问题"></div>
+        <label class="sr-only" for="assistant-prompt">预设问题</label>
+        <textarea id="assistant-prompt" class="advisor-textarea" rows="2" readonly></textarea>
+        <div class="advisor-input-bar">
+          <span id="assistant-hint" class="assistant-hint" role="status">选择预设问题后发送</span>
+          <button id="assistant-send" class="advisor-send-btn" type="button" aria-label="发送预设问题" title="发送预设问题">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-7 7 7-7 7 7"/></svg>
+          </button>
+        </div>
+      </footer>
+    </section>
+  </dialog>
 </body>
 </html>

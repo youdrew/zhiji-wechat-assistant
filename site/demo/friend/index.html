@@ -3,21 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
   <title>知己分析 · 互动演示</title>
-  <link rel="stylesheet" href="styles.css">
-  <script src="renderer.js" defer></script>
-  <script src="analysis-fixtures.js" defer></script>
-  <script src="demo.js" defer></script>
+  <link rel="stylesheet" href="styles.css?v=interactive-only-2">
+  <script src="renderer.js?v=interactive-only-2" defer></script>
+  <script src="analysis-fixtures.js?v=interactive-only-2" defer></script>
+  <script src="demo.js?v=interactive-only-2" defer></script>
 </head>
 <body class="theme-light demo-window">
   <!-- Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 -->
   <header class="fa-header">
     <div class="fa-who">
       <span class="fa-avatar" aria-hidden="true">林</span>
-      <div class="fa-who-text"><h1>林沐 · 知己分析</h1></div>
+      <div class="fa-who-text"><h1>林沐</h1></div>
     </div>
-    <span class="demo-badge">演示数据 · 全部虚构</span>
+    <div class="fa-run">
+      <button type="button" id="demoAnalysisInfo" class="fa-run-info">已载入演示分析</button>
+      <button type="button" id="demoRefresh" class="fa-primary">更新分析</button>
+    </div>
+    <div class="fa-more">
+      <button type="button" id="demoMore" class="fa-plain" aria-haspopup="menu" aria-expanded="false" aria-controls="demoMenu">更多</button>
+      <div id="demoMenu" class="fa-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-demo-action="settings">联系目标与自己的资料</button>
+        <button type="button" role="menuitem" data-demo-action="add">手动新增记忆</button>
+        <button type="button" role="menuitem" data-demo-action="ignored">查看已忽略的记录</button>
+        <button type="button" role="menuitem" data-demo-action="rebuild">重新分析全部…</button>
+        <button type="button" role="menuitem" data-demo-action="clear" class="fa-danger-text">清空这位联系人的记忆…</button>
+      </div>
+    </div>
+    <span class="demo-badge">虚构演示 · 刷新还原</span>
   </header>
   <nav class="fa-tabs" role="tablist" aria-label="知己分析栏目">
     <button type="button" id="tab-overview" role="tab" aria-selected="true" aria-controls="pageOverview" data-tab="overview">好友概述</button>

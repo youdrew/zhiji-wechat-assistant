@@ -2714,19 +2714,19 @@
   function decide(item, action, choice) {
     return mutate({ action, id: item.id, expectedVersion: item.version, ...(choice ? { choice } : {}) });
   }
-  function batch(action, scope, items) {
+  async function batch(action, scope, items) {
     const verb = action === "batch-confirm" ? "确认" : "忽略";
     const count = items ? items.length : M.pending.length;
-    if (!window.confirm(`${verb}所选范围内的 ${count} 条候选？${action === "batch-confirm" ? "需要单独选择的矛盾候选会跳过。" : ""}`)) return;
+    if (!await A.confirm(`${verb}所选范围内的 ${count} 条候选？${action === "batch-confirm" ? "需要单独选择的矛盾候选会跳过。" : ""}`)) return;
     return mutate(items ? { action, ids: items.map(item => item.id) } :
       { action, scope, expectedMemoryVersion: M.version }, `已${verb}`);
   }
-  function remove(item) {
-    if (!window.confirm("删除这条记忆？之后不会再自动提出相同内容。不会删除微信原记录、助手对话或联系目标。")) return;
+  async function remove(item) {
+    if (!await A.confirm("删除这条记忆？刷新页面可还原演示。", "删除")) return;
     return mutate({ action: "delete", id: item.id, expectedVersion: item.version }, "已删除");
   }
-  function clearAll() {
-    if (!window.confirm(`清空这位联系人的全部结构化记忆（含待确认候选）？\n\n这只清理记忆条目，聊天原文仍在本机，之后重新建档可能再次提出。不会影响其他联系人、微信记录、助手对话或联系目标。`)) return;
+  async function clearAll() {
+    if (!await A.confirm("清空这位联系人的演示记忆？刷新页面可还原。", "清空")) return;
     return mutate({ action: "clear" }, "已清空");
   }
 
