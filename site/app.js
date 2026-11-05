@@ -1,75 +1,29 @@
 // Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 'use strict';
 
-const imageButtons = [...document.querySelectorAll('[data-image]')];
-const slideButtons = [...document.querySelectorAll('[data-slide]')];
 const featureButtons = [...document.querySelectorAll('[data-feature]')];
-const featureOptions = [...document.querySelectorAll('[data-feature-options]')];
 const screenPanels = [...document.querySelectorAll('.screen-panel')];
-const screenNumber = document.querySelector('.screen-number');
-const zoomHint = document.querySelector('.zoom-hint');
-
-function selectScreen(id) {
-  const selected = document.getElementById(id);
-  screenPanels.forEach(panel => { panel.hidden = panel !== selected; });
-  slideButtons.forEach(button => button.setAttribute('aria-pressed', String(button.getAttribute('aria-controls') === id)));
-  const feature = selected.dataset.featureGroup;
-  featureButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.feature === feature)));
-  featureOptions.forEach(group => { group.hidden = group.dataset.featureOptions !== feature; });
-  const image = selected.querySelector('[data-image]');
-  screenNumber.hidden = zoomHint.hidden = !image;
-  if (image) {
-    const index = String(Number(image.dataset.image) + 1).padStart(2, '0');
-    const total = String(imageButtons.length).padStart(2, '0');
-    screenNumber.textContent = `${index} / ${total}`;
+function selectFeature(button, focus = false) {
+  for (const item of featureButtons) {
+    const selected = item === button;
+    item.setAttribute('aria-selected', String(selected));
+    item.tabIndex = selected ? 0 : -1;
   }
+  for (const panel of screenPanels) panel.hidden = panel.id !== button.getAttribute('aria-controls');
+  if (focus) button.focus();
 }
-
-slideButtons.forEach(button => button.addEventListener('click', () => selectScreen(button.getAttribute('aria-controls'))));
-featureButtons.forEach(button => button.addEventListener('click', () => {
-  const options = featureOptions.find(group => group.dataset.featureOptions === button.dataset.feature);
-  selectScreen(options.querySelector('[data-slide]').getAttribute('aria-controls'));
-}));
-
-const viewer = document.querySelector('.image-viewer');
-const viewerImage = viewer.querySelector('img');
-const viewerTitle = document.getElementById('viewer-title');
-const viewerCount = viewer.querySelector('.viewer-count');
-let currentImage = 0;
-let opener = null;
-
-function showImage(index) {
-  currentImage = (index + imageButtons.length) % imageButtons.length;
-  const button = imageButtons[currentImage];
-  const figure = button.closest('figure');
-  const original = button.querySelector('img');
-  viewerImage.src = original.src;
-  viewerImage.alt = original.alt;
-  viewerTitle.textContent = figure.querySelector('.shot-index').textContent;
-  viewerCount.textContent = `${currentImage + 1} / ${imageButtons.length}`;
-  viewer.querySelector('.viewer-image').scrollTop = 0;
-}
-
-for (const button of imageButtons) {
-  button.addEventListener('click', () => {
-    opener = button;
-    showImage(Number(button.dataset.image));
-    viewer.showModal();
+featureButtons.forEach((button, index) => {
+  button.addEventListener('click', () => selectFeature(button));
+  button.addEventListener('keydown', event => {
+    let next;
+    if (event.key === 'ArrowRight') next = (index + 1) % featureButtons.length;
+    if (event.key === 'ArrowLeft') next = (index + featureButtons.length - 1) % featureButtons.length;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = featureButtons.length - 1;
+    if (next === undefined) return;
+    event.preventDefault();
+    selectFeature(featureButtons[next], true);
   });
-}
-viewer.querySelector('.viewer-close').addEventListener('click', () => viewer.close());
-viewer.querySelector('.viewer-previous').addEventListener('click', () => showImage(currentImage - 1));
-viewer.querySelector('.viewer-next').addEventListener('click', () => showImage(currentImage + 1));
-viewer.addEventListener('keydown', event => {
-  if (event.key === 'ArrowLeft') { event.preventDefault(); showImage(currentImage - 1); }
-  if (event.key === 'ArrowRight') { event.preventDefault(); showImage(currentImage + 1); }
-});
-viewer.addEventListener('close', () => { if (opener) opener.focus(); });
-viewer.addEventListener('click', event => {
-  if (event.target === viewer) {
-    const box = viewer.getBoundingClientRect();
-    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) viewer.close();
-  }
 });
 
 const releaseButtons = [...document.querySelectorAll('[data-download]')];

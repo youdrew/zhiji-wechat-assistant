@@ -6,15 +6,15 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>自我剖析 · 知己演示</title>
-  <link rel="stylesheet" href="persona-charts.css">
-  <link rel="stylesheet" href="page.css">
-  <link rel="stylesheet" href="demo.css">
+  <link rel="stylesheet" href="persona-charts.css?v=interactive-only-2">
+  <link rel="stylesheet" href="page.css?v=interactive-only-2">
+  <link rel="stylesheet" href="demo.css?v=interactive-only-2">
 </head>
 <body>
   <main class="page">
-    <p class="demo-note">互动演示 · 虚构资料与预设回复 · 编辑和设置仅在客户端可用</p>
     <header class="page-header">
       <div class="who"><span class="avatar" aria-hidden="true">我</span><div class="who-text"><h1>自我剖析</h1><p id="account" class="account">正在读取当前账号…</p></div></div>
+      <span class="demo-label">虚构演示</span>
       <div class="run-control">
         <button id="analysisStatus" type="button" class="status-link" aria-controls="analysisPanel" aria-expanded="false"><span id="analysisMessage" role="status">读取状态…</span></button>
         <button id="analysisPause" type="button" hidden>暂停</button>
@@ -125,8 +125,10 @@
           <div id="modelHint" class="hint" hidden><span>尚未配置回复模型</span><button id="modelSettings" type="button" class="link">去设置</button></div>
           <div class="composer">
             <div class="demo-prompts" aria-label="示例消息">
-              <button id="demoFirstPrompt" type="button">周六一早去公园走走？</button>
-              <button id="demoNextPrompt" type="button">那下午三点见？</button>
+              <button id="demoFirstPrompt" type="button">周末邀约</button>
+              <button id="demoNextPrompt" type="button">确认时间</button>
+              <button id="demoRestPrompt" type="button">累了想休息</button>
+              <button id="demoArtPrompt" type="button">一起看展</button>
             </div>
             <label class="sr-only" for="trialInput">以好友身份发消息</label>
             <textarea id="trialInput" rows="2" maxlength="1000" placeholder="选一句示例，或以好友身份输入消息" disabled></textarea>
@@ -136,8 +138,9 @@
       </section>
     </div>
   </main>
-  <script src="demo-host.js"></script>
-  <script src="persona-charts.js"></script>
-  <script src="page.js"></script>
+  <script src="demo-data.js?v=interactive-only-2"></script>
+  <script src="demo-host.js?v=interactive-only-2"></script>
+  <script src="persona-charts.js?v=interactive-only-2"></script>
+  <script src="page.js?v=interactive-only-2"></script>
 </body>
 </html>

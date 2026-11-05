@@ -1,11 +1,8 @@
 /* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
-.demo-note {
+.demo-label {
   flex: none;
-  margin: 0;
-  padding: 8px 16px;
-  background: var(--accent-bg);
-  color: var(--accent-text);
-  font-size: 12px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .demo-prompts {
@@ -16,13 +13,18 @@
 }
 
 .demo-prompts button {
-  background: var(--accent-bg);
-  color: var(--accent-text);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 3px 8px;
   white-space: normal;
   text-align: left;
 }
 
-.run-control,
+.demo-prompts button:hover {
+  color: var(--text);
+}
+
 #saveProfile,
 #addTag,
 #tagActions,
@@ -36,8 +38,14 @@
 }
 
 .tl-month:disabled,
-.tl-mark:disabled {
+.tl-mark:disabled,
+.kpc-p-value:disabled,
+button.kpc-p-seg:disabled {
   opacity: 1;
+}
+
+#judgeShadowPanel {
+  display: none !important;
 }
 
 @media (max-width: 720px) {
