@@ -127,7 +127,9 @@ test("native calls and synthetic selftest share one fair queue, and stop cancels
     const mainCall = fetch(`http://127.0.0.1:${port}/s/main/v1/chat/completions`, { method: "POST",
       headers: { authorization: "Bearer synthetic-token", "content-type": "application/json" }, body: "{}" });
     const localCalls = [send(), send()];
-    await delay(5); await gateway.stopLocalJudge();
+    for (let attempt = 0; (gateway as any).localJudgeCalls.size < 2 && attempt < 100; attempt++) await delay(10);
+    assert.equal((gateway as any).localJudgeCalls.size, 2);
+    await gateway.stopLocalJudge();
     assert.equal((await mainCall).status, 200);
     const responses = await Promise.all(localCalls);
     assert.ok(responses.every(response => response.status >= 400));
