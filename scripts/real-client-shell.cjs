@@ -1,9 +1,10 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell, screen } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, screen, Tray } = require("electron");
 // Modified by Know Your Friends, 2026-10-10: isolated native image preview windows.
 // Modified by Know Your Friends, 2026-10-10: independent 知己分析 windows with draft flush on exit.
 // Modified 2026-10-13: a generic docked plugin panel, host-picked files as Core file grants and plugin-page-only frames.
 // Modified 2026-10-22: chat-toolbar plugin pages open in one independent window per friend (scripts/plugin-windows.cjs).
 // Modified 2026-11-04: one conversation pops out into an independent chat window (scripts/chat-windows.cjs).
+// Modified 2026-11-05: closing the main window can hide it to the Windows notification area (通用设置).
 const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -36,7 +37,6 @@ const DOC_URLS = new Set([
   "https://github.com/youdrew/zhiji-wechat-assistant",
   "https://eugenepage.com/",
   "mailto:youdrewxuan@icloud.com",
-  "https://github.com/tswawa",
   "https://github.com/tswawa/WechatVibe",
   RELEASES_URL,
 ]);
@@ -135,6 +135,9 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   let loadRetries = 0;
   let validationTimer = null;
   let exiting = false;
+  // 通用设置「关闭主窗口时」: the renderer pushes its saved choice; the tray only exists on Windows.
+  let closeToTray = true;
+  let tray = null;
   // Set by desktop-main: only the launch that created the bridge may stop it on a
   // startup failure. A reused ready bridge must survive a failed shell start.
   const bridgeCreated = process.env.KYF_BRIDGE_CREATED === "1";
@@ -220,6 +223,28 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
     return appExitPending;
   }
 
+  function showMainWindow() {
+    if (!window || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
+  function createTray() {
+    try {
+      tray = new Tray(path.join(ROOT, "chatui", "assets", "app-icon.ico"));
+    } catch (_) {
+      tray = null; // Without an icon the close button keeps quitting the app.
+      return;
+    }
+    tray.setToolTip("知己微信助手");
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "打开知己微信助手", click: showMainWindow },
+      { type: "separator" },
+      { label: "退出", click: () => app.quit() },
+    ]));
+    tray.on("click", showMainWindow);
+  }
+
   // Modified 2026-10-13: plugin pages run in sandboxed frames; give each its own renderer process
   // so a stuck or crashed plugin page cannot freeze the window that hosts it.
   // The default groups every plugin served by Core into one site process. Per-document
@@ -230,8 +255,7 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
   } else {
     app.on("second-instance", (_event, argv) => {
       if (window && !window.isDestroyed()) {
-        if (window.isMinimized()) window.restore();
-        window.focus();
+        showMainWindow();
         if (openModuleArgument(argv) === "settings") settingsWindow?.open({ tab: "general" });
       }
     });
@@ -252,6 +276,10 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
         testState.themes.push({ theme, ...THEMES[theme] });
         if (testState.themes.length === 2 && testState.themeWaiter) testState.themeWaiter();
       }
+    });
+
+    ipcMain.on("real-client:set-close-action", (event, action) => {
+      if (trustedAppFrame(event) && (action === "tray" || action === "quit")) closeToTray = action === "tray";
     });
 
     // A plugin page asks for a local file or folder: the user picks it here, Core keeps the path and the
@@ -613,12 +641,19 @@ if (process.platform !== "win32" || !url || (!selfTest && !/^[a-f0-9]{64}$/.test
           event.preventDefault();
           return;
         }
+        // Quitting (tray menu, account deletion, update) sets exiting first, so only the close button hides.
+        if (tray && closeToTray && !exiting) {
+          event.preventDefault();
+          window.hide();
+          return;
+        }
         if (needsExitConfirmation()) {
           event.preventDefault();
           void confirmAppExit().then(ok => { if (ok && window && !window.isDestroyed()) window.close(); });
         }
       });
-      window.on("closed", () => { pluginWindows?.close(); selfAnalysisWindow?.close(); historyWindows?.close(); externalImportWindows?.close(); settingsWindow?.close(); chatWindows?.close(); modelTracesWindow?.close(); modelTracesHost?.close(); window = null; stopBridgeMonitor?.(); });
+      window.on("closed", () => { pluginWindows?.close(); selfAnalysisWindow?.close(); historyWindows?.close(); externalImportWindows?.close(); settingsWindow?.close(); chatWindows?.close(); modelTracesWindow?.close(); modelTracesHost?.close(); tray?.destroy(); tray = null; window = null; stopBridgeMonitor?.(); });
+      if (!selfTest && !updateValidation) createTray();
       if (!selfTest && !updateValidation) {
         const startBridgeMonitor = () => {
           if (stopBridgeMonitor || !window || window.isDestroyed()) return;

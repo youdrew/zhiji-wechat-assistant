@@ -74,9 +74,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .fa-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .fa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
 .fa-bar .fa-spacer { flex: 1; }
-.fa-segment { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
-.fa-segment button { border: 0; background: var(--panel); padding: 3px 10px; cursor: pointer; color: var(--muted); }
-.fa-segment button[aria-pressed="true"] { color: var(--text); background: var(--hover); }
 .fa-empty { padding: 48px 0; text-align: center; color: var(--muted); }
 .fa-empty p { margin: 0 0 12px; }
 .fa-note { color: var(--muted); font-size: 12px; margin: 6px 0; }

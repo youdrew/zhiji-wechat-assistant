@@ -73,6 +73,9 @@ SCOPED_READ_PATHS = FRIEND_READ_PATHS | {"/api/schemes", "/api/legacy-portrait"}
 # kyf.friend-analysis 的 page.* 全部只读（overview/persona/chat/personaEvidence/message/round/trend）；
 # scheme.status 是好友窗头部运行状态行的只读查询。scheme.estimate 可能触达模型，不放行。
 READ_RPC_EXTRA = frozenset({"scheme.status"})
+# 标签与时间线的修改和撤销虽在 page.* 下，却是写入；受限窗口没有编辑和撤销入口。
+WRITE_PAGE_RPC = frozenset({"page.tagEdit", "page.tagUndo", "page.tagUndoAgent", "page.timelineEdit",
+                            "page.timelineUndo", "page.timelineUndoAgent"})
 # 受限好友窗实际加载的 chatui 静态文件（chatui/friend.html 及其 <link>/<script>），别的一律拒绝。
 FRIEND_STATIC_FILES = frozenset({"/friend.html", "/friend.css", "/friend-core.js", "/friend-memory.js",
                                  "/friend-run.js", "/plugin-frame.js", "/friend-scheme.js", "/friend.js"})
@@ -775,7 +778,8 @@ class UiWindowService:
         if not isinstance(body, dict) or body.get("plugin") not in binding["plugins"]:
             raise UiGuardError()
         method = body.get("method")
-        if not isinstance(method, str) or not (method.startswith("page.") or method in READ_RPC_EXTRA):
+        if not isinstance(method, str) or method in WRITE_PAGE_RPC or \
+                not (method.startswith("page.") or method in READ_RPC_EXTRA):
             raise UiGuardError("ui-session-read-only")
         self._match(binding, body, ("account", "user"))
         return None

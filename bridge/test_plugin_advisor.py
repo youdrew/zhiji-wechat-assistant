@@ -61,15 +61,12 @@ class AdvisorPluginIntegrationTests(unittest.TestCase):
         app = base / "app"
         shutil.copytree(ROOT / "plugin-sdk" / "python", app / "plugin-sdk" / "python",
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        sdk_marker = app / "node_modules" / "@opencode-ai" / "sdk" / "package.json"
-        sdk_marker.parent.mkdir(parents=True)
-        sdk_marker.write_text('{"name":"synthetic-sdk-marker"}', encoding="utf-8")
-        engine = app / "runtime" / "opencode"
-        engine.mkdir(parents=True)
+        # A DeepSeek Harness installation shipped next to the app: the first place the plugin looks.
+        engine = app / "runtime" / "dsh"
+        (engine / "resources").mkdir(parents=True)
         stub = b"Synthetic integration fixture. Must never be executed."
-        (engine / "opencode.exe").write_bytes(stub)
-        (engine / "manifest.json").write_text(json.dumps({"schema": 1, "version": "1.18.34",
-            "file": "opencode.exe", "bytes": len(stub), "sha256": hashlib.sha256(stub).hexdigest()}), encoding="utf-8")
+        (engine / ("DeepSeek Harness.exe" if sys.platform == "win32" else "deepseek-harness")).write_bytes(stub)
+        (engine / "resources" / "app.asar").write_bytes(stub)
         self.source = FakeSource(account=ACCOUNT, workdir=str(base / "synthetic-source"))
         self.source.add_messages(FRIEND, [make_message(1, text="合成好友消息，仅用于插件集成测试")])
         self.source.messages = lambda user, limit: list(self.source.users.get(user, []))[-limit:]

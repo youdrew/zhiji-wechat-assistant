@@ -31,6 +31,8 @@ RUNTIMES = ("python", "node", "command")
 EVENTS = ("message.new", "friend.opened", "human.changed")
 HOST_TABS = ("memories",)
 SLOT_KINDS = ("schemes", "chatHeader", "messageAnnotations", "chatToolbar", "nav", "settings")
+# Model purposes a plugin may declare; keep in step with model_source.ROLES.
+MODEL_ROLES = ("main", "judge", "image", "speech")
 
 
 class ManifestError(ValueError):
@@ -184,12 +186,18 @@ def parse_manifest(directory, source):
     events = raw.get("events", [])
     if not isinstance(events, list) or any(item not in EVENTS for item in events) or len(set(events)) != len(events):
         raise ManifestError("events 不正确")
+    # Purpose -> what the plugin uses it for. Core routes only declared purposes
+    # to their own model; the settings page lists the plugins behind each one.
+    models = raw.get("models", {})
+    if not isinstance(models, dict) or set(models) - set(MODEL_ROLES):
+        raise ManifestError("models 不正确")
+    models = {role: _text(models[role], "models." + role, 32) for role in MODEL_ROLES if role in models}
     manifest = {
         "id": plugin_id, "name": _text(raw.get("name"), "name", 32), "version": version,
         "description": _text(raw.get("description", ""), "description", 300, 0),
         "author": _text(raw.get("author", ""), "author", 64, 0),
         "coreApi": sorted(set(core["api"])), "runtime": parsed_runtime, "events": events,
-        "dependencies": list(dependencies),
+        "dependencies": list(dependencies), "models": models,
         "contributes": _validate_contributes(base, raw.get("contributes")),
         "directory": str(base.resolve()), "source": "external" if distribution == "external" else source,
     }
@@ -401,6 +409,7 @@ class PluginRegistry:
         return {key: manifest[key] for key in ("id", "name", "version", "description", "author", "source",
                                                "events", "contributes")} | {
             "dependencies": list(manifest.get("dependencies", [])),
+            "models": dict(manifest.get("models", {})),
             "enabled": self.enabled(plugin_id),
             **({"dependencyError": dependency_error} if dependency_error else {}),
             **({"incompatible": manifest["incompatible"]} if manifest.get("incompatible") else {})}

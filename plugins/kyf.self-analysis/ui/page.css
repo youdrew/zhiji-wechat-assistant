@@ -92,24 +92,6 @@ select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; ba
 .tl-filter { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 13px; margin: 0; }
 .tl-filter input { width: auto; margin: 0; accent-color: var(--accent); }
 .tl-overview { margin: 10px 0 0; overflow-x: auto; }
-.tl-grid { display: grid; gap: 3px; align-items: center; min-width: max-content; }
-.tl-year-label { color: var(--muted); font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.tl-year-label.chat-start { color: var(--text); text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
-.tl-track-label { border: 0; background: transparent; padding: 0 6px 0 0; text-align: left; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
-.tl-track-label:hover:not(:disabled) { background: transparent; color: var(--text); }
-.tl-cell { display: block; width: 100%; height: 14px; border: 0; border-radius: 2px; padding: 0; background: var(--line); opacity: .45; transition: opacity .15s ease; }
-.tl-cell:disabled { opacity: .45; cursor: default; }
-.tl-cell.gap { background: transparent; }
-.tl-cell.level-1 { background: var(--track); opacity: .3; } .tl-cell.level-2 { background: var(--track); opacity: .5; }
-.tl-cell.level-3 { background: var(--track); opacity: .72; } .tl-cell.level-4 { background: var(--track); opacity: .95; }
-.tl-cell:hover:not(:disabled) { background: var(--track); outline: 1px solid var(--text); }
-.tl-cell.dim, .tl-track-label.dim { opacity: .15; }
-.tl-cell-slot { position: relative; height: 14px; }
-.tl-cell-slot.dim .tl-overview-star { opacity: .3; }
-.tl-overview-star { position: absolute; top: 0; width: 14px; height: 14px; margin-left: -7px; border: 0; border-radius: 0; background: transparent; padding: 0; color: var(--text); font-size: 11px; line-height: 14px; text-align: center; text-shadow: 0 0 2px var(--bg); }
-.tl-overview-star:hover:not(:disabled) { background: transparent; color: var(--accent-text); }
-.tl-tip { position: fixed; top: 0; right: auto; z-index: 30; max-width: 280px; padding: 6px 10px; display: grid; gap: 2px; font-size: 12px; pointer-events: none; }
-.tl-tip-line { display: flex; gap: 8px; } .tl-tip-when { flex: none; color: var(--muted); }
 .tl-tracks { margin-top: 12px; }
 .tl-tabs-row { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
 .tl-tabs { flex: 1; display: flex; min-width: 0; overflow-x: auto; scrollbar-width: none; } .tl-tabs::-webkit-scrollbar { display: none; }
@@ -181,7 +163,20 @@ button.tl-folded { display: block; padding: 4px 0; font-size: 12px; }
 .tl-edit .primary { flex: none; }
 .tl-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; }
 .tl-form input, .tl-form select { flex: 1; min-width: 120px; margin: 0; padding: 5px 8px; font-size: 12px; }
+/* 首次读取与读取失败：居中显示；读取很快时（<200ms）不闪出加载条。 */
+#panel-timeline:has(> .tl-state:not([hidden])) { min-height: 100%; display: flex; flex-direction: column; }
+#panel-timeline:has(> .tl-state:not([hidden])) > :not(.tl-state) { display: none; }
+.tl-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 160px; }
+.tl-state.loading { animation: tl-appear .2s ease .2s both; }
+.tl-state p { margin: 0; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; text-align: center; }
+.tl-state.failed p { color: var(--text); }
+.tl-progress { position: relative; width: 180px; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
+.tl-progress span { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--accent); border-radius: 1px; transition: width .2s ease; }
+.tl-progress.indeterminate span { width: 36%; animation: tl-slide 1.2s ease-in-out infinite; }
+@keyframes tl-appear { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tl-slide { from { left: -36%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) {
-  .tl-cell, .tl-fold, .tl-detail, .tl-event-dot { transition: none; }
+  .tl-fold, .tl-detail, .tl-event-dot, .tl-progress span { transition: none; }
+  .tl-progress.indeterminate span { animation: none; left: 32%; }
 }
 @media (max-width: 390px) { .tabs button { padding: 8px 8px 9px; font-size: 13px; } }

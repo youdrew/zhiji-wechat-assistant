@@ -89,7 +89,7 @@ function fakeFetch(data, changeResponse) {
 }
 
 async function main() {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "kyf-update-test-"));
+  const temp = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "kyf-update-test-"));
   try {
     // Loading an isolated copy exercises the real discovery path with a synthetic key.
     const moduleDir = path.join(temp, "module");

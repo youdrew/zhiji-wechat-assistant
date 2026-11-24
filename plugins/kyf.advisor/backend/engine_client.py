@@ -10,11 +10,14 @@
 # Moved from bridge/advisor_runtime.py into the kyf.advisor plugin, 2026-10-13 (Apache-2.0): model commands carry a
 # gateway service and the task's execution token instead of a provider config (no credential reaches the
 # worker); the worker is started with the plugin's Node and tsx loader and keeps its state in the account folder.
+# Modified 2026-11-14 (Apache-2.0): the engine is DeepSeek Harness (DSH), found in its desktop installation; the
+# worker starts one DSH process per answer. The pinned OpenCode binary and its SDK are no longer used.
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -25,10 +28,11 @@ COMMAND_TIMEOUT_SECONDS = 300
 # Let the engine's configured generation deadline report a clean error first.
 MODEL_CLEANUP_SECONDS = 60
 MODEL_COMMANDS = frozenset({"respond", "compact", "summarizeDiscussion", "compactSession", "inspectMedia"})
-ENGINE_VERSION = "1.18.34"
-# Only what the worker needs to start; the gateway URL and token travel per command on the private pipe.
+HARNESS_NAME = "DeepSeek Harness"
+# Only what the worker needs to start and to find DSH; the gateway URL and token travel per command on the private pipe.
 ENVIRONMENT = ("SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "TEMP", "TMP", "PATHEXT",
-               "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE")
+               "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)",
+               "HOME", "KYF_DSH_INSTALL")
 
 
 class EngineError(RuntimeError):
@@ -68,6 +72,10 @@ class EngineClient:
                 raise EngineError("advisor-engine-missing")
             environment = {key: os.environ[key] for key in ENVIRONMENT if key in os.environ}
             environment["KYF_APP_ROOT"] = str(self.root)
+            install = harness_install(self.root)
+            if install is not None:
+                # The worker resolves the same installation even where its environment names no program folders.
+                environment["KYF_DSH_INSTALL"] = str(install)
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             self.state_dir.mkdir(parents=True, exist_ok=True)
             self.process = subprocess.Popen(
@@ -252,8 +260,7 @@ class EngineClient:
             import psutil
         except ImportError:
             return  # The plugin's process group still ends the engine with the plugin.
-        allowed = {(self.root / "runtime/opencode/opencode.exe").resolve(),
-                   (self.root / ".local/advisor-engine/opencode.exe").resolve()}
+        allowed = {harness_executable(folder).resolve() for folder in harness_candidates(self.root)}
         try:
             children = psutil.Process(process.pid).children(recursive=True)
         except psutil.NoSuchProcess:
@@ -269,32 +276,98 @@ class EngineClient:
                 raise EngineError("advisor-engine-stop-failed") from exc
 
 
+def known_folders():
+    """The user's and the machine's program folders on Windows, asked from the shell rather than the environment.
+
+    Core starts plugins with a minimal environment (no LOCALAPPDATA or ProgramFiles), so the per-user DeepSeek
+    Harness installation cannot be found through environment variables alone.
+    """
+    if sys.platform != "win32":
+        return {}
+    import ctypes
+    from ctypes import wintypes
+
+    class Guid(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+    def folder(a, b, c, d):
+        pointer = ctypes.c_wchar_p()
+        try:
+            shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+            shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(Guid), wintypes.DWORD, wintypes.HANDLE,
+                                                     ctypes.POINTER(ctypes.c_wchar_p)]
+            ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+            guid = Guid(a, b, c, (ctypes.c_ubyte * 8)(*d))
+            if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(pointer)) != 0:
+                return None
+            value = pointer.value
+            ole32.CoTaskMemFree(ctypes.cast(pointer, ctypes.c_void_p))
+            return value
+        except (OSError, AttributeError):
+            return None
+
+    found = {"LOCALAPPDATA": folder(0xF1B32785, 0x6FBA, 0x4FCF, (0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91)),
+             "ProgramFiles": folder(0x905E63B6, 0xC1BF, 0x494E, (0xB2, 0x9C, 0x65, 0xB7, 0x32, 0xD3, 0xD2, 0x1A))}
+    return {name: value for name, value in found.items() if value}
+
+
+def harness_candidates(root, environ=None, platform=None):
+    """Installation folders of DeepSeek Harness to try, in order; mirrors ``harnessCandidates`` in engine/harness.ts."""
+    environ = {**known_folders(), **os.environ} if environ is None else environ
+    platform = sys.platform if platform is None else platform
+    folders = []
+    if environ.get("KYF_DSH_INSTALL"):
+        folders.append(Path(environ["KYF_DSH_INSTALL"]))
+    folders.append(Path(root) / "runtime" / "dsh")
+    if platform == "win32":
+        if environ.get("LOCALAPPDATA"):
+            folders.append(Path(environ["LOCALAPPDATA"]) / "Programs" / HARNESS_NAME)
+        for name in ("ProgramFiles", "ProgramFiles(x86)"):
+            if environ.get(name):
+                folders.append(Path(environ[name]) / HARNESS_NAME)
+    elif platform == "darwin":
+        folders.append(Path("/Applications") / (HARNESS_NAME + ".app"))
+        if environ.get("HOME"):
+            folders.append(Path(environ["HOME"]) / "Applications" / (HARNESS_NAME + ".app"))
+    else:
+        folders += [Path("/opt/DeepSeek Harness"), Path("/usr/lib/deepseek-harness")]
+    return folders
+
+
+def harness_executable(folder, platform=None):
+    platform = sys.platform if platform is None else platform
+    if platform == "darwin":
+        return Path(folder) / "Contents" / "MacOS" / HARNESS_NAME
+    return Path(folder) / (HARNESS_NAME + ".exe" if platform == "win32" else "deepseek-harness")
+
+
+def harness_archive(folder, platform=None):
+    platform = sys.platform if platform is None else platform
+    resources = Path(folder) / "Contents" / "Resources" if platform == "darwin" else Path(folder) / "resources"
+    return resources / "app.asar"
+
+
+def harness_install(root, environ=None, platform=None):
+    """The first installation folder holding both the DSH binary and its app.asar, or None."""
+    for folder in harness_candidates(root, environ, platform):
+        try:
+            if harness_executable(folder, platform).is_file() and harness_archive(folder, platform).is_file():
+                return folder
+        except OSError:
+            continue
+    return None
+
+
 def engine_available(plugin_dir=None, root=None):
-    """Node, the tsx loader, the worker, the opencode SDK and a pinned opencode binary are all present."""
+    """Node, the tsx loader, the worker and a DeepSeek Harness installation are all present."""
     plugin_dir = Path(plugin_dir) if plugin_dir is not None else plugin_directory()
     root = Path(root).resolve() if root is not None else app_root()
     node, loader = os.environ.get("KYF_NODE"), os.environ.get("KYF_TSX_LOADER")
     if not node or not loader or not Path(node).is_file():
         return False
-    if (not (plugin_dir / "engine" / "worker.ts").is_file() or
-            not (root / "node_modules/@opencode-ai/sdk/package.json").is_file()):
+    if not (plugin_dir / "engine" / "worker.ts").is_file() or not (plugin_dir / "engine" / "dsh-stream" / "index.js").is_file():
         return False
-    for folder in (root / "runtime/opencode", root / ".local/advisor-engine"):
-        manifest = folder / "manifest.json"
-        executable = folder / "opencode.exe"
-        try:
-            if manifest.is_symlink() or executable.is_symlink() or not folder.resolve().is_relative_to(root):
-                continue
-            if manifest.stat().st_size > 8192:
-                continue
-            value = json.loads(manifest.read_text(encoding="utf-8"))
-            if (value.get("schema") == 1 and value.get("version") == ENGINE_VERSION and
-                    value.get("file") == "opencode.exe" and executable.is_file() and
-                    value.get("bytes") == executable.stat().st_size):
-                return True
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
-    return False
+    return harness_install(root) is not None
 
 
 class EnginePool:
@@ -313,8 +386,8 @@ class EnginePool:
 
     def participant_root(self, account):
         """Where a run writes the files of @-mentioned friends: inside the engine workspace
-        (runtime.ts: ``<state>/engine/workspace``), the only place its read tool may be allowed."""
-        return Path(self.state_dir(account)) / "engine" / "workspace" / "participants"
+        (harness-state.ts: ``<state>/dsh/workspace``), the only place its read tool may be allowed."""
+        return Path(self.state_dir(account)) / "dsh" / "workspace" / "participants"
 
     def _worker(self, request):
         account = request.get("account")

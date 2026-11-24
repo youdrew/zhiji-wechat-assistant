@@ -4,12 +4,15 @@
 // whose inputs a finished analysis step changed.
 (function () {
   const A = window.FriendApp;
-  const PAGES = { overview: "pageOverview", persona: "pagePersona", values: "pageValues", chat: "pageChat", trend: "pageTrend" };
-  const MODULES = { overview: () => window.FriendOverview, persona: () => window.FriendPersona,
-    values: () => window.FriendValues, chat: () => window.FriendChat, trend: () => window.FriendTrend };
+  const PAGES = { overview: "pageOverview", tags: "pageTags", timeline: "pageTimeline", persona: "pagePersona", values: "pageValues",
+    chat: "pageChat", trend: "pageTrend", simulation: "pageSimulation" };
+  const MODULES = { overview: () => window.FriendOverview, tags: () => window.FriendTags,
+    timeline: () => window.FriendTimeline, persona: () => window.FriendPersona,
+    values: () => window.FriendValues, chat: () => window.FriendChat, trend: () => window.FriendTrend,
+    simulation: () => window.FriendSimulation };
   // Which pages show the result of each analysis step; only those reload when it finishes.
-  const STEP_PAGES = { history: ["overview", "trend", "chat"], recent: ["overview"], archive: ["overview"],
-    chat: ["chat"], persona: ["persona", "values", "overview"], overview: ["overview"] };
+  const STEP_PAGES = { history: ["overview", "tags", "timeline", "trend", "chat"], recent: ["overview"], archive: ["overview"],
+    tags: ["tags"], timeline: ["timeline"], chat: ["chat"], persona: ["persona", "values", "overview"], overview: ["overview"] };
   let tab = null, restored = false;
 
   function show(next) {

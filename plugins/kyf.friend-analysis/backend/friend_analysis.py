@@ -27,6 +27,8 @@ import friend_cache
 import friend_overview
 import friend_persona
 import friend_model_batch
+import friend_tags
+import friend_timeline
 from friend_extract import output_tokens, segment_chars, segments, split_segment
 from friend_run_store import RunStore
 from analysis_store import FriendStore, chain_step, content_hash, now_ms
@@ -34,8 +36,20 @@ from kyf_plugin import Cancelled as TaskCancelled, CoreError
 from kyf_plugin.models import ModelError
 from memory import MemoryJobs
 
+# Independent scan steps run after the persona and before the overview, in this order. Each is an
+# object with ``key``, ``title``, ``scan_title`` (progress prefix), ``version`` (its scan version),
+# ``measure`` (speed-measurement key) and:
+#   run(analysis, ctx)                    the step; usually _wait_history, _scan(..., plan, batch), extras
+#   payload_valid(runs, user, gen, rows, covered)   saved rows still match the source (model-alias reuse)
+#   estimate(analysis, account, user, store, rows, config, fingerprint, rebuild, probe)
+#                                         -> {"chars", "out", "count", "rebuild"} from local counts only
+# Its module registers the generation table with friend_run_store.register_scan and its own tables in
+# analysis_store.ensure_schema. A new step needs a test that a full run really calls it.
+EXTRA_STEPS = (friend_tags.STEP, friend_timeline.STEP)
+STEP_SPECS = {spec.key: spec for spec in EXTRA_STEPS}
 STEPS = (("history", "准备聊天记录"), ("recent", "近期概述"), ("archive", "历史建档"),
-         ("chat", "聊天分析"), ("persona", "性格与三观分析"), ("overview", "补齐好友概述"))
+         ("chat", "聊天分析"), ("persona", "性格与三观分析"), *((spec.key, spec.title) for spec in EXTRA_STEPS),
+         ("overview", "补齐好友概述"))
 STEP_TITLES = dict(STEPS)
 RECENT_WINDOW = 400
 AUTO_TOKEN_LIMIT = 100_000
@@ -348,7 +362,10 @@ class FriendAnalysis:
                 self._check(ctx)
                 self._step(ctx, key, state="running", detail="")
                 try:
-                    getattr(self, "_step_" + key)(ctx)
+                    if key in STEP_SPECS:
+                        STEP_SPECS[key].run(self, ctx)
+                    else:
+                        getattr(self, "_step_" + key)(ctx)
                 except Cancelled:
                     raise
                 except Exception as exc:  # noqa: BLE001 - a failed step is shown, later steps continue
@@ -675,7 +692,7 @@ class FriendAnalysis:
     def scan_state(self, account, user, store, step, rows, end, model_fp, fingerprint, config=None):
         """Which generation to continue and from where; ``rebuild`` when the published one is unusable."""
         runs = RunStore(store, now_ms)
-        version = friend_chat.CHAT_VERSION if step == "chat" else friend_persona.PERSONA_VERSION
+        version = self._scan_version(step)
         result = {"published": None, "continue": None, "repair": None, "start": 0, "rebuild": False, "new": end}
 
         def source_valid(scan, *, legacy=False):
@@ -709,6 +726,9 @@ class FriendAnalysis:
                     if step == "chat":
                         valid = friend_cache.chat_payload_valid(runs.chat_blocks(user, scan["generation"]), rows,
                                                                 scan["covered_count"])
+                    elif step in STEP_SPECS:
+                        valid = STEP_SPECS[step].payload_valid(runs, user, scan["generation"], rows,
+                                                               scan["covered_count"])
                     else:
                         valid = friend_cache.persona_payload_valid(runs.persona_evidence(user, scan["generation"]), rows,
                                                                    scan["covered_count"])
@@ -733,8 +753,14 @@ class FriendAnalysis:
                            "new": end - building["covered_count"]})
         return result
 
+    @staticmethod
+    def _scan_version(step):
+        if step in STEP_SPECS:
+            return STEP_SPECS[step].version
+        return friend_chat.CHAT_VERSION if step == "chat" else friend_persona.PERSONA_VERSION
+
     def _scan(self, ctx, key, step, rows, end, plan, run_batch):
-        title = "聊天分析" if step == "chat" else "性格与三观证据"
+        title = STEP_SPECS[step].scan_title if step in STEP_SPECS else "聊天分析" if step == "chat" else "性格与三观证据"
         state = self.scan_state(ctx.account, ctx.user, ctx.store, step, rows, end, ctx.config["modelFp"],
                                 ctx.fingerprint, ctx.config)
         scan = state["continue"]
@@ -751,8 +777,8 @@ class FriendAnalysis:
         if scan is not None and state["start"] >= end and scan["built"]:
             return title + "没有新内容"
         if scan is None:
-            version = friend_chat.CHAT_VERSION if step == "chat" else friend_persona.PERSONA_VERSION
-            generation = ctx.runs.begin_scan(ctx.user, step, {"source_fp": ctx.fingerprint, "version": version,
+            generation = ctx.runs.begin_scan(ctx.user, step, {"source_fp": ctx.fingerprint,
+                                                              "version": self._scan_version(step),
                                                               "model_fp": ctx.config["modelFp"]})
             start, digest = 0, ""
         else:
@@ -1068,6 +1094,11 @@ class FriendAnalysis:
             persona_chars = (persona_evidence + (len(runs.persona_evidence(user, scan["generation"])) if scan else 0)) * 220
             persona_chars = persona_chars * 2 + len(friend_persona.SYNTH_SYSTEM) + len(friend_persona.AUDIT_SYSTEM)
         add("persona", persona_chars, 4000 if persona_chars else 0, "persona")
+        for spec in EXTRA_STEPS:
+            part = spec.estimate(self, account, user, store, rows, config, fingerprint, rebuild, budget_probe)
+            if part["rebuild"]:
+                needs["rebuild"].append(spec.key)
+            add(spec.key, part["chars"], part["out"], spec.measure, part["count"])
         result["full"] = self._sum(steps)
         result["recent"] = self._sum(steps[:1])
         return result

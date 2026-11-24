@@ -359,7 +359,8 @@ class GatewayTransportTests(unittest.TestCase):
             self.host._read(channel)
             self.assertTrue(channel.cleaned.wait(2))
         failure = self.host.failures[-1]
-        self.assertEqual(set(failure), {"at", "code", "stage", "exception", "exitCode", "closing"})
+        self.assertEqual(set(failure),
+                         {"at", "code", "stage", "exception", "exitCode", "closing", "peakMemoryMb"})
         self.assertEqual((failure["code"], failure["stage"], failure["exception"]),
                          ("gateway-unavailable", "ledger-track", "ValueError"))
         self.assertNotIn("private request", json.dumps(failure) + str(output.output))
@@ -383,7 +384,8 @@ class GatewayTransportTests(unittest.TestCase):
         self.assertEqual(len(self.host.failures), 20)
         self.assertEqual([failure["exitCode"] for failure in self.host.failures], list(range(10, 30)))
         for failure in self.host.failures:
-            self.assertEqual(set(failure), {"at", "code", "stage", "exception", "exitCode", "closing"})
+            self.assertEqual(set(failure),
+                             {"at", "code", "stage", "exception", "exitCode", "closing", "peakMemoryMb"})
 
     def test_normal_close_neither_records_nor_logs_a_failure(self):
         channel = self.buffered_channel([])
@@ -426,6 +428,48 @@ class GatewayTransportTests(unittest.TestCase):
             self.host._fail_channel(channel)
             self.assertTrue(channel.cleaned.wait(2))
         self.assertEqual(self.host.failures[-1]["exitCode"], 3221226505)
+
+    def test_crashed_gateway_stderr_is_logged_without_credentials(self):
+        # A synthetic child prints a fatal error with a bearer token and a long key, then exits like Node's abort.
+        original = subprocess.Popen
+        script = ('import sys, time; print(\'{"type":"ready","port":45678}\', flush=True); time.sleep(.5); '
+                  'sys.stderr.write("FATAL ERROR: synthetic\\nAuthorization: Bearer abc.def\\n'
+                  'key sk-0123456789abcdefghijklmnop\\n"); sys.stderr.flush(); sys.exit(3)')
+
+        def launch(_args, **kwargs):
+            return original([sys.executable, "-u", "-c", script], **kwargs)
+
+        with patch.object(core_gateway, "node_executable", return_value=sys.executable), \
+                patch.object(core_gateway.subprocess, "Popen", side_effect=launch), \
+                self.assertLogs("core_gateway", level="WARNING") as logs:
+            self.assertEqual(self.host.ensure(), 45678)
+            channel = self.host._channel
+            self.assertTrue(channel.cleaned.wait(5))
+        text = "\n".join(logs.output)
+        self.assertIn("FATAL ERROR: synthetic", text)
+        self.assertNotIn("abc.def", text)
+        self.assertNotIn("0123456789abcdefghijklmnop", text)
+
+    def test_restart_pause_is_short_and_not_extended_by_refused_attempts(self):
+        starts = []
+        with patch.object(self.host, "_alive", return_value=False), \
+                patch.object(self.host, "_start", side_effect=lambda: starts.append(1)), \
+                patch.object(core_gateway.time, "monotonic") as clock:
+            def attempt(at):
+                clock.return_value = at
+                with self.assertRaises(GatewayUnavailable) as caught:
+                    self.host.ensure(timeout=0)  # _start is stubbed, so a started attempt fails as gateway-start
+                return caught.exception.code
+            self.host._channel = Mock()
+            self.host._channel.ready.wait.return_value = False
+            for second in range(5):
+                self.assertEqual(attempt(100.0 + second), "gateway-start")
+            # Refused attempts during the pause neither start nor push the pause back.
+            for second in (110.0, 120.0, 130.0):
+                self.assertEqual(attempt(second), "gateway-crashed")
+            self.assertEqual(len(starts), 5)
+            self.assertEqual(attempt(104.0 + core_gateway.RESTART_COOLDOWN), "gateway-start")
+            self.assertEqual(len(starts), 6)
 
 
 if __name__ == "__main__":

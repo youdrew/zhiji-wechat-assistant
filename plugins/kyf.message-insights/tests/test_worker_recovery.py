@@ -11,9 +11,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "plugin-sdk/python"))
 sys.path.insert(0, str(ROOT / "plugins/kyf.message-insights/backend"))
-from kyf_plugin import Cancelled
+from kyf_plugin import Cancelled, CoreError
 from kyf_plugin.models import ModelError
-from prompts import InsightError, message_hash
+from prompts import InsightError, message_hash, row_from_view
 from store import AnalysisStore, result_bindings
 from worker import Job, Worker
 
@@ -45,7 +45,7 @@ class WorkerRecoveryTests(unittest.TestCase):
             check_account=lambda _: None, projected=lambda *_: [dict(self.row)],
             binding=lambda *_, **__: ("source", "model", "old-profile", 1), wake=threading.Event())
         self.worker = Worker(self.insights)
-        self.worker.media = SimpleNamespace(collect=lambda *_, **__: {})
+        self.worker.media = SimpleNamespace(collect=lambda *_, **__: {}, collect_images=lambda *_, **__: {})
         self.job = Job(ACCOUNT, USER, [MESSAGE], {"automatic": False, "generation": "generation", "revision": 1,
             "settings": {"values": {"replyStyle": "natural"}}, "unified": True,
             "parts": ("analysis", "suggestions"), "preserved_context": "old-context"})
@@ -58,18 +58,18 @@ class WorkerRecoveryTests(unittest.TestCase):
 
     @staticmethod
     def analysis():
-        return {"text": json.dumps({"analyses": [{"messageId": MESSAGE, "summary": "Synthetic summary",
+        return {"text": json.dumps({"analysis": {"summary": "Synthetic summary",
             "meaning": "Synthetic meaning", "uncertainty": "Uncertain", "responseDirection": "Reply naturally",
-            "evidenceIds": ["s1"]}]})}
+            "evidenceIds": ["s1"]}})}
 
     @staticmethod
     def replies():
-        return {"text": json.dumps({"replies": [{"label": "Natural", "text": text}
+        return {"text": json.dumps({"replies": [{"label": "Natural", "messages": [text]}
                                                for text in ("Hello", "Good morning", "Hi there")]})}
 
     def missing_evidence(self):
         value = json.loads(self.analysis()["text"])
-        del value["analyses"][0]["evidenceIds"]
+        del value["analysis"]["evidenceIds"]
         return {"text": json.dumps(value)}
 
     def generate(self, context, request, **kwargs):
@@ -131,6 +131,7 @@ class WorkerRecoveryTests(unittest.TestCase):
                  ("image", "[图片]", {}), ("sticker", "[动画表情]", {}),
                  ("voice", "[语音]", {"media": {"kind": "voice", "transcript": transcript,
                                                    "transcriptSource": "wechat"}})]
+        self.use_image_model()
         for kind, text, raw in cases:
             with self.subTest(kind=kind, text=text):
                 self.requests.clear()
@@ -178,6 +179,150 @@ class WorkerRecoveryTests(unittest.TestCase):
                 self.assertNotIn("personalReplyStyle", analysis)
                 self.assertTrue(suggestions["personalReplyStyle"]["examples"])
                 self.assertEqual(len(self.requests), 2, "the optional references do not add a model call")
+
+    def test_round_targets_every_message_since_the_users_reply_and_sees_both_portraits(self):
+        def view(identifier, seq, side, text):
+            return {"id": identifier, "seq": seq, "side": side, "senderId": USER if side == "other" else "me",
+                    "kind": "text", "text": text, "time": seq * 1000, "raw": "{}"}
+        self.row.update(seq=4, time_ms=4000)
+        views = [view("before", 1, "other", "上周的事"), view("mine", 2, "self", "好的"),
+                 view("first", 3, "other", "周末有空吗")]
+        self.core.history_messages = lambda *_, **__: {"messages": views}
+        known = {row["msg_id"]: row for row in [*map(row_from_view, views), self.row]}
+        self.insights.projected = lambda account, user, ids: [dict(known[key]) for key in ids if key in known]
+        portrait_calls = []
+        self.core.portrait_context = lambda *args, **kwargs: portrait_calls.append((args, kwargs)) or {
+            "self": {"available": True, "text": "性格·外向性（自述）：喜欢热闹"},
+            "friend": {"available": True, "text": "【ta 是什么样的人（标签）】\n爱看书"}}
+        self.responses = [self.analysis(), self.replies()]
+        row = self.run_work()
+        self.assertEqual(row["state"], "ready")
+        self.assertEqual(json.loads(row["round_json"]), ["first", MESSAGE])
+        analysis, suggestions = [json.loads(request["prompt"]) for request, _ in self.requests]
+        self.assertEqual(analysis["targets"], ["first", MESSAGE])
+        self.assertEqual(suggestions["targets"], ["first", MESSAGE])
+        self.assertEqual(analysis["portraits"], {"friend": "【ta 是什么样的人（标签）】\n爱看书"})
+        self.assertEqual(set(suggestions["portraits"]), {"self", "friend"})
+        self.assertEqual(portrait_calls[0][0][:3], (ACCOUNT, USER, MESSAGE))
+        replies = json.loads(row["replies_json"])
+        self.assertEqual(replies[0]["messages"], ["Hello"])
+
+    def use_depth(self, depth):
+        self.job.spec["settings"] = {"values": {"replyStyle": "natural", "replyDepth": depth}}
+
+    def use_image_model(self):
+        """A separate model is assigned to images, so the main model is not shown them."""
+        self.insights.plugin.models.service_for = lambda *_, **__: {"stamp": "vision", "roles": ["image"]}
+
+    def use_history(self, views):
+        """Earlier chat rows the freshness check can read back, like Core's projection."""
+        self.core.history_messages = lambda *_, **__: {"messages": views}
+        known = {row["msg_id"]: row for row in [*map(row_from_view, views), self.row]}
+        self.insights.projected = lambda account, user, ids: [dict(known[key]) for key in ids if key in known]
+
+    def test_reply_depth_decides_whether_the_reply_thinks_first(self):
+        """回复分析深度 (2026-11-09): basic writes directly; standard (also the default) thinks first."""
+        for depth, thinking in ((None, True), ("basic", False), ("standard", True)):
+            self.requests.clear()
+            self.store.begin(USER, [MESSAGE], "generation", parts=("analysis", "suggestions"), unified=True)
+            if depth:
+                self.use_depth(depth)
+            self.responses = [self.analysis(), self.replies()]
+            self.assertEqual(self.run_work()["state"], "ready")
+            (analysis, _), (suggestions, _) = self.requests
+            self.assertIs(analysis["thinking"], False, "the explanation never waits on reasoning")
+            self.assertIs(suggestions["thinking"], thinking, depth)
+            self.assertEqual(suggestions["maxOutputTokens"] > 2048, thinking)
+
+    def test_my_way_of_talking_to_the_friend_and_a_narrow_example_query(self):
+        def view(message_id, seq, side, text):
+            return {"id": message_id, "seq": seq, "side": side, "senderId": USER if side == "other" else "me",
+                    "kind": "text", "text": text, "time": seq * 1000, "raw": "{}"}
+        views = [view("old%d" % index, index, "other" if index % 2 else "self", "很早的话题%d" % index) for index in range(1, 9)]
+        self.row.update(seq=9, time_ms=9000)
+        self.use_history(views)
+        self.core.portrait_context = lambda *args, **kwargs: {
+            "friend": {"available": True, "text": "【ta 的表达方式（这是 ta 的说话习惯，不是我的）】\n句末：不加标点 94%"},
+            "mine": {"available": True, "text": "【我对 ta 说话的方式（我最近发给 ta 的 90 条文字消息）】\n句末：感叹号 30%"}}
+        calls = []
+        self.core.self_context = lambda *args, **kwargs: calls.append((args, kwargs)) or self.personal_context()
+        self.responses = [self.analysis(), self.replies()]
+        self.assertEqual(self.run_work()["state"], "ready")
+        analysis, suggestions = [json.loads(request["prompt"]) for request, _ in self.requests]
+        self.assertIn("感叹号 30%", suggestions["myStyleWithFriend"])
+        self.assertNotIn("myStyleWithFriend", analysis)
+        self.assertNotIn("mine", suggestions["portraits"])
+        self.assertIs(calls[0][1]["prefer_same_contact"], True)
+        query = calls[0][0][3]
+        self.assertIn("Synthetic hello", query)
+        self.assertNotIn("很早的话题1", query, "only the round and a few messages before it are looked up")
+
+    def test_deep_research_from_self_analysis_leads_the_reply(self):
+        self.use_depth("deep")
+        self.row.update(seq=3, time_ms=3000)
+        views = [{"id": "mine", "seq": 2, "side": "self", "senderId": "me", "kind": "text", "text": "在的",
+                  "time": 2000, "raw": "{}"}]
+        self.use_history(views)
+        started, polls = [], []
+        self.core.self_simulate = lambda *args: started.append(args) or {"available": True, "id": "research-1", "state": "running"}
+        done = {"available": True, "id": "research-1", "state": "done",
+                "sources": [{"timeMs": 1_700_000_000_000, "sameContact": True, "input": "对方：周末呢", "reply": "好呀！"}],
+                "result": {"messages": ["好呀！", "几点"], "timeline": ["时间线·2026年11月：最近在学摄影"]}}
+        states = [{"available": True, "id": "research-1", "state": "running"}, done]
+        self.core.self_simulate_status = lambda *args, **kwargs: polls.append((args, kwargs)) or states.pop(0)
+        self.responses = [self.analysis(), self.replies()]
+        with patch("worker.RESEARCH_POLL", 0):
+            self.assertEqual(self.run_work()["state"], "ready")
+        account, user, anchor, turns, depth = started[0]
+        self.assertEqual((account, user, anchor, depth), (ACCOUNT, USER, MESSAGE, "auto"))
+        self.assertEqual(turns, [{"from": "me", "text": "在的"}, {"from": "friend", "text": "Synthetic hello"}])
+        analysis, suggestions = [json.loads(request["prompt"]) for request, _ in self.requests]
+        self.assertNotIn("selfResearch", analysis)
+        research = suggestions["selfResearch"]
+        self.assertEqual(research["likelyReply"], ["好呀！", "几点"])
+        self.assertEqual(research["timeline"], ["时间线·2026年11月：最近在学摄影"])
+        self.assertEqual(research["pastReplies"][0]["reply"], "好呀！")
+        self.assertTrue(research["pastReplies"][0]["sameContact"])
+        self.assertEqual(len(polls), 2)
+        self.assertTrue(all(not kwargs for _args, kwargs in polls), "a finished research is not stopped")
+
+    def test_research_that_fails_or_runs_too_long_never_blocks_the_reply(self):
+        self.use_depth("deep")
+        stops = []
+
+        def status(*args, **kwargs):
+            if kwargs.get("stop"):
+                stops.append(args)
+            return {"available": True, "id": "research-1", "state": "running"}
+        for start in (lambda *_: (_ for _ in ()).throw(CoreError(503, "service-unavailable", "synthetic")),
+                      lambda *_: {"available": False, "reason": "no-samples"},
+                      lambda *_: {"available": True, "id": "research-1", "state": "running"}):
+            self.requests.clear()
+            self.store.begin(USER, [MESSAGE], "generation", parts=("analysis", "suggestions"), unified=True)
+            self.core.self_simulate, self.core.self_simulate_status = start, status
+            self.responses = [self.analysis(), self.replies()]
+            with patch("worker.RESEARCH_SECONDS", 0), patch("worker.RESEARCH_POLL", 0):
+                self.assertEqual(self.run_work()["state"], "ready")
+            self.assertNotIn("selfResearch", json.loads(self.requests[1][0]["prompt"]))
+        self.assertEqual(len(stops), 1, "a research past its time is stopped")
+
+    def test_a_stopped_job_stops_its_research(self):
+        self.use_depth("deep")
+        stops = []
+        self.core.self_simulate = lambda *_: {"available": True, "id": "research-1", "state": "running"}
+        self.core.self_simulate_status = lambda *args, **kwargs: stops.append(args) or {"available": True, "state": "running", "id": "research-1"}
+        self.responses = [Cancelled()]
+        self.assertEqual(self.run_work()["state"], "error")
+        self.assertEqual(self.finishes[-1][1]["code"], "stopped")
+        self.assertEqual(len(stops), 1, "the research started for the reply is stopped with the job")
+
+    def test_portrait_service_failure_keeps_suggestions_working(self):
+        def unavailable(*_args, **_kwargs):
+            raise CoreError(503, "service-unavailable", "synthetic")
+        self.core.portrait_context = unavailable
+        self.responses = [self.analysis(), self.replies()]
+        self.assertEqual(self.run_work()["state"], "ready")
+        self.assertNotIn("portraits", json.loads(self.requests[1][0]["prompt"]))
 
     def test_literal_text_is_not_misclassified_as_media_by_its_placeholder_spelling(self):
         calls = []
@@ -479,6 +624,51 @@ class WorkerRecoveryTests(unittest.TestCase):
             self.assertEqual(new[field], old[field])
         for part in ("analysis", "suggestions"):
             self.assertEqual(result_bindings(new)[part], result_bindings(old)[part])
+
+    def test_stickers_go_to_the_main_model_as_images_not_descriptions(self):
+        """2026-11-09: the main model sees the sticker itself, an animated one as frames, in both parts."""
+        self.row.update(kind="sticker", text="[动画表情]", raw="{}")
+        frames = [{"mime": "image/jpeg", "data": data} for data in ("AAAA", "BBBB", "CCCC", "DDDD")]
+        calls = []
+        self.worker.media.collect = lambda *_, **__: self.fail("no separate description in direct mode")
+        self.worker.media.collect_images = lambda *args, **kwargs: calls.append(kwargs) or {
+            MESSAGE: {"kind": "sticker", "animated": True, "items": frames}}
+        self.responses = [self.analysis(), self.replies()]
+        self.assertEqual(self.run_work()["state"], "ready")
+        self.assertEqual(calls[0]["priority_ids"], [MESSAGE])
+        self.assertEqual([kwargs["step"] for _, kwargs in self.requests], ["analysis", "suggestions"])
+        for request, _ in self.requests:
+            self.assertEqual(request["images"], frames)
+            prompt = json.loads(request["prompt"])
+            self.assertIn("图1、图2", prompt["boundary"])
+            notes = [source for source in prompt["sources"] if source["kind"] == "observation"]
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(notes[0]["messageId"], MESSAGE)
+            self.assertIn("图1至图4", notes[0]["text"])
+            self.assertIn("动态表情按时间顺序的 4 帧", notes[0]["text"])
+
+    def test_unread_media_keeps_its_note_and_sends_no_images(self):
+        self.row.update(kind="image", text="[图片]", raw="{}")
+        self.worker.media.collect_images = lambda *_, **__: {MESSAGE: "[媒体未读取：本轮媒体读取额度已用完。]"}
+        self.responses = [self.analysis(), self.replies()]
+        self.assertEqual(self.run_work()["state"], "ready")
+        for request, _ in self.requests:
+            self.assertNotIn("images", request)
+            self.assertIn("额度已用完", request["prompt"])
+
+    def test_a_separate_image_model_still_describes_first_and_sends_no_images(self):
+        self.use_image_model()
+        self.row.update(kind="sticker", text="[动画表情]", raw="{}")
+        seen = []
+        self.worker.media.collect = lambda *args, **kwargs: seen.append(kwargs) or {MESSAGE: "合成的画面描述"}
+        self.worker.media.collect_images = lambda *_, **__: self.fail("images go to the image model only")
+        self.responses = [self.analysis(), self.replies()]
+        self.assertEqual(self.run_work()["state"], "ready")
+        self.assertEqual(seen[0]["model_fp"], "vision")
+        for request, _ in self.requests:
+            self.assertNotIn("images", request)
+            self.assertIn("合成的画面描述", request["prompt"])
+            self.assertIn("视觉观察", json.loads(request["prompt"])["boundary"])
 
 
 if __name__ == "__main__":

@@ -375,7 +375,7 @@ class AdvisorService(MessageQueueMixin, SessionServiceMixin):
         if self.engine is None:
             raise AdvisorError("engine-unavailable", "助手引擎尚未接入")
         if not self._engine_available():
-            raise AdvisorError("engine-unavailable", "助手引擎未安装，请检查安装文件")
+            raise AdvisorError("engine-unavailable", "未检测到 DeepSeek Harness。聊天助手用它运行讨论，请先安装 DeepSeek Harness 桌面版再重试")
         return self.engine
 
     # ---------------------------------------------------------------- catalog
@@ -941,8 +941,8 @@ class AdvisorService(MessageQueueMixin, SessionServiceMixin):
         """
         locate = getattr(self.engine, "participant_root", None)
         workspace = (Path(locate(run.account)).parent if callable(locate) else
-                     Path(self.stores.directory(run.account)) / "engine" / "workspace")
-        material = workspace / "contexts" / ("0" * 64) / "wechat-context.txt"
+                     Path(self.stores.directory(run.account)) / "engine" / "dsh" / "workspace")
+        material = workspace / "threads" / ("0" * 64) / "wechat-context.txt"
         quoted = lambda value: utf8_cost(json.dumps(str(value), ensure_ascii=False))
         # Base adviser instructions, user source label, file header/footer,
         # restoration wrapper and separators. The scope digest is 64 ASCII characters.
@@ -1272,14 +1272,19 @@ class AdvisorService(MessageQueueMixin, SessionServiceMixin):
             known = {"advisor-timeout": "模型响应超时，请重试", "auth": "模型服务认证失败",
                      "rate-limit": "模型服务请求受限，请稍后重试", "context-too-long": "模型拒绝当前上下文长度",
                      "output-truncated": "模型输出达到生成上限，内容未完整返回，原问题已保留供重试",
-                     "advisor-engine-missing": "顾问引擎未安装", "advisor-cancelled": "生成已停止",
-                     "timeout": "模型响应超时，请重试", "engine-missing": "军师引擎未安装",
-                     "engine-integrity": "军师引擎校验未通过", "engine-start": "军师引擎启动失败",
-                     "engine-unavailable": "军师引擎连接已断开", "empty-response": "模型没有返回内容",
+                     "advisor-engine-missing": "未检测到 DeepSeek Harness，请安装后重试", "advisor-cancelled": "生成已停止",
+                     "timeout": "模型响应超时，请重试", "engine-missing": "未检测到 DeepSeek Harness，请安装后重试",
+                     "engine-integrity": "DeepSeek Harness 安装不完整，请重新安装", "engine-start": "DeepSeek Harness 启动失败，请重试",
+                     "engine-unavailable": "DeepSeek Harness 连接已断开，请重试",
+                     "protocol-unsupported": "DeepSeek Harness 暂不支持这种模型接口，请在模型设置中改用 Chat Completions、Responses 或 Anthropic 接口", "empty-response": "模型没有返回内容",
                      "thinking-unsupported": "当前模型服务不支持关闭思考，请开启深度思考后重试",
                      "scope-mismatch": "军师对话归属已变化", "permission-denied": "军师尝试了未获准的操作，已停止",
                      "context-not-read": "模型未读取本轮会话资料，请使用支持工具调用的模型重试",
                      "context-read-incomplete": "模型未完整读取本轮会话资料，请重试",
+                     "gateway-unavailable": "模型网关异常退出，已自动重启，请重试",
+                     "gateway-start": "模型网关未能启动，请检查模型设置后重试",
+                     "gateway-crashed": "模型网关连续异常退出，请稍后重试",
+                     "core-closing": "应用正在退出，请重新打开后重试",
                      "cancelled": "生成已停止"}
             code = getattr(exc, "code", None)
             if code is None and str(exc) in known:

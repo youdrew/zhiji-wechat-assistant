@@ -267,7 +267,7 @@ export class ModelGateway {
     const timeoutMs = method === "GET" || method === "HEAD" ? 15_000 : modelTimeoutMs(service.timeoutMs);
     const rest = match[3]!;
     if (service.local && (method !== "POST" || rest !== "v1/systemone")) {
-      return reply(res, 403, "model-not-allowed", "本地判断模型只接受判断请求");
+      return reply(res, 403, "model-not-allowed", "内置判别模型只接受判断请求");
     }
     if (!modelAllowed(service, rest, body, method)) return reply(res, 403, "model-not-allowed", "请求的模型与设置不一致");
     const step = String(match[2] ?? req.headers["x-kyf-step"] ?? "plugin").replace(/[^a-z0-9._-]/giu, "").slice(0, 40) || "plugin";
@@ -308,7 +308,7 @@ export class ModelGateway {
             cacheReadTokens: null, cacheWriteTokens: null, totalInputTokens: null, totalOutputTokens: null,
             totalTokens: null, totalTokensSource: null, toolUsePromptTokens: null });
           return reply(res, cancelled ? 409 : 502, cancelled ? "execution-revoked" : "judge-unavailable",
-            cancelled ? "任务已停止" : "本地判断模型暂不可用");
+            cancelled ? "任务已停止" : "内置判别模型暂不可用");
         }
         const localService = { ...service, baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey };
         try {
@@ -375,7 +375,7 @@ export class ModelGateway {
         // A dead local process is restarted once before any response bytes have
         // reached the client. HTTP errors and invalid answers are never retried.
         const retryOfRecordId = trace?.id;
-        trace?.finish("failed", { error: { code: "judge-process-exited", message: "本地判断模型进程已退出" } });
+        trace?.finish("failed", { error: { code: "judge-process-exited", message: "内置判别模型进程已退出" } });
         const endpoint = await this.localJudge.resolve(service.local, controller.signal);
         target = new URL(`${endpoint.baseUrl}/${rest}`);
         for (const [key, value] of url.searchParams) if (key !== "key") target.searchParams.append(key, value);

@@ -3,10 +3,11 @@
   "id": "kyf.friend-analysis",
   "name": "知己分析",
   "version": "0.2.0",
-  "description": "按好友分析近期概述、关系记忆候选、性格与三观、聊天互动与关系趋势",
+  "description": "按好友分析近期概述、关系记忆候选、性格与三观、聊天互动与关系趋势，并可模拟对话",
   "author": "Know Your Friends",
   "core": { "api": [1] },
   "runtime": { "type": "python", "entry": "backend/main.py" },
+  "models": { "main": "好友分析与模拟对话" },
   "events": ["friend.opened", "human.changed"],
   "contributes": {
     "settings": {
@@ -22,15 +23,18 @@
     "schemes": [{
       "id": "default",
       "name": "默认方案",
-      "summary": "近期概述、关系记忆候选、性格分析、三观分析、聊天分析与关系趋势；增量更新，已有结果保留",
+      "summary": "近期概述、标签、时间线、关系记忆候选、性格分析、三观分析、聊天分析、关系趋势与模拟对话；增量更新，已有结果保留",
       "page": "ui/index.html",
       "tabs": [
         { "id": "overview", "title": "好友概述" },
+        { "id": "tags", "title": "标签" },
+        { "id": "timeline", "title": "时间线" },
         { "host": "memories" },
         { "id": "persona", "title": "性格分析" },
         { "id": "values", "title": "三观分析" },
         { "id": "chat", "title": "聊天分析" },
-        { "id": "trend", "title": "关系趋势" }
+        { "id": "trend", "title": "关系趋势" },
+        { "id": "simulation", "title": "模拟对话" }
       ]
     }]
   }

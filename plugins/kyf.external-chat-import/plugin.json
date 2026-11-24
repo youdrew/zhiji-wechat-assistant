@@ -7,6 +7,7 @@
   "author": "Know Your Friends",
   "core": { "api": [1] },
   "runtime": { "type": "python", "entry": "backend/main.py" },
+  "models": { "image": "聊天截图识别" },
   "events": [],
   "contributes": {}
 }

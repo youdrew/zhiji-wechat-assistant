@@ -10,6 +10,9 @@ import threading
 import time
 
 import friend_pages
+import friend_sim
+import friend_tags
+import friend_timeline_view
 import scheme
 import status_view
 from account import Accounts
@@ -18,6 +21,7 @@ from friend_analysis import FriendAnalysis
 from analysis_store import FriendStore
 from friend_trends import relationship_trends
 from kyf_plugin import CoreError, Plugin, RpcError
+from kyf_plugin.actor import actor as call_actor, agent_name
 
 OPEN = ("queued", "running")
 
@@ -40,6 +44,8 @@ class PageService:
 
 
 pages = PageService(analysis)
+# 模拟对话 sessions: plugin-process memory only, keyed by (account, user); see friend_sim.
+simulations = friend_sim.Simulations(plugin, pages._scope)
 
 
 def scoped(context):
@@ -148,6 +154,117 @@ def page_trend(params, context):
     return call(build)
 
 
+@plugin.method("page.tags")
+def page_tags(params, context):
+    account, user = scoped(context)
+    return call(lambda: friend_tags.view(pages, account, user))
+
+
+@plugin.method("page.tagEvidence")
+def page_tag_evidence(params, context):
+    account, user = scoped(context)
+    return call(lambda: friend_tags.evidence(pages, account, user, params))
+
+
+def edited(account, user, action):
+    """A tag or timeline write: the simulation profile is encoded again on the next turn."""
+    try:
+        return call(action)
+    finally:
+        simulations.forget_profile(account, user)
+
+
+@plugin.method("page.tagEdit")
+def page_tag_edit(params, context):
+    account, user = scoped(context)
+    return edited(account, user, lambda: friend_tags.edit(pages, account, user, params, call_actor(context),
+                                                          agent_name(context)))
+
+
+@plugin.method("page.tagUndo")
+def page_tag_undo(params, context):
+    account, user = scoped(context)
+    return edited(account, user, lambda: friend_tags.undo(pages, account, user, params, call_actor(context), "user"))
+
+
+@plugin.method("page.tagUndoAgent")
+def page_tag_undo_agent(params, context):
+    account, user = scoped(context)
+    return edited(account, user, lambda: friend_tags.undo(pages, account, user, params, call_actor(context), "agent"))
+
+
+@plugin.method("page.timeline")
+def page_timeline(params, context):
+    account, user = scoped(context)
+    return call(lambda: friend_timeline_view.view(pages, account, user, params))
+
+
+@plugin.method("page.timelineEvidence")
+def page_timeline_evidence(params, context):
+    account, user = scoped(context)
+    return call(lambda: friend_timeline_view.evidence(pages, account, user, params))
+
+
+@plugin.method("page.timelineEdit")
+def page_timeline_edit(params, context):
+    account, user = scoped(context)
+    return edited(account, user, lambda: friend_timeline_view.edit(pages, account, user, params, context))
+
+
+@plugin.method("page.timelineUndo")
+def page_timeline_undo(params, context):
+    account, user = scoped(context)
+    return edited(account, user, lambda: friend_timeline_view.undo(pages, account, user, params, context, "user"))
+
+
+@plugin.method("page.timelineUndoAgent")
+def page_timeline_undo_agent(params, context):
+    account, user = scoped(context)
+    return edited(account, user, lambda: friend_timeline_view.undo(pages, account, user, params, context, "agent"))
+
+
+@plugin.method("page.simulation")
+def page_simulation(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.view(account, user))
+
+
+@plugin.method("profile.context")
+def profile_context(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.reply_context(account, user, params))
+
+
+@plugin.method("page.simulationSend")
+def page_simulation_send(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.send(account, user, params))
+
+
+@plugin.method("page.simulationStatus")
+def page_simulation_status(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.status(account, user, params.get("requestId")))
+
+
+@plugin.method("page.simulationReroll")
+def page_simulation_reroll(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.reroll(account, user, params))
+
+
+@plugin.method("page.simulationCancel")
+def page_simulation_cancel(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.cancel(account, user, params.get("requestId")))
+
+
+@plugin.method("page.simulationReset")
+def page_simulation_reset(params, context):
+    account, user = scoped(context)
+    return call(lambda: simulations.reset(account, user))
+
+
 @plugin.task("scheme")
 def run_scheme(task):
     scheme.run_scheme(analysis, accounts, task)
@@ -176,6 +293,7 @@ def human_changed(event):
     scheme.auto_update(plugin, analysis, accounts, account, user, start_auto)
 
 
+plugin.on_shutdown.append(simulations.close)
 plugin.on_shutdown.append(analysis.close)
 plugin.on_shutdown.append(accounts.close)
 plugin.run()

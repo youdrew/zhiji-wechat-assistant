@@ -3,6 +3,10 @@
 Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 Moved from Core (message_analysis.MessageAnalysis) into kyf.message-insights, 2026-10-13.
 New messages arrive as Core ``message.new`` events instead of polling WeChat here.
+Modified 2026-11-09: work is per round. A friend's new message (re)starts a quiet timer; once the
+friend has been quiet for the configured seconds, one job covers every message since the user's
+last reply. A newer message cancels the running round and the timer starts again; the user's own
+reply ends the round.
 """
 import json
 import threading
@@ -13,13 +17,32 @@ from kyf_plugin import CoreError
 
 from prompts import UNIFIED_VERSION, VERSION, InsightError, message_hash, \
     row_from_view, valid_ids
-from store import AnalysisStore, result_bindings, saved_result, source_binding
+from store import AnalysisStore, result_bindings, round_ids, saved_result, source_binding
 from kyf_plugin.settings import read_settings
 
 ROWS_BATCH = 500
 COPY_CHECK_ATTEMPTS = 3
 COPY_CHECK_DELAY = 0.25
 COPY_CHECK_RETRY_WINDOW = 12.0
+SETTING_FIELDS = {"replyStyle": ("natural", "brief", "polite")}  # quietSeconds is optional, see quiet_seconds
+QUIET_DEFAULT, QUIET_MIN, QUIET_MAX = 20, 5, 300
+SUPERSEDED = "对方又发来新消息，已按整轮重新生成"
+ANSWERED = "你已回复，本轮未继续生成"
+PARTS = ("analysis", "suggestions")
+
+
+def enabled_parts(setting):
+    return tuple(part for part in PARTS if setting[part + "_enabled"])
+
+
+def covered_at(messages):
+    times = [message.get("time") for message in messages if type(message.get("time")) is int]
+    return max(times, default=-1)
+
+
+def quiet_seconds(settings):
+    value = (settings or {}).get("values", {}).get("quietSeconds")
+    return min(QUIET_MAX, max(QUIET_MIN, value)) if type(value) is int else QUIET_DEFAULT
 
 
 class Insights:
@@ -187,12 +210,13 @@ class Insights:
                 not self.incoming(latest, user) else "current")
             if not source_message and background_changed:
                 source_message = "背景资料或模型已更新，原结果保留供参考"
-            item = {"messageId": row["message_id"], "state": row["state"], "version": row["generation"],
+            item = {"messageId": row["message_id"], "roundIds": round_ids(row), "state": row["state"],
+                    "version": row["generation"],
                     "analysisState": row["analysis_state"], "suggestionsState": row["suggestions_state"],
                     "contextVersion": row["context_version"],
                     "applicability": applicability, "sourceState": source_state, "sourceMessage": source_message,
                     "analysisSourceState": states["analysis"][0], "suggestionsSourceState": states["suggestions"][0],
-                    "copyAllowed": bool(setting["unified_enabled"] and values["suggestions"] is not None)}
+                    "copyAllowed": bool(setting["suggestions_enabled"] and values["suggestions"] is not None)}
             if values["analysis"] is not None:
                 item["analysis"] = values["analysis"]
             if values["suggestions"] is not None:
@@ -204,12 +228,16 @@ class Insights:
             items.append(item)
         legacy = {"analysisEnabled": bool(setting["enabled"]), "suggestionsEnabled": store.legacy_auto_reply(user)}
         result = {"account": account, "user": user, "enabled": bool(setting["unified_enabled"]), "items": items,
+                  "analysisEnabled": bool(setting["analysis_enabled"]), "suggestionsEnabled": bool(setting["suggestions_enabled"]),
                   "legacy": legacy, "migrationRequired": setting["unified_enabled"] is None and any(legacy.values()),
                   "pendingCount": store.pending_count(user)}
         with self.lock:
-            error = self.entries.get((account, user), {}).get("error")
+            entry = self.entries.get((account, user), {})
+            error, due = entry.get("error"), entry.get("due")
         if error:
             result["error"] = error
+        if due is not None and setting["unified_enabled"]:
+            result["roundDueInMs"] = max(0, int((due - self.clock()) * 1000))
         return result
 
     def require_model(self):
@@ -247,8 +275,10 @@ class Insights:
         with self.lock:
             setting = store.settings(user)
             if not setting["unified_enabled"]:
-                raise InsightError("request-conflict", "请先开启这位好友的分析与建议")
-            if store.rows(user, ids):
+                raise InsightError("request-conflict", "请先开启这位好友的分析或建议")
+            row = next(iter(store.rows(user, ids)), None)
+            if row and (row["state"] in ("pending", "running") or
+                        all(row[p + "_state"] != "none" for p in enabled_parts(setting))):
                 return self.status(account, user, ids)
         self.require_model()
         request = {"account": account, "user": user, "ids": ids, "verifySender": True}
@@ -266,8 +296,7 @@ class Insights:
             if not current["unified_enabled"] or current["revision"] != setting["revision"]:
                 raise InsightError("request-conflict", "分析与建议开关已变化，请重试")
             # A second click or a live event may have already registered it.
-            if not store.rows(user, ids):
-                self.enqueue(account, user, ids, current, automatic=False, unified=True, source_messages=views)
+            self.enqueue(account, user, ids, current, automatic=False, unified=True, source_messages=views)
         self.wake.set()
         return self.status(account, user, ids)
 
@@ -288,8 +317,8 @@ class Insights:
                 return list(reversed(messages))[-240:]
             limit *= 2
 
-    def set(self, account, user, enabled):
-        if type(enabled) is not bool:
+    def set(self, account, user, enabled, part="all"):
+        if type(enabled) is not bool or part not in (*PARTS, "all"):
             raise InsightError("invalid-request", "分析与建议开关不正确")
         self.check_account(account)
         store = self.store(account)
@@ -298,25 +327,35 @@ class Insights:
         armed = int(self.clock()) * 1000
         messages = self.unanswered(account, user) if enabled else []
         ids = [message["id"] for message in messages]
-        plugin_settings = read_settings(self.core, {"replyStyle": ("natural", "brief", "polite")}) if enabled else None
-        with self.lock:
+        plugin_settings = read_settings(self.core, SETTING_FIELDS) if enabled else None
+        key = (account, user)
+        with self.lock, store.lock:
             previous = store.settings(user)
-            unchanged = previous["unified_enabled"] is not None and bool(previous["unified_enabled"]) == enabled
-            setting = previous if unchanged else store.set(user, enabled)
-            key = (account, user)
-            if not unchanged:
-                self.cancel(account, user)
-                self.entries.pop(key, None)
-                if enabled:
-                    self.entries[key] = {"armed": armed, "revision": setting["revision"], "error": None}
-                    self.enqueue(account, user, ids, setting, automatic=True, unified=True,
-                                 plugin_settings=plugin_settings, source_messages=messages)
-            if enabled:
-                if key not in self.entries:
-                    self.entries[key] = {"armed": None, "revision": setting["revision"], "error": None}
-                self.core.subscribe(account, user, replay_live=True)
+            before = enabled_parts(previous)
+            analysis = enabled if part in ("analysis", "all") else bool(previous["analysis_enabled"])
+            suggestions = enabled if part in ("suggestions", "all") else bool(previous["suggestions_enabled"])
+            changed = (previous["unified_enabled"] is None or analysis != previous["analysis_enabled"] or
+                       suggestions != previous["suggestions_enabled"])
+            setting = store.set(user, analysis, suggestions) if changed else previous
+            parts = enabled_parts(setting)
+            if parts:
+                entry = self.entries.setdefault(key, {"armed": None, "error": None})
+                entry["revision"] = setting["revision"]
+                added = tuple(p for p in parts if p not in before)
+                if added and not before:
+                    entry.update(armed=armed, covered=set(ids), covered_at=covered_at(messages))
+                anchor = ids[-1] if ids and "due" not in entry else None
+                if changed:
+                    self.reconfigure_jobs(account, user, setting, anchor, added)
+                if added and anchor:
+                    self.enqueue(account, user, [anchor], setting, automatic=True, unified=True, parts=added,
+                                 retry_failed=True, plugin_settings=plugin_settings, source_messages=messages)
+                if key not in self.subscriptions or not changed:
+                    self.core.subscribe(account, user, replay_live=True)
                 self.subscriptions[key] = setting["revision"]
             else:
+                self.cancel(account, user)
+                self.entries.pop(key, None)
                 self.core.unsubscribe(account, user)
                 self.subscriptions.pop(key, None)
         self.wake.set()
@@ -332,11 +371,12 @@ class Insights:
         with self.lock:
             setting = store.settings(user)
             rows = self.fresh_rows(account, user, store, ids)
-            if not setting["unified_enabled"] or not rows or rows[0]["generation"] != expected_version:
+            allowed = enabled_parts(setting)
+            if not allowed or (part != "all" and part not in allowed) or not rows or rows[0]["generation"] != expected_version:
                 raise InsightError("request-conflict", "结果或开关已变化，请重新选择")
             row = rows[0]
             if row["state"] not in ("pending", "running"):
-                requested = ("analysis", "suggestions") if part == "all" else (part,)
+                requested = allowed if part == "all" else (part,)
                 parts = tuple(value for value in requested if part != "all" or row[value + "_state"] != "ready" or
                               saved_result(row, value) is None)
                 if parts:
@@ -355,7 +395,7 @@ class Insights:
         setting = store.settings(user)
         row = next(iter(store.rows(user, [message_id])), None)
         replies = saved_result(row, "suggestions") if row else None
-        if not setting["unified_enabled"] or row is None or row["generation"] != version or replies is None:
+        if not setting["suggestions_enabled"] or row is None or row["generation"] != version or replies is None:
             raise InsightError("request-conflict", "候选或上下文已变化，请重新选择")
         deadline = time.monotonic() + COPY_CHECK_RETRY_WINDOW
         for attempt in range(COPY_CHECK_ATTEMPTS):
@@ -392,10 +432,10 @@ class Insights:
     def on_message(self, event):
         account, user = event.get("account"), event.get("user")
         store = self.store(account)
-        setting = store.settings(user)
-        if not setting["unified_enabled"]:
-            return
         with self.lock:
+            setting = store.settings(user)
+            if not setting["unified_enabled"]:
+                return
             entry = self.entries.get((account, user))
             if entry is None or entry["revision"] != setting["revision"]:
                 entry = self.entries[(account, user)] = {"armed": None,
@@ -409,16 +449,90 @@ class Insights:
                     raise InsightError("context-error", entry["error"])
                 entry["armed"] = live_since
             now = int(self.clock() * 1000)
-            fresh = [message for message in event.get("data", {}).get("messages", [])
-                     if self.incoming(message, user) and type(message.get("time")) is int and
-                     entry["armed"] <= message["time"] <= now + 5000]
+            live = [message for message in event.get("data", {}).get("messages", [])
+                    if type(message.get("time")) is int and entry["armed"] <= message["time"] <= now + 5000]
+            # A replayed live message already inside the started round is not new: it must not cancel that round.
+            fresh = [message for message in live if self.incoming(message, user) and
+                     message["id"] not in entry.get("covered", ())]
+            # Only the user's message after the round's last one answers it (not a replayed older one).
+            replied = any(message.get("side") == "self" and message.get("kind") != "system" and
+                          message["time"] > entry.get("covered_at", -1) for message in live)
             entry["error"] = None
+            if fresh:
+                try:
+                    settings = read_settings(self.core, SETTING_FIELDS)
+                except CoreError as exc:
+                    entry["error"] = exc.message
+                    raise
+                # The friend is still typing: the running round is incomplete, restart the quiet timer.
+                self.supersede(account, user)
+                entry["due"] = self.clock() + quiet_seconds(settings)
+                entry["settings"] = settings
+            elif replied:
+                # The user answered; this round needs no suggestions any more.
+                entry.pop("due", None)
+                store.remove(user, [message_id for message_id in self.supersede(account, user, ANSWERED)
+                                    if not any(saved_result(row, part) for row in store.rows(user, [message_id])
+                                               for part in ("analysis", "suggestions"))])
+        self.wake.set()
+
+    def supersede(self, account, user, error=SUPERSEDED):
+        """Cancel automatic round jobs of this friend (queued or running); manual ones stay."""
+        dropped = []
+        with self.lock:
+            store = self.store(account)
+            entry = self.queue.get((account, user))
+            if entry is not None:
+                for message_id in list(entry["ids"]):
+                    job = entry["jobs"][message_id]
+                    if job["automatic"]:
+                        entry["ids"].remove(message_id)
+                        entry["jobs"].pop(message_id)
+                        store.finish(user, [message_id], job["generation"], "error", error=error)
+                        dropped.append(message_id)
+                if not entry["ids"]:
+                    self.queue.pop((account, user), None)
+            for job in self.active.values():
+                if (job.account, job.user) == (account, user) and job.spec["automatic"] and \
+                        not job.cancelled.is_set():
+                    job.cancel()
+                    store.finish(user, job.ids, job.spec["generation"], "error", error=error)
+                    dropped.extend(job.ids)
+        return dropped
+
+    def due_rounds(self):
+        """Start the rounds whose friend has been quiet long enough."""
+        now = self.clock()
+        with self.lock:
+            ready = [(key, entry) for key, entry in self.entries.items()
+                     if entry.get("due") is not None and entry["due"] <= now]
+            for _key, entry in ready:
+                entry.pop("due", None)
+        for (account, user), entry in ready:
             try:
-                self.enqueue(account, user, [message["id"] for message in fresh], setting,
-                             automatic=True, unified=True, source_messages=fresh)
-            except CoreError as exc:
-                entry["error"] = exc.message
-                raise
+                self.start_round(account, user, entry.get("settings"))
+            except Exception as exc:
+                with self.lock:
+                    entry["error"] = getattr(exc, "message", None) or "本轮分析未能开始，请稍后重试"
+
+    def start_round(self, account, user, settings=None):
+        self.check_account(account)
+        store = self.store(account)
+        messages = self.unanswered(account, user)
+        if not messages:
+            return
+        ids = [message["id"] for message in messages]
+        with self.lock:
+            setting = store.settings(user)
+            if not setting["unified_enabled"]:
+                return
+            # Earlier rounds of these same messages were cut short by this one.
+            store.remove(user, [row["message_id"] for row in store.rows(user, ids[:-1])
+                                if row.get("round_json") or SUPERSEDED in (row.get("error"), row.get("suggestions_error"))])
+            self.enqueue(account, user, ids[-1:], setting, automatic=True, unified=True,
+                         plugin_settings=settings, source_messages=messages)
+            self.entries.setdefault((account, user), {"armed": None, "revision": setting["revision"],
+                                                      "error": None}).update(covered=set(ids), covered_at=covered_at(messages))
         self.wake.set()
 
     @staticmethod
@@ -434,21 +548,28 @@ class Insights:
             return tuple(value)
         return ()
 
-    def enqueue(self, account, user, ids, setting, *, automatic, unified=False, parts=None, force=False,
+    def enqueue(self, account, user, ids, setting, *, automatic, unified=False, parts=None, force=False, retry_failed=False,
                 plugin_settings=None, source_messages=None):
         store = self.store(account)
         ids = list(dict.fromkeys(ids))
         previous = {row["message_id"]: row for row in store.rows(user, ids)}
-        ids = [value for value in ids if force or value not in previous or
-               previous[value]["state"] not in ("ready", "pending", "running", "partial") or
-               (unified and previous[value]["schema_version"] != 2)]
+        if parts is None:
+            parts = enabled_parts(setting) if unified else ("analysis",)
+        needed = {}
+        for value in ids:
+            row = previous.get(value)
+            if force or row is None or (unified and row["schema_version"] != 2):
+                needed[value] = parts
+            elif row["state"] not in ("pending", "running"):
+                retry = retry_failed or row["state"] == "error"
+                needed[value] = tuple(p for p in parts if row[p + "_state"] == "none" or
+                                      (retry and row[p + "_state"] != "ready"))
+        ids = [value for value in ids if needed.get(value)]
         if not ids:
             return
-        settings = plugin_settings if plugin_settings is not None else read_settings(
-            self.core, {"replyStyle": ("natural", "brief", "polite")})
+        settings = plugin_settings if plugin_settings is not None else read_settings(self.core, SETTING_FIELDS)
         entry = self.queue.setdefault((account, user), {"ids": [], "jobs": {}})
         entry["ids"].extend(value for value in ids if value not in entry["ids"])
-        parts = parts or (("analysis", "suggestions") if unified else ("analysis",))
         sources = {message["id"]: message for message in source_messages or []}
         for message_id in ids:
             generation = "analysis_" + uuid.uuid4().hex
@@ -460,9 +581,46 @@ class Insights:
                 "settings": settings,
                 "message_time": sent_at if type(sent_at) is int and sent_at >= 0 else 0,
                 "message_order": self.message_order(source), "queued_order": self.queue_sequence,
-                "unified": unified, "parts": parts,
+                "unified": unified, "parts": needed[message_id],
                 "preserved_context": None}
-            store.begin(user, [message_id], generation, parts=parts, unified=unified)
+            store.begin(user, [message_id], generation, parts=needed[message_id], unified=unified)
+
+    def reconfigure_jobs(self, account, user, setting, anchor, added):
+        """Keep unfinished enabled work, including manual jobs on older rounds. Caller holds both locks."""
+        key = (account, user)
+        store = self.store(account)
+        queue = self.queue.get(key, {"ids": [], "jobs": {}})
+        jobs = {mid: (job.spec, job) for (owner, friend, mid), job in self.active.items()
+                if (owner, friend) == key and not job.cancelled.is_set()}
+        jobs.update({mid: (spec, None) for mid, spec in queue["jobs"].items()})
+        allowed = enabled_parts(setting)
+        for mid, (spec, active) in jobs.items():
+            row = next(iter(store.rows(user, [mid])), None)
+            if not row or row["generation"] != spec["generation"] or row["state"] not in ("pending", "running"):
+                continue
+            unfinished = tuple(p for p in spec["parts"] if row[p + "_state"] in ("pending", "running"))
+            wanted = tuple(p for p in allowed if p in unfinished or
+                           (mid == anchor and p in added and row[p + "_state"] != "ready"))
+            if wanted == unfinished:
+                spec["revision"] = setting["revision"]
+                continue
+            if active:
+                active.cancel()
+            else:
+                queue["ids"].remove(mid)
+                queue["jobs"].pop(mid)
+            for p in unfinished:
+                if p not in wanted:
+                    store.withdraw(user, mid, spec["generation"], p, row)
+            if wanted:
+                generation = "analysis_" + uuid.uuid4().hex
+                queue["ids"].append(mid)
+                queue["jobs"][mid] = {**spec, "generation": generation, "parts": wanted, "revision": setting["revision"]}
+                store.begin(user, [mid], generation, parts=wanted, unified=True)
+        if queue["ids"]:
+            self.queue[key] = queue
+        else:
+            self.queue.pop(key, None)
 
     def cancel(self, account, user):
         with self.lock:
@@ -562,6 +720,10 @@ class Insights:
                 self.restore_subscriptions()
             except Exception:
                 pass  # A later dispatch retries; status reads never enqueue work.
+            try:
+                self.due_rounds()
+            except Exception:
+                pass  # Each round records its own error; the next tick continues.
             try:
                 self._dispatch()
             except Exception:

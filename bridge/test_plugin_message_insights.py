@@ -85,20 +85,22 @@ class Provider(BaseHTTPRequestHandler):
         if system.startswith("你整理同一个人的标签"):
             PROVIDER["calls"].append("self-tags-merge")
             return self.answer({"merge": []})
-        target = prompt["targets"][0]
+        # A round's last message names the job; every target is one of the round's messages.
+        target = prompt["targets"][-1]
         step = "suggestions" if system.startswith("你为用户提供") else "analysis"
         PROVIDER["calls"].append(step)
         PROVIDER.setdefault("requests", []).append({"step": step, "prompt": prompt})
         if PROVIDER.get("gate") is not None:
             PROVIDER["gate"].wait(target, step)
         if system.startswith("你为用户提供"):
-            content = {"replies": [{"label": "直接", "text": "好呀，几点？"}, {"label": "确认", "text": "周六可以吗"},
-                                   {"label": "轻松", "text": "听起来不错"}]}
+            content = {"replies": [{"label": "直接", "messages": ["好呀，几点？"]},
+                                   {"label": "确认", "messages": ["周六可以吗"]},
+                                   {"label": "轻松", "messages": ["听起来不错", "我也想去"]}]}
         else:
             chat = next(source["sourceId"] for source in prompt["sources"]
                         if source["kind"] == "chat" and source.get("messageId") == target)
-            content = {"analyses": [{"messageId": target, "summary": "邀请看展", "meaning": "想约周末一起看展",
-                                     "uncertainty": "时间未定", "responseDirection": "确认时间", "evidenceIds": [chat]}]}
+            content = {"analysis": {"summary": "邀请看展", "meaning": "想约周末一起看展",
+                                    "uncertainty": "时间未定", "responseDirection": "确认时间", "evidenceIds": [chat]}}
         self.answer(content)
 
     def answer(self, content):
@@ -219,6 +221,13 @@ class MessageInsightsTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read())["result"]
 
+    def quick_rounds(self, seconds=5):
+        """The shortest allowed quiet period, so a test waits seconds instead of the default 20."""
+        plugin = "kyf.message-insights"
+        current = self.core.registry.settings(plugin)
+        self.core.registry.save_settings(plugin, current["revision"], {**current["values"], "quietSeconds": seconds},
+                                         current["definition"])
+
     def wait_ready(self, ids, timeout=60):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -229,24 +238,30 @@ class MessageInsightsTests(unittest.TestCase):
         self.fail(f"not ready: {status}")
 
     def test_enable_analyses_the_unanswered_message_and_new_ones(self):
+        self.quick_rounds()
         target = self.source.users[FRIEND][-1]["id"]
         state = self.rpc("chatHeader.toggle", {"enabled": True})
         self.assertTrue(state["enabled"])
         status = self.wait_ready([target])
         item = status["items"][0]
-        self.assertEqual((item["state"], item["applicability"]), ("ready", "current"))
+        self.assertEqual((item["state"], item["applicability"]), ("ready", "current"), item)
         self.assertEqual(item["analysis"]["summary"], "邀请看展")
         self.assertEqual(item["analysis"]["evidence"][0]["messageId"], target)
         self.assertEqual([reply["text"] for reply in item["replies"]][0], "好呀，几点？")
+        self.assertEqual(item["replies"][2]["messages"], ["听起来不错", "我也想去"])
+        self.assertEqual(item["roundIds"], [target])
         copied = self.rpc("annotations.copy", {"messageId": target, "version": item["version"], "index": 1})
         self.assertEqual(copied["text"], "周六可以吗")
-        # A newer incoming message arrives through Core's message.new event.
+        # A newer incoming message arrives through Core's message.new event; once the friend is quiet,
+        # one round covers both unanswered messages and replaces the shorter round.
         self.source.add_messages(FRIEND, [message(3, "other", "下午两点美术馆门口见")])
         newest = self.source.users[FRIEND][-1]["id"]
-        status = self.wait_ready([target, newest])
-        by_id = {entry["messageId"]: entry for entry in status["items"]}
-        self.assertEqual(by_id[newest]["state"], "ready")
-        self.assertEqual(by_id[target]["applicability"], "historical")
+        status = self.wait_ready([newest])
+        entry, = status["items"]
+        self.assertEqual((entry["state"], entry["roundIds"]), ("ready", [target, newest]))
+        self.assertEqual(self.rpc("annotations.status", {"messageIds": [target]})["items"], [])
+        latest = [request for request in PROVIDER["requests"] if request["step"] == "suggestions"][-1]["prompt"]
+        self.assertEqual(latest["targets"], [target, newest])
         records = self.core.ledger.records({"account": ACCOUNT})["records"]
         self.assertEqual({record["step"] for record in records}, {"analysis", "suggestions"})
         self.assertTrue(all(record["plugin"] == "kyf.message-insights" for record in records))
@@ -507,7 +522,7 @@ class MessageInsightsTests(unittest.TestCase):
         target = self.source.users[FRIEND][-1]["id"]
         self.rpc("chatHeader.toggle", {"enabled": True})
         item = self.wait_ready([target])["items"][0]
-        self.assertTrue(item["copyAllowed"])
+        self.assertTrue(item["copyAllowed"], item)
         calls_before = len(PROVIDER["calls"])
         original_status = self.core.history.status
         fresh_checks = []
@@ -648,6 +663,7 @@ class MessageInsightsTests(unittest.TestCase):
         self.assertEqual(PROVIDER["calls"], ["analysis", "suggestions"])
 
     def test_enable_does_not_lose_message_between_history_snapshot_and_subscription(self):
+        self.quick_rounds()
         initial = self.source.users[FRIEND][-1]["id"]
         recent = self.core.history.recent
         arrivals = []
@@ -663,10 +679,9 @@ class MessageInsightsTests(unittest.TestCase):
         self.core.history.recent = snapshot_then_arrival
         self.rpc("chatHeader.toggle", {"enabled": True})
         self.assertEqual(len(arrivals), 1)
-        items = self.wait_ready([initial, arrivals[0]])["items"]
-        self.assertTrue(all(item["state"] == "ready" for item in items))
-        self.assertEqual(PROVIDER["calls"].count("analysis"), 2)
-        self.assertEqual(PROVIDER["calls"].count("suggestions"), 2)
+        # The arrival joins the unanswered round; the round started at enable is replaced, never lost.
+        item, = self.wait_ready([arrivals[0]], timeout=90)["items"]
+        self.assertEqual((item["state"], item["roundIds"]), ("ready", [initial, arrivals[0]]))
 
     def test_manual_generation_rejects_unresolved_sender_display_fallback(self):
         target = self.source.users[FRIEND][-1]
@@ -686,29 +701,42 @@ class MessageInsightsTests(unittest.TestCase):
         self.assertEqual(self.rpc("annotations.status", {"messageIds": [target["id"]]})["items"], [])
         self.assertEqual(PROVIDER["calls"], [])
 
-    def test_configured_three_tasks_reach_provider_concurrently_with_distinct_results(self):
-        self.backend.model_source_store.concurrency = 3
-        self.core.gateway.reconfigure()
+    def test_enabling_with_several_unanswered_messages_generates_one_round(self):
         self.source.add_messages(FRIEND, [message(3, "other", "合成消息二"), message(4, "other", "合成消息三")])
         ids = [item["id"] for item in self.source.users[FRIEND] if item["side"] == "other"]
-        gate = PROVIDER["gate"] = ProviderGate(3)
-        try:
-            self.rpc("chatHeader.toggle", {"enabled": True})
-            self.assertTrue(gate.entered.wait(12), "three independent model requests did not reach the provider")
-            with gate.lock:
-                self.assertEqual((gate.active, gate.peak), (3, 3))
-                self.assertEqual({target for target, _step in gate.steps}, set(ids))
-                self.assertTrue(all(step == "analysis" for _target, step in gate.steps))
-        finally:
-            gate.release.set()
-        items = self.wait_ready(ids)["items"]
-        self.assertEqual(len(items), 3)
-        for item in items:
-            self.assertEqual((item["analysisState"], item["suggestionsState"]), ("ready", "ready"))
-            self.assertEqual(item["analysis"]["evidence"][0]["messageId"], item["messageId"])
-            self.assertEqual(len(item["replies"]), 3)
-            self.assertEqual([step for target, step in gate.steps if target == item["messageId"]],
-                             ["analysis", "suggestions"])
+        self.rpc("chatHeader.toggle", {"enabled": True})
+        item, = self.wait_ready([ids[-1]])["items"]
+        self.assertEqual((item["analysisState"], item["suggestionsState"]), ("ready", "ready"))
+        self.assertEqual(item["roundIds"], ids)
+        self.assertEqual(len(item["replies"]), 3)
+        self.assertEqual(PROVIDER["calls"].count("analysis"), 1)
+        self.assertEqual(PROVIDER["calls"].count("suggestions"), 1)
+        self.assertEqual([request["prompt"]["targets"] for request in PROVIDER["requests"]], [ids, ids])
+        self.assertEqual(self.rpc("annotations.status", {"messageIds": ids[:-1]})["items"], [])
+
+    def test_single_part_switches_control_which_model_calls_run(self):
+        self.quick_rounds()
+        target = self.source.users[FRIEND][-1]["id"]
+        state = self.rpc("chatHeader.toggle", {"part": "analysis", "enabled": True})
+        self.assertEqual((state["analysisEnabled"], state["suggestionsEnabled"]), (True, False))
+        item, = self.wait_ready([target])["items"]
+        self.assertEqual((item["analysisState"], item["suggestionsState"]), ("ready", "none"))
+        self.assertNotIn("replies", item)
+        self.assertEqual(PROVIDER["calls"], ["analysis"])
+
+        self.rpc("chatHeader.toggle", {"part": "suggestions", "enabled": True})
+        item, = self.wait_ready([target])["items"]
+        self.assertEqual((item["analysisState"], item["suggestionsState"]), ("ready", "ready"))
+        self.assertEqual(PROVIDER["calls"], ["analysis", "suggestions"])
+        state = self.rpc("chatHeader.toggle", {"part": "analysis", "enabled": False})
+        self.assertEqual((state["analysisEnabled"], state["suggestionsEnabled"]), (False, True))
+        incoming = message(4, "other", "下午方便吗？")
+        self.source.add_messages(FRIEND, [message(3, "self", "好啊"), incoming])
+        self.core.events.wake.set()
+        item, = self.wait_ready([incoming["id"]])["items"]
+        self.assertEqual((item["state"], item["analysisState"], item["suggestionsState"]), ("ready", "none", "ready"))
+        self.assertNotIn("analysis", item)
+        self.assertEqual(PROVIDER["calls"], ["analysis", "suggestions", "suggestions"])
 
     def test_disable_stops_watching(self):
         self.rpc("chatHeader.toggle", {"enabled": True})
@@ -721,10 +749,9 @@ class MessageInsightsTests(unittest.TestCase):
         time.sleep(1.0)
         self.assertEqual(len(PROVIDER["calls"]), calls)
 
-    def test_new_arrival_gets_next_provider_slot_ahead_of_old_backlog(self):
-        self.backend.model_source_store.concurrency = 1
-        self.core.gateway.reconfigure()
-        self.source.add_messages(FRIEND, [message(3, "other", "合成旧消息二"), message(4, "other", "合成旧消息三")])
+    def test_new_message_cancels_the_running_round_and_the_next_round_covers_everything(self):
+        self.quick_rounds()
+        self.source.add_messages(FRIEND, [message(3, "other", "合成旧消息二")])
         old_ids = [row["id"] for row in self.source.users[FRIEND] if row["side"] == "other"]
         gate = PROVIDER["gate"] = ProviderGate(1)
         try:
@@ -736,25 +763,19 @@ class MessageInsightsTests(unittest.TestCase):
             self.source.add_messages(FRIEND, [incoming])
             self.core.events.wake.set()
             deadline = time.monotonic() + 12
-            queued = []
+            status = {}
             while time.monotonic() < deadline:
-                queued = self.rpc("annotations.status", {"messageIds": [incoming["id"]]})["items"]
-                if queued:
+                status = self.rpc("annotations.status", {"messageIds": [old_ids[-1]]})
+                if "roundDueInMs" in status:
                     break
                 time.sleep(0.1)
-            self.assertEqual([item["state"] for item in queued], ["pending"])
-            with gate.lock:
-                self.assertEqual((gate.active, gate.peak), (1, 1))
-                self.assertEqual(gate.steps, [(old_ids[-1], "analysis")], "running task was interrupted")
+            self.assertIn("roundDueInMs", status, "the friend's new message restarts the quiet timer")
+            self.assertEqual(status["items"][0]["state"], "error", "the cut-short round stops")
         finally:
             gate.release.set()
-        completed = self.wait_ready([*old_ids, incoming["id"]])["items"]
-        self.assertTrue(all(item["state"] == "ready" for item in completed))
-        with gate.lock:
-            order = [target for target, step in gate.steps if step == "analysis"]
-        self.assertEqual(order, [old_ids[-1], incoming["id"], *reversed(old_ids[:-1])])
-        self.assertEqual(PROVIDER["calls"].count("analysis"), 4)
-        self.assertEqual(PROVIDER["calls"].count("suggestions"), 4)
+        item, = self.wait_ready([incoming["id"]])["items"]
+        self.assertEqual((item["state"], item["roundIds"]), ("ready", [*old_ids, incoming["id"]]))
+        self.assertEqual(self.rpc("annotations.status", {"messageIds": old_ids})["items"], [])
 
 
 if __name__ == "__main__":

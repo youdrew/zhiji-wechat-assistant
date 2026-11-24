@@ -38,7 +38,7 @@
     timelineOpen: "", timelineEvidence: {}, timelineFilter: "", timelineImportantOnly: false,
     timelineCollapsed: new Set(), timelineExpanded: new Set(), timelineUnknownOpen: false, timelineTrack: "",
     timelineManage: false, timelineEditing: "", timelineWhen: null, timelineRendering: false,
-    timelineAddType: null, timelineNotice: "", timelineUndoQueued: 0 };
+    timelineAddType: null, timelineNotice: "", timelineUndoQueued: 0, timelineProgress: null };
   const account = () => string(state.context?.account, 240);
   const scope = () => ({ account: account(), user: string(state.context?.user, 240) });
   const current = (epoch, value) => state.epoch === epoch && account() === value;
@@ -816,39 +816,28 @@
   const TL_STATUS_SHORT = { occurred: "", planned: "计划", cancelled: "已取消", uncertain: "待判断" };
   const TL_LEVELS = { confirmed: "已确认", strong: "较可靠", possible: "可能" };
   const TL_KINDS = { point: "事件", start: "开始", end: "结束", state: "状态" };
-  const TL_COLORS = ["#07c160", "#576b95", "#c2841c", "#b05a4a", "#7f77dd", "#3d8f8a", "#9a6fb0", "#7b8a4e"];
+  // 总览图、时间输入和时间段命名在 plugin-sdk/web/timeline.js，与知己分析共用。
+  const Timeline = window.KyfTimeline;
+  const TL_COLORS = Timeline.COLORS;
   const validTimeline = value => object(value) && Array.isArray(value.events) && Array.isArray(value.periods) &&
     Array.isArray(value.tracks) && typeof value.version === "number";
   const trackColor = name => (state.timeline?.tracks || []).find(track => track.name === name)?.color || TL_COLORS[0];
   const trackNames = () => (state.timeline?.tracks || []).map(track => track.name);
-  const hasMonth = event => ["day", "month", "season"].includes(event.precision);
+  const hasMonth = Timeline.hasMonth;
   const monthLabel = event => Number.isFinite(event.startMs) && hasMonth(event) ? `${new Date(event.startMs).getMonth() + 1}月` : "—";
   const fullDate = ms => new Date(ms).toLocaleDateString("zh-CN");
   const isImportant = event => event.importance === "important";
   const WHEN_HINT = "时间可写成 2024、2024.05 或 2024.05.01";
-  // 分隔符不挑：2024.05、2024/5、2024-05、2024年5月、202405 都认；日期要真实存在。
-  function parseWhenInput(text) {
-    const compact = (text || "").trim().replace(/[./．／。、年月\s]+/g, "-").replace(/[日号]/g, "").replace(/^-+|-+$/g, "");
-    const digits = /^(\d{4})(\d{2})(\d{2})?$/.exec(compact);
-    const match = digits || /^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$/.exec(compact);
-    if (!match) return null;
-    const year = +match[1], month = match[2] ? +match[2] : null, day = match[3] ? +match[3] : null;
-    if (year < 1970 || year > 2099 || month !== null && (month < 1 || month > 12)) return null;
-    if (day !== null) {
-      const start = new Date(year, month - 1, day);
-      if (start.getMonth() !== month - 1) return null;
-      return { startMs: start.getTime(), endMs: new Date(year, month - 1, day + 1).getTime() - 1, precision: "day" };
-    }
-    if (month !== null) return { startMs: new Date(year, month - 1, 1).getTime(), endMs: new Date(year, month, 1).getTime() - 1, precision: "month" };
-    return { startMs: new Date(year, 0, 1).getTime(), endMs: new Date(year + 1, 0, 1).getTime() - 1, precision: "year" };
-  }
+  const parseWhenInput = Timeline.parseWhenInput, whenInput = Timeline.whenInput;
   // 事件分页返回（单次回复有大小上限）；续读中版本或总数变了就从头再读。
-  async function fullTimeline(value) {
+  // onProgress 收到真实的已读 / 总条数，只在还有后续分页时才报。
+  async function fullTimeline(value, onProgress = null) {
     for (let attempt = 0; ; attempt++) {
       if (!validTimeline(value)) throw new Error("时间线暂时无法读取，请稍后重试。");
       const events = [...value.events];
       let next = value.nextOffset, changed = false;
       while (Number.isInteger(next) && !changed) {
+        if (onProgress && Number.isInteger(value.eventsTotal) && value.eventsTotal > 0) onProgress(events.length, value.eventsTotal);
         const page = await window.kyfHost.rpc("self.timeline", { offset: next }, scope());
         changed = !validTimeline(page) || page.version !== value.version || page.eventsTotal !== value.eventsTotal ||
           !page.events.length;
@@ -862,13 +851,18 @@
   async function loadTimeline() {
     if (!account() || state.disabled || state.timelinePending || state.timelineBusy) return;
     const epoch = state.epoch, original = account(), serial = ++state.timelineSerial;
-    state.timelinePending = true; renderTimeline();
+    state.timelinePending = true; state.timelineProgress = null; renderTimeline();
+    // 已有内容时（切回本页、写入冲突后刷新）静默更新，不再出现加载态；首次读取才报分页进度。
+    const progress = state.timeline ? null : (done, total) => {
+      if (!current(epoch, original) || serial !== state.timelineSerial) return;
+      state.timelineProgress = { done, total }; renderTimeline();
+    };
     try {
-      const value = await fullTimeline(await window.kyfHost.rpc("self.timeline", {}, scope()));
+      const value = await fullTimeline(await window.kyfHost.rpc("self.timeline", {}, scope()), progress);
       if (!current(epoch, original) || serial !== state.timelineSerial) return;
       state.timeline = value; state.timelineError = "";
     } catch (error) { if (current(epoch, original) && serial === state.timelineSerial) state.timelineError = friendly(error); }
-    finally { if (current(epoch, original) && serial === state.timelineSerial) { state.timelinePending = false; renderTimeline(); } }
+    finally { if (current(epoch, original) && serial === state.timelineSerial) { state.timelinePending = false; state.timelineProgress = null; renderTimeline(); } }
   }
   async function timelineWrite(method, params) {
     if (!account() || state.timelineBusy || state.disabled) return null;
@@ -915,15 +909,16 @@
     byId("timelineAdd").disabled = !available || state.timelineBusy;
     byId("timelineImportantOnly").disabled = !available;
     const run = object(value?.run) ? value.run : {};
-    let text = state.timelineError;
-    // 首次读取还没返回时先显示“正在读取”，不显示空状态，避免误以为没有信息。
-    if (!text && !value && state.timelinePending) text = "正在读取…";
+    // 首次读取完成前不显示筛选和添加；读取中或首次失败时在面板中间显示状态，不显示空状态。
+    byId("timelineTop").hidden = !value;
+    renderTimelineState(available && !value && (state.timelinePending || !!state.timelineError));
+    let text = value ? state.timelineError : "";
     if (!text && ["running", "paused", "failed"].includes(run.state)) {
       text = run.state === "running" ? "正在分析时间线…" : run.state === "paused" ? "时间线分析已暂停，进度已保留" : string(run.error, 200) || "时间线分析未完成，请重试";
     }
     message("timelineMessage", text);
     const empty = !value || (!value.events.length && !value.periods.length && ["idle", "done", "complete"].includes(run.state));
-    byId("timelineEmpty").hidden = !empty || !!text;
+    byId("timelineEmpty").hidden = !empty || !!text || !byId("timelineState").hidden;
     byId("timelineAddForm").hidden = state.timelineAddType === null;
     renderTimelineAddForm();
     renderTimelineOverview();
@@ -931,44 +926,23 @@
     renderTimelinePeriodBar();
     renderTimelineList();
   }
+  // 首次读取：分页进度是真实的已读 / 总条数；第一页返回前没有进度信息，用不定进度条，不编造百分比。
+  function renderTimelineState(show) {
+    const box = byId("timelineState"), bar = byId("timelineProgress"), progress = state.timelineProgress;
+    box.hidden = !show;
+    if (!show) return;
+    const failed = !state.timelinePending && !!state.timelineError;
+    box.className = "tl-state " + (failed ? "failed" : "loading");
+    bar.hidden = failed; byId("timelineRetry").hidden = !failed;
+    bar.className = "tl-progress" + (progress ? "" : " indeterminate");
+    byId("timelineProgressBar").style.width = progress ? `${Math.min(100, progress.done / progress.total * 100)}%` : "";
+    byId("timelineStateText").textContent = failed ? state.timelineError : progress ? `正在读取… ${progress.done} / ${progress.total} 条` : "正在读取…";
+  }
   // 时间线按插件设置的时间颗粒度分段，段号是从公元 0 年算起的第几段，相邻两段差 1。
   const grainMonths = () => state.timeline?.months || 12;
-  function timelineBucket(ms) { const day = new Date(ms); return Math.floor((day.getFullYear() * 12 + day.getMonth()) / grainMonths()); }
-  function bucketName(bucket, short = false) {
-    const months = grainMonths(), start = bucket * months, year = Math.floor(start / 12), month = start % 12;
-    if (months === 12) return String(year);
-    if (months > 12) { const last = year + months / 12 - 1; return short ? `${year}–${String(last).slice(2)}` : `${year}–${last}`; }
-    if (months === 6) return short ? `${String(year).slice(2)}${month ? "下" : "上"}` : `${year} ${month ? "下" : "上"}半年`;
-    return short ? `${String(year).slice(2)}Q${month / 3 + 1}` : `${year} 第${"一二三四"[month / 3]}季度`;
-  }
-  // 总览按“主线 × 时间段”画成格子，颜色深浅表示这一段的事件多少；连续三段以上全空的收成一格“…”。
-  function timelineYears(value, counted) {
-    const years = new Set(counted.map(event => timelineBucket(event.startMs)));
-    for (const period of value.periods) if (Number.isFinite(period.startMs)) years.add(timelineBucket(period.startMs));
-    if (Number.isFinite(value.coverage?.earliestMs)) years.add(timelineBucket(value.coverage.earliestMs));
-    years.add(timelineBucket(Date.now()));
-    const first = Math.min(...years), last = Math.max(...years), columns = [];
-    for (let year = first; year <= last; year++) {
-      if (years.has(year)) { columns.push(year); continue; }
-      let next = year; while (!years.has(next)) next++;
-      if (next - year >= 3) { columns.push(null); year = next - 1; } else columns.push(year);
-    }
-    return columns;
-  }
-  function hideTimelineTip() { document.querySelector(".tl-tip")?.remove(); }
-  function showTimelineTip(anchor, events) {
-    hideTimelineTip();
-    const tip = element("div", "popover tl-tip", ""); tip.setAttribute("role", "tooltip");
-    for (const event of events) {
-      const line = element("div", "tl-tip-line", "");
-      line.append(element("span", "tl-tip-when", event.whenText), element("span", "", event.title));
-      tip.appendChild(line);
-    }
-    document.body.appendChild(tip);
-    const box = anchor.getBoundingClientRect(), { width, height } = tip.getBoundingClientRect();
-    tip.style.left = `${Math.max(4, Math.min(box.left + box.width / 2 - width / 2, innerWidth - width - 4))}px`;
-    tip.style.top = `${box.top - height - 6 >= 4 ? box.top - height - 6 : box.bottom + 6}px`;
-  }
+  const timelineBucket = ms => Timeline.bucket(ms, grainMonths());
+  const bucketName = (bucket, short = false) => Timeline.bucketName(bucket, grainMonths(), short);
+  const hideTimelineTip = Timeline.hideTip;
   function revealTimelineEvent(event) {
     if (state.timelineTrack && state.timelineTrack !== event.track) state.timelineTrack = event.track;
     state.timelineFilter = ""; state.timelineEditing = ""; state.timelineOpen = event.id;
@@ -977,75 +951,12 @@
     renderTimeline();
     byId("timelineList").querySelector(`[data-event="${CSS.escape(event.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
   }
-  // 星标按月落在时间段格子里；日期只到年的放在格子中间。同月的并成一颗，提示里逐件列出。
-  function overviewStars(events) {
-    const slots = new Map(), months = grainMonths();
-    for (const event of events) {
-      const day = new Date(event.startMs), slot = hasMonth(event) ? (day.getFullYear() * 12 + day.getMonth()) % months : (months - 1) / 2;
-      slots.set(slot, [...(slots.get(slot) || []), event]);
-    }
-    return [...slots].map(([slot, items]) => {
-      const star = element("button", "tl-overview-star", items.every(event => event.status === "planned") ? "☆" : "★");
-      star.type = "button"; star.style.left = `${(slot + .5) / months * 100}%`;
-      star.setAttribute("aria-label", items.map(event => event.title).join("、"));
-      star.addEventListener("mouseenter", () => showTimelineTip(star, items));
-      star.addEventListener("focus", () => showTimelineTip(star, items));
-      star.addEventListener("mouseleave", hideTimelineTip);
-      star.addEventListener("blur", hideTimelineTip);
-      star.addEventListener("click", () => { hideTimelineTip(); revealTimelineEvent(items[0]); });
-      return star;
-    });
-  }
+  // 总览按“主线 × 时间段”画成格子（timeline.js 的格子模式），重要事件是叠在格子上的星标，点星标跳到列表里的这件事。
   function renderTimelineOverview() {
-    hideTimelineTip();
-    const value = state.timeline, host = byId("timelineOverview");
-    if (!value || !value.periods.length && !value.events.length) { host.replaceChildren(); host.hidden = true; return; }
-    host.hidden = false;
-    const counted = value.events.filter(event => Number.isFinite(event.startMs) && event.status !== "cancelled" &&
-      (!state.timelineImportantOnly || isImportant(event)));
-    const columns = timelineYears(value, counted);
-    const cells = new Map();
-    for (const event of counted) {
-      const key = `${event.track}|${timelineBucket(event.startMs)}`;
-      const cell = cells.get(key) || { total: 0, important: [] };
-      cell.total++; if (isImportant(event)) cell.important.push(event);
-      cells.set(key, cell);
-    }
-    // 深浅分四档，按全图非空格子的分位切，避免一两个大年份把其他格子都压成最浅。
-    const sorted = [...cells.values()].map(cell => cell.total).sort((a, b) => a - b);
-    const cut = ratio => sorted[Math.floor((sorted.length - 1) * ratio)] || 0;
-    const steps = [cut(.25), cut(.5), cut(.75)];
-    const level = total => total <= 0 ? 0 : 1 + steps.filter(step => total > step).length;
-    const chatYear = Number.isFinite(value.coverage?.earliestMs) ? timelineBucket(value.coverage.earliestMs) : null;
-    const grid = element("div", "tl-grid", ""), width = grainMonths() > 12 ? 52 : grainMonths() < 12 ? 32 : 24;
-    grid.style.gridTemplateColumns = `64px ${columns.map(year => year === null ? "16px" : `minmax(${width}px, 1fr)`).join(" ")}`;
-    grid.appendChild(element("span", "", ""));
-    for (const year of columns) {
-      const label = element("span", "tl-year-label" + (year !== null && year === chatYear ? " chat-start" : ""),
-        year === null ? "…" : bucketName(year, true));
-      if (year !== null && year === chatYear) label.title = `聊天记录从 ${fullDate(value.coverage.earliestMs)} 开始`;
-      grid.appendChild(label);
-    }
-    for (const track of timelineTracks()) {
-      const dim = state.timelineTrack && state.timelineTrack !== track.name ? " dim" : "";
-      const label = element("button", "tl-track-label" + dim, track.name); label.type = "button";
-      label.title = track.description || track.name;
-      label.addEventListener("click", () => selectTimelineTrack(track.name));
-      grid.appendChild(label);
-      for (const year of columns) {
-        if (year === null) { grid.appendChild(element("span", "tl-cell gap" + dim, "")); continue; }
-        const cell = cells.get(`${track.name}|${year}`);
-        const box = element("button", `tl-cell level-${level(cell?.total || 0)}${dim}`, ""); box.type = "button";
-        box.style.setProperty("--track", trackColor(track.name));
-        box.title = cell ? `${track.name} · ${bucketName(year)}：${cell.total} 件${cell.important.length ? `，重要 ${cell.important.length} 件` : ""}` : `${track.name} · ${bucketName(year)}`;
-        box.disabled = !cell;
-        box.addEventListener("click", () => selectTimelineTrack(track.name, year));
-        const slot = element("div", "tl-cell-slot" + dim, "");
-        slot.append(box, ...overviewStars(cell?.important || []));
-        grid.appendChild(slot);
-      }
-    }
-    host.replaceChildren(grid);
+    const value = state.timeline;
+    Timeline.renderOverview(byId("timelineOverview"), { mode: "grid", value, tracks: value ? timelineTracks() : [], months: grainMonths(),
+      importantOnly: state.timelineImportantOnly, selectedTrack: state.timelineTrack, colorOf: trackColor,
+      onTrack: selectTimelineTrack, onEvent: revealTimelineEvent });
   }
   // 用户开启的主线（可见且有内容）各占一个页签，“全部”在最前。
   function timelineTracks() {
@@ -1158,13 +1069,6 @@
     cancel.addEventListener("click", () => { state.timelineEditing = ""; if (period) state.timelineFilter = state.timelineFilter; renderTimeline(); onDone(); });
     form.append(title, track, start, end, element("div", "tl-form-actions", ""), save, cancel);
     return form;
-  }
-  function whenInput(ms, precision) {
-    if (!Number.isFinite(ms)) return "";
-    const day = new Date(ms);
-    if (precision === "day") return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-    if (["month", "season"].includes(precision)) return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}`;
-    return String(day.getFullYear());
   }
   function renderTimelineList() {
     const host = byId("timelineList"), value = state.timeline;
@@ -2087,7 +1991,7 @@
     Object.assign(state, { timeline: null, timelinePending: false, timelineBusy: false, timelineError: "",
       timelineOpen: "", timelineEvidence: {}, timelineFilter: "", timelineEditing: "", timelineWhen: null,
       timelineNotice: "", timelineUndoQueued: 0, timelineAddType: null, timelineManage: false, timelineTrack: "",
-      timelineUnknownOpen: false });
+      timelineUnknownOpen: false, timelineProgress: null });
     state.timelineCollapsed = new Set(); state.timelineExpanded = new Set();
     renderTimeline();
     for (const kind of Object.keys(OPINIONS)) renderOpinion(kind);
@@ -2138,6 +2042,7 @@
     if (name && await tagCall("self.tagEdit", { action: "reset", name })) { state.tagUndo = ""; selectTagNamed(name); }
   });
   byId("tagModelSettings").addEventListener("click", () => { void openSettings("model"); });
+  byId("timelineRetry").addEventListener("click", () => { state.timelineError = ""; void loadTimeline(); });
   byId("timelineAdd").addEventListener("click", () => { state.timelineAddType = state.timelineAddType === null ? "event" : null; renderTimeline(); });
   byId("timelineImportantOnly").addEventListener("change", () => { state.timelineImportantOnly = byId("timelineImportantOnly").checked; renderTimeline(); });
   byId("analysisModelSettings").addEventListener("click", () => { void openSettings("model"); });

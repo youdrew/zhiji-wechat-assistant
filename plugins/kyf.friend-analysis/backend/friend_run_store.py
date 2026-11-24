@@ -18,6 +18,25 @@ RUN_STATES = ("queued", "running", "done", "partial", "stopped", "interrupted", 
 OPEN_STATES = ("queued", "running")
 SCAN_STEPS = ("chat", "persona")
 RESULT_PAGES = ("summary", "next", "persona")
+# Scan steps added later register their generation table here (see register_scan).
+SCAN_TABLES = {"chat": "friend_chat_blocks", "persona": "friend_persona_evidence"}
+SCAN_WRITERS = {}
+PUBLISH_ON_BUILT = {"chat"}
+EXTRA_RESULTS = set()
+USER_TABLES = []
+
+
+def register_scan(step, table, insert, *, publish_on_built=True, results=(), user_tables=()):
+    """Add a scan step: ``table`` holds its rows by (user, generation), ``insert(connection, user,
+    generation, rows)`` saves one batch inside ``commit_scan``. A step published on build swaps in a
+    rebuilt generation when its last batch commits; ``results`` are its ``friend_results`` pages and
+    ``user_tables`` its other per-user tables (cleared with the contact)."""
+    SCAN_TABLES[step] = table
+    SCAN_WRITERS[step] = insert
+    if publish_on_built:
+        PUBLISH_ON_BUILT.add(step)
+    EXTRA_RESULTS.update(results)
+    USER_TABLES.extend(name for name in user_tables if name not in USER_TABLES)
 
 RUN_SCHEMA = """
 CREATE TABLE IF NOT EXISTS friend_runs (
@@ -239,8 +258,7 @@ class RunStore:
 
     @staticmethod
     def _drop_generation(connection, user, step, generation):
-        table = "friend_chat_blocks" if step == "chat" else "friend_persona_evidence"
-        connection.execute("DELETE FROM " + table + " WHERE user=? AND generation=?", (user, generation))
+        connection.execute("DELETE FROM " + SCAN_TABLES[step] + " WHERE user=? AND generation=?", (user, generation))
         connection.execute("DELETE FROM friend_scans WHERE user=? AND step=? AND generation=?", (user, step, generation))
 
     def commit_scan(self, user, step, generation, rows, progress, guard):
@@ -263,6 +281,8 @@ class RunStore:
                         (user, generation, item["block_id"], item["side"], json.dumps(item["msg_ids"]),
                          json.dumps(item["hashes"]), item.get("first_ms"), item.get("last_ms"), item.get("intent"),
                          item.get("emotion"), item.get("reply_to"), item.get("response"), item.get("invite")))
+            elif step in SCAN_WRITERS:
+                SCAN_WRITERS[step](connection, user, generation, rows)
             else:
                 for item in rows:
                     connection.execute(
@@ -278,7 +298,7 @@ class RunStore:
                 (progress["covered"], progress["digest"], progress.get("from_ms"), progress.get("to_ms"),
                  progress.get("processed", 0), progress.get("excluded", 0), int(progress.get("built", False)),
                  self.now(), user, step, generation))
-            if progress.get("built") and not scan["published"] and step == "chat":
+            if progress.get("built") and not scan["published"] and step in PUBLISH_ON_BUILT:
                 # The rebuilt generation is complete: it replaces the old one in this transaction.
                 self._publish_scan(connection, user, step, generation)
         self.store.write(action)
@@ -300,7 +320,7 @@ class RunStore:
         return {**row, "payload": json.loads(row["payload"]), "deps": json.loads(row["deps"])}
 
     def save_result(self, user, page, payload, deps, model_fp, guard):
-        if page not in RESULT_PAGES:
+        if page not in RESULT_PAGES and page not in EXTRA_RESULTS:
             raise ValueError("invalid result page")
 
         def action(connection):
@@ -341,5 +361,6 @@ class RunStore:
 
     # -- account clearing of one contact ----------------------------------------
     def clear_user(self, connection, user):
-        for table in ("friend_runs", "friend_scans", "friend_chat_blocks", "friend_persona_evidence", "friend_results"):
+        for table in ("friend_runs", "friend_scans", *dict.fromkeys(SCAN_TABLES.values()), "friend_results",
+                      *USER_TABLES):
             connection.execute("DELETE FROM " + table + " WHERE user=?", (user,))

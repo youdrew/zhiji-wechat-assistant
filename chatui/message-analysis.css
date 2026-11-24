@@ -1,53 +1,76 @@
 /* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
-.message-analysis-toggle { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 3px 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
-.message-analysis-switch { width: 24px; height: 14px; border-radius: 8px; background: var(--text-muted); opacity: .55; padding: 2px; }
-.message-analysis-switch::after { content: ""; display: block; width: 10px; height: 10px; border-radius: 50%; background: white; transition: transform .15s; }
-.message-analysis-toggle[aria-checked="true"] .message-analysis-switch { background: var(--color-green); opacity: 1; }
-.message-analysis-toggle[aria-checked="true"] .message-analysis-switch::after { transform: translateX(10px); }
-.message-analysis-toggle:disabled { opacity: .5; cursor: default; }
-.message-analysis-status { border: 0; padding: 0; background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
-.message-analysis-line { display: flex; align-items: flex-start; gap: 6px; align-self: flex-start; max-width: 100%; }
-.message-analysis-line > :first-child { min-width: 0; }
-.message-analysis-question { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 20px; height: 22px; margin-top: 8px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; opacity: .8; cursor: pointer; }
+/* Modified 2026-11-09: per-round block under the round's last message (explanation card left, reply card on its own row at the right); toolbar text button switch. */
+.message-analysis-toggle[aria-checked="true"] { color: var(--color-green); border-color: var(--color-green); background: color-mix(in srgb, var(--color-green) 10%, var(--bg-search)); }
+.message-analysis-status { border: 0; padding: 0 4px; background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
 .message-analysis-icon { display: block; width: 16px; height: 16px; pointer-events: none; }
-.message-analysis-icon.is-spinning { animation: message-analysis-spin 1.2s linear infinite; transform-origin: center; }
-@keyframes message-analysis-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .message-analysis-icon.is-spinning { animation: none; } }
-.message-analysis-question:hover, .message-analysis-question[aria-expanded="true"] { color: var(--text-secondary); opacity: 1; }
-.message-analysis-question[data-analysis-state="ready"]:hover, .message-analysis-question[data-analysis-state="ready"][aria-expanded="true"] { color: var(--color-green); }
-.message-analysis-body { width: min(720px, calc(100vw - 120px)); max-width: 100%; min-width: 0; margin: 8px 0 2px; color: var(--text-main); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; user-select: text; }
-.message-analysis-paragraph { margin: 0 0 7px; white-space: pre-wrap; }
-.message-analysis-body p, .message-analysis-body span, .message-analysis-body strong, .message-analysis-body time { user-select: text; }
-.message-analysis-note { margin: 0 0 6px; color: var(--text-muted); }
-.message-analysis-empty { padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; }
-.message-analysis-evidence { margin: 8px 0; color: var(--text-muted); font-size: 12px; }
-.message-analysis-source { margin: 9px 0; }
-.message-analysis-source-label { font-size: 11px; opacity: .8; }
-.message-analysis-source p { margin: 2px 0 0; white-space: pre-wrap; }
+
+/* The round block spans the chat width below the friend's last bubble of the round:
+   a small explanation card on the friend's side, then the reply card on its own row,
+   right-aligned with the user's own bubbles (avatar 40px + gap 12px). */
+.msg-item.has-message-round { flex-wrap: wrap; max-width: 100%; align-self: stretch; row-gap: 8px; }
+.msg-item.has-message-round > .msg-content-wrap { max-width: calc(80% - 52px); }
+.message-round { flex-basis: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; padding: 0 52px; font-size: 13px; line-height: 1.6; }
+.message-round[hidden], .message-round-insight[hidden], .message-round-replies[hidden] { display: none; }
+.message-round-insight { min-width: 0; max-width: min(380px, 100%); user-select: text; overflow-wrap: anywhere; }
+.message-round-insight:empty { display: none; }
+.message-round-card, .message-round-replies:not(.is-collapsed):not(:empty) { box-sizing: border-box; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-chat-header); background: color-mix(in srgb, var(--bg-bubble-left) 40%, var(--bg-chat)); padding: 9px 12px; }
+.message-round-card > summary { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 3px; cursor: pointer; }
+.message-round-card > summary::-webkit-details-marker { display: none; }
+.message-round-card-title { color: var(--text-secondary); font-size: 12px; }
+.message-round-card-hint { color: var(--text-muted); font-size: 11px; }
+.message-round-card-hint::after { content: "展开"; }
+.message-round-card[open] .message-round-card-hint::after { content: "收起"; }
+.message-round-card > summary:hover .message-round-card-hint { color: var(--color-green); }
+.message-round-gist { grid-column: 1 / -1; color: var(--text-main); font-size: 13px; }
+.message-round-card:not([open]) .message-round-gist { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.message-analysis-details.message-round-card[open] > summary { margin-bottom: 8px; }
+.message-round-field { margin: 0 0 6px; }
+.message-round-field-label { display: block; color: var(--text-muted); font-size: 11px; }
+.message-round-field-label:empty { display: none; }
+.message-round-field .message-analysis-paragraph { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.message-round-replies { align-self: flex-end; width: min(380px, 100%); min-width: 0; display: flex; flex-direction: column; gap: 8px; user-select: text; }
+.message-round-replies.is-collapsed { width: auto; align-items: flex-end; }
+.message-round-head { display: flex; align-items: center; gap: 8px; }
+.message-round-title { color: var(--text-secondary); font-size: 12px; margin-right: auto; }
+.message-round-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.message-round-tab { border: 1px solid transparent; border-radius: 4px; padding: 1px 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.message-round-tab:hover { color: var(--text-main); }
+.message-round-tab[aria-selected="true"] { color: var(--color-green); border-color: rgba(53, 210, 141, .3); background: rgba(53, 210, 141, .1); }
+.message-round-collapse { color: var(--text-muted); }
+.message-round-bubbles { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.message-round-line { display: flex; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; }
+/* Suggested lines look like the user's own green bubbles, lighter because they are not sent. */
+.message-round-bubble { margin: 0; padding: 6px 10px; border: 1px solid rgba(53, 210, 141, .32); border-radius: 4px; background: rgba(53, 210, 141, .14); color: var(--text-main); white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.message-round-line .message-analysis-copy { opacity: 0; transition: opacity .12s; }
+.message-round-line:hover .message-analysis-copy, .message-round-line .message-analysis-copy:focus-visible,
+.message-round-line .message-analysis-copy:disabled { opacity: 1; }
+.message-round-actions { display: flex; gap: 16px; justify-content: flex-end; align-items: center; }
+.message-round-actions .message-analysis-action { font-size: 12px; }
+.message-round-draft { color: var(--color-green); }
+.message-round-toggle { padding: 2px 10px; border: 1px solid var(--border-color); border-radius: 4px; font-size: 12px; }
+.message-round-replies .message-analysis-note, .message-round-replies .message-analysis-caption { margin: 0; text-align: right; }
+.message-round-replies .message-analysis-generate, .message-round-replies .message-analysis-retry { align-self: flex-end; }
+
+.message-analysis-paragraph { margin: 0 0 7px; white-space: pre-wrap; color: var(--text-main); }
+.message-analysis-note { margin: 0 0 6px; color: var(--text-muted); font-size: 12px; }
 .message-analysis-action { border: 0; padding: 2px 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; cursor: pointer; }
 .message-analysis-action:hover { color: var(--color-green); }
 .message-analysis-action:disabled { opacity: .5; cursor: default; }
 .message-analysis-generate { padding: 3px 10px; border: 1px solid var(--border-color); border-radius: 4px; color: var(--color-green); font-size: 12px; }
-.chat-title-group:has(.message-analysis-migration:not([hidden])) { flex-wrap: wrap; gap: 4px 10px; padding: 8px 0; }
-.message-analysis-migration { flex-basis: 100%; color: var(--text-muted); font-size: 11px; line-height: 1.5; white-space: normal; }
 .message-analysis-caption { margin: 0 0 5px; font-size: 11px; color: var(--text-muted); }
-.message-analysis-details { margin: 8px 0 0; color: var(--text-muted); font-size: 12px; }
+.message-analysis-details { margin: 0; color: var(--text-muted); font-size: 12px; }
 .message-analysis-details > summary { cursor: pointer; }
-.message-analysis-explanation { margin-top: 8px; }
-.message-analysis-utilities { display: inline; margin-right: 14px; }
-.message-analysis-utilities:empty { display: none; }
-.message-analysis-candidates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 8px; }
-.message-analysis-candidate { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; align-items: start; column-gap: 12px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; }
+.message-analysis-details[open] > summary { margin-bottom: 6px; }
 .message-analysis-copy { border: 0; padding: 2px 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; line-height: 1.6; cursor: pointer; white-space: nowrap; }
 .message-analysis-copy:hover { color: var(--color-green); }
-.message-analysis-copy:disabled { opacity: .5; cursor: default; }
-.message-analysis-candidate-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.message-analysis-copy-feedback { grid-column: 1 / -1; margin: 4px 0 0; font-size: 11px; color: var(--text-muted); }
+.message-analysis-copy:disabled { cursor: default; }
+.message-analysis-copy-feedback { margin: 0; font-size: 11px; color: var(--text-muted); }
 .message-analysis-copy-feedback:empty { display: none; }
-.message-analysis-question:focus-visible, .message-analysis-action:focus-visible, .message-analysis-copy:focus-visible, .message-analysis-toggle:focus-visible { outline: 1px solid var(--color-green); outline-offset: 3px; }
-.message-analysis-toggle[hidden], .message-analysis-status[hidden], .message-analysis-question[hidden], .message-analysis-body[hidden], .message-analysis-migration[hidden], .message-analysis-details[hidden] { display: none; }
+.message-analysis-action:focus-visible, .message-analysis-copy:focus-visible, .message-round-tab:focus-visible { outline: 1px solid var(--color-green); outline-offset: 3px; }
+.message-analysis-status[hidden], .message-analysis-details[hidden] { display: none; }
 /* The message-level explanation replaces duplicate legacy labels while enabled. */
 .has-message-analysis .inline-intent-row,
 .has-message-analysis .inline-expression-row,
 .has-message-analysis .inline-intent-pending,
 .has-message-analysis .msg-mood { display: none; }
+.message-analysis-toggle:disabled { opacity: .5; cursor: default; }

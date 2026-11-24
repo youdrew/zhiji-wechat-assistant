@@ -4,14 +4,19 @@ Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2
 
 Probes run in the model gateway when Core has one, otherwise in a short-lived
 Node process. The API key travels only on a private stdin pipe and is never
-placed in an environment or argument list.
+placed in an environment or argument list. Speech synthesis models are tested
+here directly with one short OpenAI-compatible ``/audio/speech`` request.
 """
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import socket
 import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from core_runtime import base_environment, node_executable
@@ -19,6 +24,8 @@ from model_trace_context import current_trace_context
 
 PROBE_TIMEOUT_SECONDS = 45
 MAX_CONCURRENT_PROBES = 2
+SPEECH_SAMPLE = "你好"
+MAX_SPEECH_BYTES = 8 * 1024 * 1024
 
 
 class ModelProbe:
@@ -80,6 +87,41 @@ class ModelProbe:
     def model_list(self, protocol, base_url, api_key):
         result = self._run({"cmd": "list", "protocol": protocol, "baseUrl": base_url, "apiKey": api_key})
         return {"models": result.get("models"), "supported": result.get("supported")}
+
+    def speech_test(self, base_url, api_key, model, voice):
+        """Synthesize a short sample; any non-empty audio reply counts as connected."""
+        if not self.slots.acquire(blocking=False):
+            raise RuntimeError("rate-limit")
+        try:
+            body = json.dumps({"model": model, "input": SPEECH_SAMPLE, "voice": voice,
+                               "response_format": "mp3"}, ensure_ascii=False).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = "Bearer " + api_key
+            request = urllib.request.Request(base_url.rstrip("/") + "/audio/speech", data=body,
+                                             headers=headers, method="POST")
+            started = time.monotonic()
+            try:
+                with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT_SECONDS) as response:
+                    kind = response.headers.get_content_type()
+                    audio = response.read(MAX_SPEECH_BYTES + 1)
+            except urllib.error.HTTPError as exc:
+                raise RuntimeError({401: "auth", 403: "auth", 404: "unsupported",
+                                    429: "rate-limit"}.get(exc.code, "provider-error")) from exc
+            except (socket.timeout, TimeoutError) as exc:
+                raise RuntimeError("timeout") from exc
+            except (urllib.error.URLError, OSError) as exc:
+                raise RuntimeError("timeout" if isinstance(getattr(exc, "reason", None), socket.timeout)
+                                   else "network") from exc
+            if len(audio) > MAX_SPEECH_BYTES:
+                raise RuntimeError("response-too-large")
+            if not audio:
+                raise RuntimeError("empty-response")
+            if not (kind.startswith("audio/") or kind == "application/octet-stream"):
+                raise RuntimeError("invalid-output")
+            return {"ok": True, "latencyMs": round((time.monotonic() - started) * 1000)}
+        finally:
+            self.slots.release()
 
     def model_test(self, protocol, base_url, api_key, model):
         result = self._run({"cmd": "test", "protocol": protocol, "baseUrl": base_url,

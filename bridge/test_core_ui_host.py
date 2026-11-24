@@ -571,6 +571,12 @@ class GuardTests(unittest.TestCase):
         self.deny("DELETE", "/api/accounts/x", code="ui-session-read-only")
         self.deny("POST", "/api/plugins/rpc", body={"plugin": "kyf.friend-analysis", "method": "scheme.estimate",
                                                     **scoped}, code="ui-session-read-only")
+        for method in ("page.tagEdit", "page.tagUndo", "page.tagUndoAgent", "page.timelineEdit", "page.timelineUndo",
+                       "page.timelineUndoAgent"):
+            self.deny("POST", "/api/plugins/rpc", body={"plugin": "kyf.friend-analysis", "method": method,
+                                                        "params": {}, **scoped}, code="ui-session-read-only")
+        self.allow("POST", "/api/plugins/rpc", body={"plugin": "kyf.friend-analysis", "method": "page.timeline",
+                                                     "params": {}, **scoped})
         self.deny("POST", "/api/plugins/rpc", body={"plugin": "kyf.advisor", "method": "page.x", **scoped})
         self.deny("POST", "/api/plugins/rpc", body={"plugin": "kyf.friend-analysis", "method": "page.persona",
                                                     "account": ACCOUNT, "user": OTHER})

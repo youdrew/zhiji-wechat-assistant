@@ -22,6 +22,7 @@ const settingsCode = section("async function api(", "function status(") +
   section('document.querySelectorAll(".settings-tab-btn")', 'byId("btnEmoji")') +
   "globalThis.ui = { showModelSource, loadModelSource, fetchApiModels, testApiModel, " +
   "saveApiModel, deleteApiModel, applyRole, openModelDetail, showModelView, localJudgeAction, " +
+  "toggleRoleUsage, addModelFrom, syncModelDetailFields, MODEL_PRESETS, " +
   "invalidateModelDiscovery, invalidateModelTest, " +
   "syncSavedApiKeyHint, restoreModelList, toggleApiKeyVisibility, hideApiKey, " +
   "apiKeyInputChanged, apiConnectionChanged, closeSettingsModalNow, getSnapshot: () => settingsState.modelSourceSnapshot, " +
@@ -31,7 +32,7 @@ const settingsCode = section("async function api(", "function status(") +
 function makeNode() {
   const classes = new Set();
   return {
-    value: "", textContent: "", hidden: false, disabled: false, options: [], dataset: {},
+    value: "", textContent: "", hidden: false, disabled: false, options: [], dataset: {}, style: {},
     attributes: {}, events: {},
     setAttribute(name, value) { this.attributes[name] = String(value); },
     getAttribute(name) { return this.attributes[name] ?? null; },
@@ -71,6 +72,12 @@ function harness(fetchImpl, { confirms = [] } = {}) {
       querySelectorAll: selector => selector === ".settings-tab-btn" ? Object.values(tabs) : [],
     },
     closeConversationManager() {}, renderManagedAccounts() {}, loadAboutVersion() {},
+    element: (tag, className = "", value) => {
+      const node = makeNode();
+      node.className = className;
+      if (value !== undefined) node.textContent = value;
+      return node;
+    },
     byId,
     text: (id, value) => { byId(id).textContent = value == null ? "" : String(value); },
     fetch: fetchImpl,
@@ -120,7 +127,7 @@ it("loads the saved profile into the home view without exposing its key", async 
   assert.deepEqual(byId("selectRoleMain").options.map(option => option.value), [MAIN]);
   assert.equal(byId("selectRoleMain").value, MAIN);
   assert.equal(byId("selectRoleJudge").value, "");
-  assert.match(byId("selectRoleJudge").options[0].textContent, /跟随主模型/);
+  assert.match(byId("selectRoleJudge").options[0].textContent, /同语言模型/);
   assert.equal(byId("modelListRows").options.length, 1);
   assert.equal(byId("inputApiKey").value, "");
   assert.equal(byId("apiKeySaved").hidden, true, "detail fields stay empty until a model is opened");
@@ -208,7 +215,7 @@ it("saves a new model without changing roles and lists it on the home view", asy
   assert.equal(Object.hasOwn(requests[0].body, "id"), false);
   assert.equal(state.ui.getSnapshot().roles.main, MAIN, "添加模型不改变用途");
   assert.equal(state.byId("modelListRows").options.length, 2);
-  assert.equal(state.byId("selectRoleJudge").options.length, 3, "跟随主模型 + 两个模型");
+  assert.equal(state.byId("selectRoleJudge").options.length, 3, "同语言模型 + 两个模型");
 });
 
 it("edits and probes an optional model using its own saved key without a main-model warning", async () => {
@@ -329,7 +336,7 @@ it("deletes a non-main model and falls its roles back to the main model", async 
   assert.equal(state.byId("btnDeleteApiModel").hidden, false);
   await state.ui.deleteApiModel();
   assert.equal(state.ui.getSnapshot().roles.judge, null);
-  assert.equal(state.byId("selectRoleJudge").value, "", "删除后退回跟随主模型");
+  assert.equal(state.byId("selectRoleJudge").value, "", "删除后退回同语言模型");
 });
 
 it("reveals a saved key only on eye click and does not resubmit it as a new key", async () => {
@@ -509,4 +516,118 @@ it("rejects invalid generation deadlines and context sizes without saving", asyn
   await ui.saveApiModel();
   assert.equal(requests.length, 1);
   assert.equal(requests[0].timeoutMs, 3_600_000);
+});
+
+// Modified 2026-11-07: four purposes, speech models, "+" source presets and per-purpose plugin usage.
+const SPEECH = "3".repeat(32);
+const speechModel = { id: SPEECH, name: "", protocol: "openai_speech", baseUrl: "https://tts.test/v1", model: "tts-1",
+  voice: "alloy", timeoutMs: 3_600_000, concurrency: 4, hasKey: true };
+
+it("offers speech models only for speech and text models only for text purposes", () => {
+  const state = harness();
+  showSaved(state, { ...apiState, models: [...apiState.models, speechModel],
+    roles: { main: MAIN, judge: null, image: null, speech: SPEECH } });
+  for (const id of ["selectRoleMain", "selectRoleJudge", "selectRoleImage"])
+    assert.ok(state.byId(id).options.every(option => option.value !== SPEECH), id);
+  assert.deepEqual(state.byId("selectRoleSpeech").options.map(option => option.value), [SPEECH]);
+  assert.equal(state.byId("selectRoleSpeech").value, SPEECH);
+  state.ui.showModelSource({ ...apiState, roles: { main: MAIN, judge: null, image: null, speech: null } });
+  assert.deepEqual(state.byId("selectRoleSpeech").options.map(option => option.textContent), ["未设置"]);
+  assert.equal(state.byId("selectRoleSpeech").classList.contains("model-role-follow"), true);
+});
+
+it("marks each model with the purposes it serves, inherited ones faded", () => {
+  const state = harness();
+  showSaved(state, { ...apiState, models: [...apiState.models, speechModel],
+    roles: { main: MAIN, judge: null, image: null, speech: SPEECH } });
+  const [mainRow, speechRow] = state.byId("modelListRows").options;
+  const dots = row => row.options[2].options.map(dot => [dot.dataset.role, dot.className || ""]);
+  assert.deepEqual(dots(mainRow), [["main", ""], ["judge", "model-row-role-inherited"],
+    ["image", "model-row-role-inherited"]]);
+  assert.deepEqual(dots(speechRow), [["speech", ""]]);
+});
+
+it("shows each model with a source icon and its protocol and address underneath", () => {
+  const state = harness();
+  const ollama = { ...apiState.models[0], id: "3".repeat(32), name: "qwen", protocol: "ollama",
+    baseUrl: "http://127.0.0.1:11434" };
+  const lan = { ...apiState.models[0], id: "4".repeat(32), name: "局域网模型", protocol: "chat_completions",
+    baseUrl: "http://localhost:8000/v1" };
+  const builtin = { id: JUDGE, name: "本地判断模型", protocol: "systemone", model: "judge", concurrency: 1, builtin: true };
+  showSaved(state, { ...apiState, models: [...apiState.models, speechModel, ollama, lan, builtin],
+    roles: { main: MAIN, judge: JUDGE, image: null, speech: SPEECH },
+    localJudge: { supported: true, state: "ready", sizeBytes: 168 * 1024 * 1024 } });
+  const rows = state.byId("modelListRows").options.map(row => {
+    const [icon, body] = row.options;
+    return [icon.dataset.kind, body.options[0].textContent, body.options[1].textContent];
+  });
+  assert.deepEqual(rows.slice(0, 4), [
+    ["cloud", "model-b", "Responses · example.test"],
+    ["speech", "tts-1", "语音接口 · tts.test · 音色 alloy"],
+    ["local", "qwen", "Ollama · 127.0.0.1:11434"],
+    ["local", "局域网模型", "Chat Completions · localhost:8000"],
+  ]);
+  assert.deepEqual(rows[4].slice(0, 2), ["local", "内置判别模型"]);
+  assert.match(rows[4][2], /^本机 · /);
+});
+
+it("opens a preset with its protocol and address filled and only the needed fields shown", async () => {
+  const state = harness();
+  showSaved(state);
+  await state.ui.addModelFrom("deepseek");
+  assert.equal(state.byId("selectApiProtocol").value, "chat_completions");
+  assert.equal(state.byId("inputApiBaseUrl").value, "https://api.deepseek.com/v1");
+  assert.equal(state.byId("apiProtocolField").hidden, true);
+  assert.equal(state.byId("apiVoiceField").hidden, true);
+  assert.match(state.byId("modelDetailTitle").textContent, /DeepSeek/);
+  await state.ui.addModelFrom("custom");
+  assert.equal(state.byId("apiProtocolField").hidden, false);
+  await state.ui.addModelFrom("speech");
+  assert.equal(state.byId("selectApiProtocol").value, "openai_speech");
+  assert.equal(state.byId("inputApiVoice").value, "alloy");
+  assert.equal(state.byId("apiProtocolField").hidden, true);
+  assert.equal(state.byId("apiVoiceField").hidden, false);
+  assert.equal(state.byId("apiContextField").hidden, true);
+});
+
+it("saves a speech model with its voice and requires one", async () => {
+  const requests = [];
+  const state = harness(async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    return response({ ...apiState, models: [...apiState.models, speechModel],
+      roles: { main: MAIN, judge: null, image: null, speech: SPEECH } });
+  });
+  showSaved(state);
+  await state.ui.addModelFrom("speech");
+  state.byId("inputApiModelId").value = "tts-1";
+  state.byId("inputApiVoice").value = "";
+  await state.ui.saveApiModel();
+  assert.equal(requests.length, 0);
+  assert.match(state.byId("modelSourceStatus").textContent, /音色/);
+  state.byId("inputApiVoice").value = "nova";
+  await state.ui.saveApiModel();
+  assert.equal(requests[0].url, "/api/model-source/models/save");
+  assert.equal(requests[0].body.protocol, "openai_speech");
+  assert.equal(requests[0].body.voice, "nova");
+  assert.equal("contextTokens" in requests[0].body, false);
+});
+
+it("lists the plugins whose plugin.json declares a purpose", async () => {
+  const plugins = { plugins: [
+    { id: "a", name: "分析与建议", enabled: true, models: { main: "回复建议", image: "图片解读" } },
+    { id: "b", name: "外部聊天识别", enabled: false, models: { image: "截图识别" } },
+    { id: "c", name: "微信发送", enabled: true, models: {} }] };
+  const state = harness(async () => response(plugins));
+  showSaved(state);
+  await state.ui.toggleRoleUsage("image");
+  const panel = state.byId("modelRoleUsage");
+  assert.equal(panel.hidden, false);
+  const [title, list] = panel.options;
+  assert.match(title.textContent, /视觉模型/);
+  assert.deepEqual(list.options.map(row => row.options.map(cell => cell.textContent)),
+    [["分析与建议", "图片解读"], ["外部聊天识别（未启用）", "截图识别"]]);
+  await state.ui.toggleRoleUsage("speech");
+  assert.match(panel.options[0].textContent, /暂无插件声明使用语音合成/);
+  await state.ui.toggleRoleUsage("speech");
+  assert.equal(panel.hidden, true);
 });

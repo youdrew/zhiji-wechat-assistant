@@ -44,7 +44,10 @@ test("revoked producer polling and ingest preserve another account's in-flight c
       res.statusCode = 403; res.end("{}"); return;
     }
     if (path === "ack" && producer === "live") liveAck.resolve();
-    if (path === "ingest") events.push({ producer, event: JSON.parse(raw) });
+    if (path === "ingest") {
+      const body = JSON.parse(raw);
+      for (const event of body.events ?? [body]) events.push({ producer, event });
+    }
     res.end(JSON.stringify({ collecting: true, collectionVersion: 1, deleteVersion: 0,
       revision: 1, bufferBudgetBytes: 6 * 1024 * 1024 }));
   });

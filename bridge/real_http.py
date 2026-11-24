@@ -23,7 +23,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from backend_contracts import AccountUnavailableError, MessagesUnavailableError, ROOT
 from backend_service import Backend
-from wechat_source import WeChatSource
 from account_store import AccountConflict, AccountNotFound
 from instance_identity import default_port, instance_id
 from model_source import ModelSourceUnavailable
@@ -716,13 +715,28 @@ def make_handler(backend, accounts=None, control_token=None):
     return Handler
 
 
-def main(classifier):
+def make_backend(classifier, *, source=None, **backend_options):
+    """Use the supplied source or open the desktop application's WeChat source."""
+    if source is None:
+        from wechat_source import WeChatSource
+        source = WeChatSource(classifier=classifier)
+    return Backend(source, **backend_options)
+
+
+def main(classifier, *, source=None):
     from account_api import AccountAPI
     from data_root_source import DataRootSource
+    import core_instance_lock
     control_token = os.environ.pop(CONTROL_TOKEN_ENV, None)
+    # Modified 2026-11-08: one Core per installation. Take the lock before any store
+    # opens; it is held (and referenced) for the whole life of this process.
+    instance_lock = core_instance_lock.acquire(ROOT / ".local" / "real-client-runtime")
+    if instance_lock is None:
+        print("another Core already serves this installation; not starting a second one", flush=True)
+        return core_instance_lock.ALREADY_RUNNING_EXIT
     data_root_store = DataRootSource(ROOT)
     data_root_store.apply()
-    backend = Backend(WeChatSource(classifier=classifier), data_root_store=data_root_store)
+    backend = make_backend(classifier, source=source, data_root_store=data_root_store)
     port = integer(os.environ.get("CHATUI_PORT"), default_port(ROOT), 65535)
     backend.model_traces.transport_url = f"http://127.0.0.1:{port}"
     backend.core_url = f"http://127.0.0.1:{port}"

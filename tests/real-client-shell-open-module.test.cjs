@@ -11,11 +11,11 @@ const CLIENT = "http://127.0.0.1:34567/";
 
 async function shell(argv) {
   const app = new EventEmitter(), main = new EventEmitter(), contents = new EventEmitter();
-  const state = { opened: [], chats: [], focused: 0, restored: 0, startupErrors: [] };
+  const state = { opened: [], chats: [], focused: 0, restored: 0, shown: 0, startupErrors: [] };
   contents.mainFrame = { url: CLIENT };
   contents.setWindowOpenHandler = () => {}; contents.loadURL = () => Promise.resolve(); contents.send = () => {};
   Object.assign(main, { webContents: contents, isDestroyed: () => false, close() {}, setTitleBarOverlay() {},
-    isMinimized: () => true, restore: () => { state.restored++; }, focus: () => { state.focused++; } });
+    isMinimized: () => true, restore: () => { state.restored++; }, show: () => { state.shown++; }, focus: () => { state.focused++; } });
   Object.assign(app, { isPackaged: false, setAppUserModelId() {}, setPath() {}, getVersion: () => "1.0.0",
     requestSingleInstanceLock: () => true, commandLine: { appendSwitch() {} }, whenReady: () => Promise.resolve(),
     quit() {}, exit: value => { state.startupErrors.push(value); } });
@@ -83,6 +83,7 @@ test("a second instance focuses the main window and opens settings only when ask
   h.app.emit("second-instance", {}, ["electron", "shell", "--client-url", CLIENT, "--open-module", "settings"]);
   assert.equal(h.state.focused, 2);
   assert.equal(h.state.restored, 2);
+  assert.equal(h.state.shown, 2, "a window hidden to the tray comes back");
   assert.equal(JSON.stringify(h.state.opened), JSON.stringify([{ tab: "general" }]));
   // Unknown modules (including the never-openable model settings) are ignored.
   h.app.emit("second-instance", {}, ["electron", "shell", "--open-module", "models"]);

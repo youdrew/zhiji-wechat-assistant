@@ -291,6 +291,20 @@ class LauncherTests(unittest.TestCase):
                 launcher.ensure_service(self.config, starter=starter)
         self.assertEqual(len(calls), 1)
 
+    def test_live_bridge_on_another_port_blocks_a_second_core(self):
+        calls = []
+        self.config.runtime_dir.mkdir(parents=True)
+        (self.config.runtime_dir / "bridge-47299.json").write_text(json.dumps({
+            "pid": 47299, "port": unused_port(), "instance_id": self.config.instance_id,
+            "log": "synthetic", "started_at": "20261107T172718Z", "created_filetime": 42}), encoding="utf-8")
+        with patch.object(launcher, "process_identity", return_value=(True, 42)):
+            for recovery in (False, True):
+                with self.subTest(recovery=recovery):
+                    with self.assertRaisesRegex(launcher.LauncherError, "already runs on port.*no second Core"):
+                        launcher.ensure_service(self.config, starter=lambda *_: calls.append(True),
+                                                recovery=recovery)
+        self.assertEqual(calls, [])
+
     def test_dead_record_is_reclaimed_before_a_new_bridge_starts(self):
         stale = self.owned_record()
         cleanup = []

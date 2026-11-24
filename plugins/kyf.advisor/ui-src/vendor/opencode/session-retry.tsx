@@ -1,7 +1,12 @@
 // Adapted from OpenCode v1.18.34 SessionRetry; MIT: licenses/OpenCode-MIT.txt.
 // Moved from ui/advisor/vendor/opencode/session-retry.tsx to plugins/kyf.advisor/ui-src on 2026-10-13 (kyf.advisor plugin).
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from "solid-js"
-import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
+
+// The slice of the OpenCode SDK's SessionStatus this component reads; the SDK itself is no longer a dependency.
+export type SessionStatus =
+  | { type: "idle" }
+  | { type: "busy" }
+  | { type: "retry"; attempt: number; message: string; next: number }
 
 function useI18n() {
   return { t(key: string, values: Record<string, number | string> = {}) {

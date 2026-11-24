@@ -102,8 +102,8 @@ test("restricted memories show records and sources without review, edit or add a
   await h.ctx.FriendMemory.load();
   await settle();
   const labels = buttons(h.byId("pageMemory"));
-  assert.ok(labels.includes("原文") && labels.includes("按标签"), labels.join(","));
-  for (const label of ["新增", "确认", "忽略", "编辑", "删除", "全部确认", "全部忽略", "确认本组", "忽略本组"])
+  assert.ok(labels.includes("原文"), labels.join(","));
+  for (const label of ["按标签", "按时间线", "新增", "确认", "忽略", "编辑", "删除", "全部确认", "全部忽略", "确认本组", "忽略本组"])
     assert.ok(!labels.includes(label), label);
 
   const plain = harness({ hash: HASH });
@@ -112,6 +112,21 @@ test("restricted memories show records and sources without review, edit or add a
   await settle();
   const ordinary = buttons(plain.byId("pageMemory"));
   for (const label of ["新增", "确认", "编辑", "删除", "全部确认"]) assert.ok(ordinary.includes(label), label);
+});
+
+test("memories are always grouped by category, without a view switch or view parameter", async () => {
+  const h = harness({ hash: HASH });
+  await settle();
+  await h.ctx.FriendMemory.load();
+  await settle();
+  const lists = h.requests.filter(request => request.path === "/api/friend/memories");
+  assert.ok(lists.length >= 2);
+  for (const request of lists) assert.equal(request.query.has("view"), false);
+  const groups = descendants(h.byId("pageMemory")).filter(node => node.className === "fa-group")
+    .map(node => node.textContent || node.children[0]?.textContent);
+  assert.deepEqual(groups, ["待确认 1 条", "爱好 · 1", "已确认 1 条", "偏好与忌口"]);
+  const labels = buttons(h.byId("pageMemory"));
+  for (const label of ["按标签", "按时间线"]) assert.ok(!labels.includes(label), label);
 });
 
 test("a restricted window refuses writes locally but keeps plugin reads", async () => {

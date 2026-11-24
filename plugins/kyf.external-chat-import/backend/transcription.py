@@ -304,7 +304,7 @@ class Transcription:
             ctx.check()
             service = self.plugin.models.service_for("image")
             if service.get("supportsVision") is False:
-                fail("vision-required", "当前图片模型未声明支持图像，请先在模型设置中核对模型能力")
+                fail("vision-required", "当前视觉模型未声明支持图像，请先在模型设置中核对模型能力")
             cap = service.get("maxOutputTokens")
             max_output = min(cap, 8192) if type(cap) is int and cap >= 16 else 8192
             # A format-only retry is bounded and never resends provider/transport failures.
@@ -337,7 +337,7 @@ class Transcription:
             fail("cancelled", "识别已停止，已完成画面仍保留")
         except (CoreError, ModelError) as exc:
             # Avoid logging provider output or carrying image/text content into diagnostics.
-            messages = {"api-not-configured": "尚未配置主模型，请先在模型设置中保存连接，导入素材需支持读取图片",
+            messages = {"api-not-configured": "尚未配置语言模型，请先在模型设置中保存连接，导入素材需支持读取图片",
                         "timeout": "当前画面识别超时，可以重试未完成部分",
                         "output-truncated": "当前画面的识别结果过长，可以缩小画面后重试",
                         "cancelled": "识别已停止，已完成画面仍保留"}

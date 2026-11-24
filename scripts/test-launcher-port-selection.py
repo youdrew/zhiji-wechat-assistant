@@ -83,6 +83,29 @@ class PortSelectionTests(unittest.TestCase):
                     self.assertEqual(launcher.selected_port(self.config, allow_fallback=True), self.config.port)
                 self.assertFalse(self.marker.exists())
 
+    def live_record(self, pid, port, started_at):
+        self.config.runtime_dir.mkdir(parents=True, exist_ok=True)
+        (self.config.runtime_dir / f"bridge-{pid}.json").write_text(json.dumps({
+            "pid": pid, "port": port, "instance_id": self.config.instance_id, "log": "synthetic",
+            "started_at": started_at, "created_filetime": 42}), encoding="utf-8")
+
+    def test_live_bridge_on_another_port_wins_over_the_pin(self):
+        # Observed 2026-11-08: a starter that read the pin before another starter fell back
+        # (or pinned a new port) started a second Core for the same installation.
+        pinned = self.pin()
+        self.live_record(47231, 48010, "20261107T172718Z")
+        self.live_record(47232, 48020, "20261107T172727Z")
+        with (patch.object(launcher, "process_identity", return_value=(True, 42)),
+              patch.object(launcher, "port_bindable", side_effect=AssertionError("hopped past a live Core"))):
+            self.assertEqual(launcher.selected_port(self.config, allow_fallback=False), 48010)
+            self.assertEqual(json.loads(self.marker.read_text())["port"], pinned, "read-only selection wrote")
+            self.assertEqual(launcher.selected_port(self.config, allow_fallback=True), 48010)
+            self.assertEqual(json.loads(self.marker.read_text())["port"], 48010)
+            # A live Core on the pinned port itself stays chosen even when others run.
+            self.assertEqual(launcher.selected_port(self.config, allow_fallback=True), 48010)
+        with patch.object(launcher, "process_identity", return_value=(False, None)):
+            self.assertEqual(launcher.selected_port(self.config, allow_fallback=False), 48010)
+
     def test_concurrent_main_uses_root_mutex_and_writes_only_one_pin(self):
         barrier = threading.Barrier(2)
         outcomes, errors, ports = [], [], []

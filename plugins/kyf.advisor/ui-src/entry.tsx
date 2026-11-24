@@ -6,8 +6,7 @@ import { marked } from "marked";
 import { project, type Projection } from "./vendor/opencode/markdown-stream";
 import { readPartText } from "./vendor/opencode/message-part-text";
 import { TextShimmer } from "./vendor/opencode/text-shimmer";
-import { SessionRetry } from "./vendor/opencode/session-retry";
-import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
+import { SessionRetry, type SessionStatus } from "./vendor/opencode/session-retry";
 
 type TextState = { text: string; live: boolean };
 type EventState = { state?: string; text?: string; next?: number; attempt?: number };

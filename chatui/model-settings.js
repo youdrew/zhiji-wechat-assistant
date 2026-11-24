@@ -50,6 +50,12 @@
     state.snapshot = snapshot;
     state.ready = true;
     state.conflict = !!state.dirty.size && (state.conflict || changedElsewhere);
+    showSearchValue();
+  }
+  // The model home link shows the saved source; it updates whenever a snapshot is read or saved.
+  function showSearchValue() {
+    const label = byId("modelSearchValue");
+    if (label) label.textContent = state.snapshot?.values?.searchSource === "searxng" ? "SearXNG" : "关闭";
   }
   function draftStatus() {
     return state.conflict ? "设置已在其他窗口更新，未保存的编辑已保留。请核对后确认保存，或使用最新设置。"
@@ -143,8 +149,6 @@
     });
     syncControls();
   }
-  window.CoreModelSettings = { init, refresh, save,
-    // 模型主页的“联网搜索”行显示当前来源。
-    searchSource: () => state.snapshot?.values?.searchSource || "none" };
+  window.CoreModelSettings = { init, refresh, save, showSearchValue };
   init();
 })();

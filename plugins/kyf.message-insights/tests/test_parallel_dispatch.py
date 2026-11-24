@@ -168,6 +168,27 @@ class ParallelDispatchTests(unittest.TestCase):
         self.assertEqual(len(self.worker.jobs), 2)
         self.assertEqual(self.worker.jobs[1].spec["generation"], current)
 
+    def test_switch_off_suggestions_during_work_keeps_finished_analysis_and_reschedules_only_missing_analysis(self):
+        self.enqueue("friend", "one", "two")
+        self.service._dispatch()
+        store = self.service.store(self.account)
+        self.service.subscriptions[(self.account, "friend")] = store.settings("friend")["revision"]
+        first, second = self.worker.jobs
+        analysis = dict.fromkeys(("summary", "meaning", "uncertainty", "responseDirection"), "synthetic")
+        analysis["evidence"] = [{"text": "synthetic"}]
+        store.finish("friend", first.ids, first.spec["generation"], "ready", results={"one": analysis}, part="analysis")
+        self.service.set(self.account, "friend", False, "suggestions")
+        self.assertTrue(first.cancelled.is_set() and second.cancelled.is_set())
+        queue = self.service.queue[(self.account, "friend")]
+        self.assertEqual(queue["ids"], ["two"])
+        self.assertEqual(queue["jobs"]["two"]["parts"], ("analysis",))
+        for job in (first, second):
+            self.worker.finish(job)
+        self.service._dispatch()
+        row, = store.rows("friend", ["one"])
+        self.assertEqual((row["state"], row["analysis_state"], row["suggestions_state"]), ("ready", "ready", "none"))
+        self.assertEqual(self.worker.jobs[-1].spec["parts"], ("analysis",))
+
     def test_repeated_queueing_does_not_duplicate_running_or_queued_messages(self):
         self.enqueue("friend", "one", "two", "three")
         self.service._dispatch()
@@ -233,57 +254,39 @@ class ParallelDispatchTests(unittest.TestCase):
             {"senderResolved": True, "side": "other", "senderId": user, "kind": "text", **message}
             for message in messages]}})
 
-    def test_new_arrival_skips_backlog_without_cancelling_running_jobs(self):
-        self.enqueue("friend", "one", "two", "three", "four")
+    def round_ready(self, user, message):
+        """A round whose quiet period has passed: one job under its last message."""
+        self.enqueue(user, message["id"], source_messages=[message])
+
+    def test_new_message_supersedes_the_friends_unfinished_automatic_rounds(self):
+        self.enqueue("friend", "one", "two")
+        self.enqueue("friend", "manual", automatic=False)
+        self.enqueue("other", "elsewhere")
         self.service._dispatch()
         running = list(self.worker.jobs)
+        self.assertEqual([job.ids for job in running], [["one"], ["two"]])
         self.event("friend", {"id": "newest", "time": 150000})
-        self.service._dispatch()
-        self.assertEqual(len(self.worker.jobs), 2)
-        self.assertFalse(any(job.cancelled.is_set() for job in running))
-        self.worker.finish(running[0])
-        self.service._dispatch()
-        self.assertEqual(self.worker.jobs[-1].ids, ["newest"])
-        self.assertEqual(self.service.queue[(self.account, "friend")]["ids"], ["three", "four"])
-
-    def test_batch_uses_message_time_not_input_or_delivery_order(self):
-        self.values["concurrency"] = 1
-        self.event("friend", {"id": "middle", "time": 120000}, {"id": "newest", "time": 130000},
-                   {"id": "oldest", "time": 110000})
-        self.event("friend", {"id": "late-old", "time": 100000})
-        order = []
-        for _ in range(4):
-            self.service._dispatch()
-            job = self.worker.jobs[-1]
-            order.extend(job.ids)
-            self.worker.finish(job)
-        self.assertEqual(order, ["newest", "middle", "oldest", "late-old"])
-
-    def test_same_second_original_order_beats_reversed_batch_and_late_old_event(self):
-        self.values["concurrency"] = 1
-        self.event("friend", {"id": "third", "time": 100000, "sortKey": [3, "s", 3]},
-                   {"id": "second", "time": 100000, "sortKey": [2, "s", 2]})
-        self.event("friend", {"id": "first", "time": 100000, "sortKey": [1, "s", 1]})
-        self.service._dispatch()
-        self.assertEqual(self.worker.jobs[-1].ids, ["third"])
-        self.worker.finish(self.worker.jobs[-1])
-        self.event("friend", {"id": "fourth", "time": 100000, "sortKey": [4, "s", 4]})
-        self.service._dispatch()
-        self.assertEqual(self.worker.jobs[-1].ids, ["fourth"])
+        self.assertTrue(all(job.cancelled.is_set() for job in running), "the friend is still typing")
+        self.assertEqual(self.service.queue[(self.account, "friend")]["ids"], ["manual"])
+        self.assertEqual(self.service.queue[(self.account, "other")]["ids"], ["elsewhere"])
+        self.assertEqual(self.service.entries[(self.account, "friend")]["due"], 220.0)
+        store = self.service.store(self.account)
+        self.assertEqual({row["message_id"]: row["state"] for row in store.rows("friend", ["one", "two"])},
+                         {"one": "error", "two": "error"})
 
     def test_same_time_cross_friend_new_arrival_wins_but_duplicate_does_not_gain_priority(self):
         self.values["concurrency"] = 1
-        self.event("first", {"id": "a", "time": 100000, "sortKey": [99, "s", 99]})
+        self.round_ready("first", {"id": "a", "time": 100000, "sortKey": [99, "s", 99]})
         original = self.service.queue[(self.account, "first")]["jobs"]["a"].copy()
-        self.event("second", {"id": "b", "time": 100000, "sortKey": [1, "s", 1]})
-        self.event("first", {"id": "a", "time": 100000, "sortKey": [99, "s", 99]})
+        self.round_ready("second", {"id": "b", "time": 100000, "sortKey": [1, "s", 1]})
+        self.round_ready("first", {"id": "a", "time": 100000, "sortKey": [99, "s", 99]})
         self.assertEqual(self.service.queue[(self.account, "first")]["jobs"]["a"], original)
         self.service._dispatch()
         self.assertEqual((self.worker.jobs[-1].user, self.worker.jobs[-1].ids), ("second", ["b"]))
 
     def test_manual_history_request_keeps_original_time_and_waits_behind_new_message(self):
         self.values["concurrency"] = 1
-        self.event("friend", {"id": "newest", "time": 150000})
+        self.round_ready("friend", {"id": "newest", "time": 150000})
         self.enqueue("friend", "historical", source_messages=[{"id": "historical", "time": 50000}], automatic=False)
         self.service._dispatch()
         self.assertEqual(self.worker.jobs[-1].ids, ["newest"])

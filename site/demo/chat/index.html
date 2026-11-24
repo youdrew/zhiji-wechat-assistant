@@ -6,10 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>读懂聊天 · 知己演示</title>
-  <link rel="stylesheet" href="message-analysis.css?v=interactive-only-2">
-  <link rel="stylesheet" href="advisor-panel.css?v=interactive-only-2">
-  <link rel="stylesheet" href="demo.css?v=interactive-only-2">
-  <script src="demo.js?v=interactive-only-2" defer></script>
+  <link rel="stylesheet" href="message-analysis.css?v=rounds-2.2">
+  <link rel="stylesheet" href="advisor-panel.css?v=rounds-2.2">
+  <link rel="stylesheet" href="demo.css?v=rounds-2.2">
+  <script src="demo.js?v=rounds-2.2" defer></script>
 </head>
 <body class="theme-light">
   <div class="demo-window">
@@ -38,9 +38,6 @@
         <header class="chat-header">
           <div class="chat-title-group">
             <h1 id="chat-title">林沐</h1>
-            <button id="analysis-toggle" class="message-analysis-toggle" type="button" role="switch" aria-checked="true">
-              <span class="message-analysis-switch" aria-hidden="true"></span>分析与建议
-            </button>
           </div>
           <span id="chat-topic" class="chat-topic">周末散步</span>
         </header>
@@ -50,13 +47,14 @@
             <div class="chat-messages" aria-label="聊天消息与分析" tabindex="0">
               <div id="messages"></div>
               <section id="analysis-panel" class="message-analysis-body" aria-labelledby="analysis-title">
-                <h2 id="analysis-title">分析与建议</h2>
+                <h2 id="analysis-title">本轮解读</h2>
                 <p id="analysis-text" class="message-analysis-paragraph"></p>
                 <details class="message-analysis-details">
                   <summary>参考聊天原文</summary>
                   <div id="analysis-source" class="message-analysis-evidence"></div>
                 </details>
                 <h3>回复建议</h3>
+                <div id="suggestion-tabs" class="suggestion-tabs" role="group" aria-label="回复方案"></div>
                 <div id="suggestions" class="message-analysis-candidates"></div>
               </section>
             </div>
@@ -65,8 +63,11 @@
               <textarea id="draft" rows="2" readonly placeholder="选中的建议会显示在这里"></textarea>
               <div class="composer-tools">
                 <button id="assistant-toggle" class="tool-button" type="button" aria-controls="assistant" aria-expanded="false">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4V4Z"/><path d="M8 9h8m-8 3h5"/></svg>聊天助手
+                  聊天助手
                 </button>
+                            <button id="analysis-toggle" class="tool-button" type="button" role="switch" aria-checked="true">
+              分析与建议
+            </button>
                 <p id="draft-status" role="status">点击一条建议试填草稿</p>
                 <button id="draft-clear" class="tool-button" type="button">清空草稿</button>
               </div>

@@ -85,6 +85,9 @@ class FriendHttpTests(unittest.TestCase):
         status, listing = self.request("/api/friend/memories", query=self.scope(status="pending"))
         self.assertEqual(status, 200)
         self.assertEqual([item["text"] for item in listing["items"]], ["对方不吃香菜"])
+        self.assertNotIn("view", listing)
+        self.assertEqual(self.request("/api/friend/memories", query=self.scope(view="timeline"))[0], 400,
+                         "the 按时间线 view is gone")
         memory = listing["items"][0]
         status, evidence = self.request("/api/friend/evidence", query=self.scope(id=memory["id"], ordinal="0"))
         self.assertEqual((status, evidence["status"]), (200, "ok"))

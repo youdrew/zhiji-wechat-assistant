@@ -150,9 +150,17 @@ def selected_port(config, *, allow_fallback):
                     raise ValueError("invalid port")
         except (ValueError, KeyError) as error:
             raise LauncherError("Invalid saved bridge port") from error
+    probe = Config(config.root, config.python_exe, preferred, config.timeout)
+    # One installation runs one Core. A live bridge of this installation on another
+    # port (an earlier fallback, or a pin a racing starter replaced) wins over the pin,
+    # so every starter attaches to it instead of starting a second Core.
+    running = None if previous_live_bridge(probe) else other_port_bridge(probe)
+    if running is not None:
+        if allow_fallback:
+            write_selected_port(config, marker, running["port"])
+        return running["port"]
     if not allow_fallback:
         return preferred
-    probe = Config(config.root, config.python_exe, preferred, config.timeout)
     # Leave matching, foreign and unhealthy live services to ensure_service's
     # existing identity/ownership checks. Never hop around a live owned process.
     if health(probe) != "unavailable" or port_occupied(preferred) or previous_live_bridge(probe):
@@ -166,19 +174,23 @@ def selected_port(config, *, allow_fallback):
             continue
         # Remember before launch, under the installation selection mutex. This
         # also lets ownership-aware cleanup locate a failed/aborted first launch.
-        checked_runtime_dir(config).mkdir(parents=True, exist_ok=True)
-        checked_runtime_dir(config)
-        temporary = marker.with_name(f".selected-port-{os.getpid()}.tmp")
-        try:
-            with temporary.open("x", encoding="utf-8") as stream:
-                json.dump({"schema": 1, "instanceId": config.instance_id, "port": candidate}, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, marker)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_selected_port(config, marker, candidate)
         return candidate
     raise LauncherError("No bindable local bridge port was found")
+
+
+def write_selected_port(config, marker, port):
+    checked_runtime_dir(config).mkdir(parents=True, exist_ok=True)
+    checked_runtime_dir(config)
+    temporary = marker.with_name(f".selected-port-{os.getpid()}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump({"schema": 1, "instanceId": config.instance_id, "port": port}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def clear_no_auto_recovery(config):
@@ -224,22 +236,37 @@ def process_identity(pid):
         kernel32.CloseHandle(handle)
 
 
-def previous_live_bridge(config):
+def live_bridges(config, *, port=None):
+    """Bridge records of this runtime directory whose process still runs, optionally on one port."""
     if not config.runtime_dir.is_dir():
-        return None
+        return []
+    live = []
     for record_path in config.runtime_dir.glob("bridge-*.json"):
         try:
             record = json.loads(record_path.read_text(encoding="utf-8"))
-            if record.get("port") != config.port:
+            if port is not None and record.get("port") != port:
                 continue
             if not isinstance(record.get("log"), str):
                 continue
             alive, created = process_identity(int(record["pid"]))
             if alive and (record.get("created_filetime") is None or created is None or created == record["created_filetime"]):
-                return record
+                live.append(record)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
-    return None
+    return live
+
+
+def previous_live_bridge(config):
+    live = live_bridges(config, port=config.port)
+    return live[0] if live else None
+
+
+def other_port_bridge(config):
+    """The earliest-started live bridge of this installation on a port other than config.port."""
+    others = [record for record in live_bridges(config)
+              if record.get("instance_id") == config.instance_id and record.get("port") != config.port
+              and type(record.get("port")) is int and 1 <= record["port"] <= 65535]
+    return min(others, key=lambda record: str(record.get("started_at", "")), default=None)
 
 
 def checked_runtime_dir(config):
@@ -384,6 +411,13 @@ def ensure_service(config, starter=start_service, *, recovery=False):
         previous = previous_live_bridge(config)
         if previous:
             raise LauncherError(f"Earlier bridge PID {previous['pid']} is still running without health; no duplicate started; log: {previous['log']}")
+        # The launch mutex is per port; a starter holding a different port (an explicit
+        # CHATUI_PORT, or one chosen before another starter fell back) must not start a
+        # second Core over the same installation data.
+        running = other_port_bridge(config)
+        if running:
+            raise LauncherError(f"Bridge PID {running['pid']} of this installation already runs on port "
+                                f"{running['port']}; no second Core started; log: {running['log']}")
         stale_records = [(path, record) for path, record in
                          owned_bridge_records(config, include_dead=True)
                          if record.get("_live") is False]

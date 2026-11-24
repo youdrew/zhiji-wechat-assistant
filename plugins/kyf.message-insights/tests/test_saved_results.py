@@ -54,7 +54,8 @@ class SavedResultTests(unittest.TestCase):
                          "uncertainty": "Synthetic uncertainty", "responseDirection": "Synthetic direction",
                          "evidence": [{"kind": "chat", "messageId": TARGET,
                                        "text": format_line(row_from_view(self.views[TARGET]))}]}
-        self.replies = [{"label": str(index), "text": "Synthetic reply " + str(index)} for index in range(3)]
+        self.replies = [{"label": str(index), "text": "Synthetic reply " + str(index),
+                         "messages": ["Synthetic reply " + str(index)]} for index in range(3)]
 
     def models(self, *args, **kwargs):
         if "models" in self.fail:
@@ -407,7 +408,8 @@ class SavedResultTests(unittest.TestCase):
         self.assertEqual(self.service.copy(ACCOUNT, USER, TARGET, spec["generation"], 0)["text"], self.replies[0]["text"])
         self.service.retry(ACCOUNT, USER, TARGET, "suggestions", spec["generation"])
         replacement = self.service.queue[(ACCOUNT, USER)]["jobs"][TARGET]
-        new_replies = [{"label": str(index), "text": "Replacement " + str(index)} for index in range(3)]
+        new_replies = [{"label": str(index), "text": "Replacement " + str(index),
+                        "messages": ["Replacement " + str(index)]} for index in range(3)]
         self.store.bind(USER, [TARGET], replacement["generation"], binding, hashes, "context-new")
         self.store.finish(USER, [TARGET], replacement["generation"], "ready", results={TARGET: new_replies}, part="suggestions")
         self.assertEqual(self.item()["replies"], new_replies)

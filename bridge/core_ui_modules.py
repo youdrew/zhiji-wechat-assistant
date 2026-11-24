@@ -11,7 +11,7 @@ Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2
 - ``surface``：``"friend"``（独立好友窗 chatui/friend.html）、``"main"``（主窗口外壳）或
   ``"chat"``（受限宿主里独立的只读聊天记录窗口）。
 - ``tab``：好友窗里要选中的页签，取值与 kyf.friend-analysis 方案页签一致
-  （overview / memories / persona / values / chat / trend；memories 是宿主页签）。
+  （overview / tags / timeline / memories / persona / values / chat / trend；memories 是宿主页签）。
 - ``context``：``"contact"`` 需要 ``accountId`` + ``subjectId``（单个微信联系人，
   群聊 ``…@chatroom`` 一律拒绝）；``"none"`` 不接受任何上下文。
 - ``plugins``：窗口里会出现的插件页面；这些插件必须启用，受限会话也只放行它们。
@@ -52,6 +52,8 @@ def _contact(tab, **extra):
 
 MODULES = {
     "contact.overview": _contact("overview"),
+    "contact.tags": _contact("tags"),
+    "contact.timeline": _contact("timeline"),
     "contact.memory": _contact("memories"),
     "contact.persona": _contact("persona"),
     "contact.values": _contact("values"),

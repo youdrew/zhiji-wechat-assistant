@@ -202,6 +202,19 @@ REGISTRY = {
                                  "subjects": False, "aggregate": True,
                                  "recomputable": False, "write": True,
                                  "handler": "_undo_self_timeline"},
+    # 好友时间线与标签按联系人授权；版本与页面共用，撤销只碰 Agent 自己的记录（actor=agent）。
+    "zhiji_edit_friend_timeline": {"kind": "business", "capability": "write",
+                                   "plugin": FRIEND_ANALYSIS_PLUGIN, "subjects": True, "write": True,
+                                   "handler": "_edit_friend_timeline"},
+    "zhiji_undo_friend_timeline": {"kind": "business", "capability": "write",
+                                   "plugin": FRIEND_ANALYSIS_PLUGIN, "subjects": True, "write": True,
+                                   "handler": "_undo_friend_timeline"},
+    "zhiji_edit_friend_tags": {"kind": "business", "capability": "write",
+                               "plugin": FRIEND_ANALYSIS_PLUGIN, "subjects": True, "write": True,
+                               "handler": "_edit_friend_tags"},
+    "zhiji_undo_friend_tags": {"kind": "business", "capability": "write",
+                               "plugin": FRIEND_ANALYSIS_PLUGIN, "subjects": True, "write": True,
+                               "handler": "_undo_friend_tags"},
     # 阶段 3b 第三批：聊天助手。模板与技能是用户自己的助手配置（不含联系人资料），
     # 讨论读取、提问与停止一律按联系人主体核验；提问中 @ 的每位好友参与者由处理器
     # 逐个核验授权。模型调用留在 advisor 插件与 Core 网关内。
@@ -1513,7 +1526,12 @@ class McpServices:
     MESSAGE_ID_LIMIT = 200
     ANALYSIS_RESULT_MAX_CHARS = 512 * 1024
     FRIEND_ANALYSIS_SECTIONS = {"status": "scheme.status", "overview": "page.overview",
-                                "persona": "page.persona", "chat": "page.chat", "trend": "page.trend"}
+                                "persona": "page.persona", "chat": "page.chat", "trend": "page.trend",
+                                "tags": "page.tags", "tagEvidence": "page.tagEvidence",
+                                "timeline": "page.timeline", "timelineEvidence": "page.timelineEvidence"}
+    # tagEvidence 按标签名，说话习惯按条目键（如 phrase:哈哈哈）。
+    FRIEND_ANALYSIS_PARAMS = {"tagEvidence": {"name", "key"}, "timeline": {"offset"},
+                              "timelineEvidence": {"id"}}
     SELF_ANALYSIS_SECTIONS = {"status": "self.analysisStatus", "persona": "self.persona",
                               "values": "self.values", "tags": "self.tags",
                               "tagEvidence": "self.tagEvidence", "periods": "self.periods",
@@ -1524,6 +1542,13 @@ class McpServices:
     # 时间线单页留出时期、主线与信封的余量，续读用 nextOffset。
     SELF_TIMELINE_PAGE_BYTES = 384 * 1024
     SELF_TIMELINE_EDIT_PARAMS = frozenset(("target", "action", "id", "fields", "expectedVersion"))
+    # Agent 能做的好友时间线修改；取消与关系记忆的关联（unlink）只能由用户在页面上做。
+    FRIEND_TIMELINE_ACTIONS = {"event": frozenset(("add", "edit", "confirm", "unconfirm", "delete", "restore")),
+                               "period": frozenset(("add", "edit", "confirm", "unconfirm", "delete")),
+                               "track": frozenset(("add", "edit", "visible", "delete"))}
+    # Agent 能做的好友标签修改；同样不能取消与关系记忆的关联。说话习惯的隐藏/恢复按条目键。
+    FRIEND_TAG_EDIT_PARAMS = frozenset(("action", "name", "key", "category", "expectedVersion"))
+    FRIEND_TAG_ACTIONS = frozenset(("confirm", "reset", "delete", "add", "hide", "unhide"))
 
     def _analysis_provider(self):
         provider = self.analysis
@@ -1682,15 +1707,20 @@ class McpServices:
     def _get_friend_analysis(self, principal, body, decision):
         account_id, subject_id = _single_subject(body, body.get("subjects"))
         params = body.get("params", {})
-        if not isinstance(params, dict) or set(params) - {"section"}:
+        if not isinstance(params, dict):
             raise McpError(400, "invalid-request", "参数不正确")
         section = params.get("section", "status")
         method = self.FRIEND_ANALYSIS_SECTIONS.get(section)
         if method is None:
             raise McpError(400, "invalid-request", "结果分节不正确")
+        request = {key: value for key, value in params.items() if key != "section"}
+        if set(request) - self.FRIEND_ANALYSIS_PARAMS.get(section, set()):
+            raise McpError(400, "invalid-request", "参数不正确")
+        if section == "timeline":
+            request["pageBytes"] = self.SELF_TIMELINE_PAGE_BYTES
         provider = self._analysis_provider()
         account = self._analysis_account(provider, account_id)
-        result = provider.friend_analysis_page(account, subject_id, method)
+        result = provider.friend_analysis_page(account, subject_id, method, request)
         return {**self._bounded(result), "section": section, "requestScope": decision["scope"]}
 
     def _get_task(self, principal, body, decision):
@@ -1836,6 +1866,59 @@ class McpServices:
         view = provider.undo_self_timeline(account, params)
         return {"version": view.get("version"), "undone": view.get("undone"),
                 "requestScope": decision["scope"]}
+
+    def _agent_name(self, principal):
+        """The paired client's display name; the plugin shows it on the Agent's undo records."""
+        profile = self.store.client(principal["clientId"])
+        return profile["name"] if profile else principal["clientId"]
+
+    def _friend_timeline_scope(self, principal, action, body, allowed, required, what="好友时间线"):
+        account_id, subject_id, params = self._contact_write_scope(principal, action, body, allowed, required)
+        if subject_id.endswith("@chatroom"):
+            raise McpError(400, "invalid-request", "群聊没有" + what)
+        self._expected_version(params)
+        provider = self._analysis_provider()
+        return provider, self._analysis_account(provider, account_id), subject_id, params
+
+    def _edit_friend_timeline(self, principal, body, decision):
+        provider, account, subject_id, params = self._friend_timeline_scope(
+            principal, "zhiji_edit_friend_timeline", body, self.SELF_TIMELINE_EDIT_PARAMS,
+            ("target", "action", "expectedVersion"))
+        target, action = params["target"], params["action"]
+        allowed = self.FRIEND_TIMELINE_ACTIONS.get(target) if isinstance(target, str) else None
+        if allowed is None or not isinstance(action, str) or action not in allowed:
+            raise McpError(400, "invalid-request", "修改对象或操作不正确")
+        view = provider.edit_friend_timeline(account, subject_id, params, agent=self._agent_name(principal))
+        return {"version": view.get("version"), "id": view.get("editedId"),
+                "label": view.get("editLabel"), "requestScope": decision["scope"]}
+
+    def _undo_friend_timeline(self, principal, body, decision):
+        provider, account, subject_id, params = self._friend_timeline_scope(
+            principal, "zhiji_undo_friend_timeline", body, {"expectedVersion"}, ("expectedVersion",))
+        view = provider.undo_friend_timeline(account, subject_id, params, agent=self._agent_name(principal))
+        return {"version": view.get("version"), "undone": view.get("undone"),
+                "skipped": self._bounded(view.get("skipped")), "requestScope": decision["scope"]}
+
+    def _edit_friend_tags(self, principal, body, decision):
+        provider, account, subject_id, params = self._friend_timeline_scope(
+            principal, "zhiji_edit_friend_tags", body, self.FRIEND_TAG_EDIT_PARAMS, ("action", "expectedVersion"),
+            what="好友标签")
+        action = params["action"]
+        named = "key" if action in ("hide", "unhide") else "name"
+        if not isinstance(action, str) or action not in self.FRIEND_TAG_ACTIONS or \
+                not isinstance(params.get(named), str) or not params[named].strip() or \
+                (action == "add" and not isinstance(params.get("category"), str)):
+            raise McpError(400, "invalid-request", "标签操作不正确")
+        view = provider.edit_friend_tags(account, subject_id, params, agent=self._agent_name(principal))
+        return {"version": view.get("version"), "id": view.get("editedId"),
+                "label": view.get("editLabel"), "requestScope": decision["scope"]}
+
+    def _undo_friend_tags(self, principal, body, decision):
+        provider, account, subject_id, params = self._friend_timeline_scope(
+            principal, "zhiji_undo_friend_tags", body, {"expectedVersion"}, ("expectedVersion",), what="好友标签")
+        view = provider.undo_friend_tags(account, subject_id, params, agent=self._agent_name(principal))
+        return {"version": view.get("version"), "undone": view.get("undone"),
+                "skipped": self._bounded(view.get("skipped")), "requestScope": decision["scope"]}
 
     # -- phase 3b third batch: chat assistant (§5) ------------------------------
     # 讨论读取与提问/停止经 advisor 插件仅有的几个登记 RPC，账号与好友来自代理

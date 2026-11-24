@@ -32,13 +32,14 @@ from message_links import link_metadata
 
 # Official accounts, service notifications and fold placeholders carry no conversation
 # worth analysing or listing, so a whole-account sidebar leaves them out. Real contacts,
-# group chats and filehelper/openim are kept.
+# group chats and filehelper/openim are kept, and so are AI bots the user set up
+# in WeChat (``@weclaw``, e.g. an OpenClaw plugin): the user really talks to them.
 SERVICE_ACCOUNT_IDS = frozenset({
     "brandsessionholder", "brandservicesessionholder", "notifymessage", "weixin",
     "opencustomerservicemsg", "newsapp", "weixinliteservice", "weixinreminder",
     "fmessage", "floatbottle", "medianote", "qqmail", "voiceinput", "exmail_tool",
 })
-SERVICE_ACCOUNT_SUFFIXES = frozenset({"placeholder_foldgroup", "weclaw", "kefu.openim"})
+SERVICE_ACCOUNT_SUFFIXES = frozenset({"placeholder_foldgroup", "kefu.openim"})
 ADVISOR_IDENTITY_LEASE_SECONDS = 2.0
 
 

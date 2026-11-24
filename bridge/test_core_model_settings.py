@@ -216,6 +216,25 @@ class ModelSettingsTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in services], [main_id, judge_id])
         self.assertEqual(services[1]["roles"], ["judge", "image"])
 
+    def test_plugins_reach_only_the_purposes_they_declare(self):
+        core = CoreServices.__new__(CoreServices)
+        services = [{"id": "m", "roles": ["main", "judge"]}, {"id": "i", "roles": ["image"]},
+                    {"id": "j", "roles": ["judge", "image"]}]
+        core.gateway = SimpleNamespace(services=lambda: [dict(item) for item in services])
+        manifests = {"kyf.vision": {"models": {"image": "图片解读"}}, "kyf.text": {"models": {"main": "回复"}},
+                     "kyf.legacy": {}}
+        core.registry = SimpleNamespace(get=manifests.get)
+        self.assertEqual(core.model_services("kyf.vision")["services"],
+                         [{"id": "m", "roles": ["main"]}, {"id": "i", "roles": ["image"]},
+                          {"id": "j", "roles": ["image"]}])
+        # Undeclared purposes fall back to the main model, which is always delivered.
+        for plugin in ("kyf.text", "kyf.legacy", "kyf.unknown"):
+            with self.subTest(plugin=plugin):
+                self.assertEqual(core.model_services(plugin)["services"], [{"id": "m", "roles": ["main"]}])
+        core.gateway = SimpleNamespace(services=Mock(side_effect=GatewayUnavailable("upstream-unavailable", "x")))
+        with self.assertRaises(ApiError):
+            core.model_services("kyf.vision")
+
     def test_main_concurrency_reads_the_role_model(self):
         core = CoreServices.__new__(CoreServices)
         listing = {"models": [{"id": "m", "concurrency": 6}], "roles": {"main": "m", "judge": None, "image": None}}

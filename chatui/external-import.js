@@ -579,7 +579,7 @@
     }
     region.append(line);
     if (state.status.plugin?.enabled === false) region.append(el("p", "ei-warning", "导入识别插件已停用，启用后可以继续。"));
-    if (state.status.model?.available === false || state.status.model?.supportsVision === false) region.append(el("p", "ei-warning", state.status.model?.message || "主模型尚未就绪，请检查模型设置及图片能力。"));
+    if (state.status.model?.available === false || state.status.model?.supportsVision === false) region.append(el("p", "ei-warning", state.status.model?.message || "语言模型尚未就绪，请检查模型设置及图片能力。"));
     if (!batch.candidates.length) showEvidence();
   }
   function taskAction(action) {
@@ -1192,7 +1192,7 @@
       if (recognizer?.model || recognizer?.destination) {
         const model = el("details", "ei-options");
         model.append(el("summary", "", recognizer.model ? `识别模型：${recognizer.model}` : "识别模型"),
-          el("p", "ei-help", "使用“模型设置”中配置的主模型。"));
+          el("p", "ei-help", "使用“模型设置”中配置的语言模型。"));
         if (recognizer.destination) model.append(el("p", "ei-help", `连接地址：${recognizer.destination}`));
         body.append(model);
       }

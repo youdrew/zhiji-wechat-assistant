@@ -70,6 +70,19 @@ test("core settings live in the model panel and save independently of API activa
   assert.equal(f.timers.size, 0);
 });
 
+test("the model home search link follows the saved source after a late read and a save", async () => {
+  const f = fixture();
+  f.node("modelSearchValue").textContent = "关闭";
+  f.controls.responder = async () => response(snapshot(0, { searchSource: "searxng" }));
+  await f.ui.refresh();
+  assert.equal(f.node("modelSearchValue").textContent, "SearXNG");
+  f.edit("searchSource", "none");
+  assert.equal(f.node("modelSearchValue").textContent, "SearXNG", "an unsaved edit does not change the link");
+  f.controls.responder = async (_, options) => response(snapshot(1, JSON.parse(options.body).values));
+  await f.ui.save();
+  assert.equal(f.node("modelSearchValue").textContent, "关闭");
+});
+
 test("reopening settings preserves edits and merges only unchanged fields from a newer revision", async () => {
   const f = fixture(); await f.ui.refresh(); f.edit("searchOpenPages", false);
   f.controls.responder = async () => response(snapshot(1, { searchOpenPages: true, searchSource: "searxng", searxngUrl: "https://search.example.test" }));

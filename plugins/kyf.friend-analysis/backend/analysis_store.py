@@ -93,7 +93,11 @@ def chain_step(digest, row):
 
 def ensure_schema(connection):
     from friend_run_store import ensure_run_schema
+    from friend_tags import ensure_schema as ensure_tag_schema
+    from friend_timeline_store import ensure_schema as ensure_timeline_schema
     connection.executescript(PLUGIN_SCHEMA)
+    ensure_tag_schema(connection)
+    ensure_timeline_schema(connection)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(friend_checkpoints)")}
     if "clear_epoch" not in columns:
         connection.execute("ALTER TABLE friend_checkpoints ADD COLUMN clear_epoch INTEGER")

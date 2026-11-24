@@ -118,7 +118,6 @@ async function exerciseShell({ packaged, selfTest, updateEnvironment = {},
     "https://eugenepage.com/",
     "mailto:youdrewxuan@icloud.com",
     "https://github.com/tswawa/WechatVibe",
-    "https://github.com/tswawa",
   ];
   for (const href of aboutDestinations) openDoc(trusted, href, true, true);
   assert.deepEqual(openedLinks, selfTest ? [] : aboutDestinations);

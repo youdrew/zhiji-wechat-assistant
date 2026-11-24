@@ -28,7 +28,6 @@ const DOC_URLS = new Set([
   "https://github.com/youdrew/zhiji-wechat-assistant",
   "https://eugenepage.com/",
   "mailto:youdrewxuan@icloud.com",
-  "https://github.com/tswawa",
   "https://github.com/tswawa/WechatVibe",
   "https://github.com/youdrew/zhiji-wechat-assistant/releases",
 ]);
@@ -242,6 +241,12 @@ contextBridge.exposeInMainWorld("desktopHost", Object.freeze({
   setTheme(theme) {
     if (theme !== "dark" && theme !== "light") return false;
     ipcRenderer.send("real-client:set-theme", theme);
+    return true;
+  },
+  // 关闭主窗口时: "tray" hides it to the notification area, "quit" exits (Windows only).
+  setCloseAction(action) {
+    if (action !== "tray" && action !== "quit") return false;
+    ipcRenderer.send("real-client:set-close-action", action);
     return true;
   },
   reserveCopyDraft(value) {

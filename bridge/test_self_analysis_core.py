@@ -307,6 +307,14 @@ class ExpressionServiceTests(unittest.TestCase):
             self.call()
         self.assertEqual(caught.exception.code, "account-changed")
 
+    def test_same_contact_preference_is_a_flag_only(self):
+        self.call(preferSameContact=True)
+        self.assertIs(self.process.call.call_args.args[1]["preferSameContact"], True)
+        self.call()
+        self.assertNotIn("preferSameContact", self.process.call.call_args.args[1])
+        with self.assertRaises(ApiError):
+            self.call(preferSameContact="yes")
+
     def test_precise_validation_refs_are_bounded_and_cannot_override_source_scope(self):
         self.call(validateOnly=True, generation=2, profileVersion=3, sources=[{"id": "sample", "hash": "digest"}])
         params = self.process.call.call_args.args[1]
@@ -316,6 +324,160 @@ class ExpressionServiceTests(unittest.TestCase):
                 self.call(validateOnly=True, generation=2, profileVersion=3, sources=bad)
         with self.assertRaises(ApiError):
             self.call(sourceFingerprint="another-source")
+
+
+class PortraitServiceTests(ExpressionServiceTests):
+    """本人画像/对方画像 for 分析与建议 (2026-11-09): two fixed read-only providers, either may be missing."""
+
+    def call(self, **changes):
+        body = {"account": ACCOUNT, "user": FRIEND, "messageId": "m1", "budgetChars": 2000, **changes}
+        return self.api.handle("POST", "/plugin-api/v1/services/portrait-context", {}, self.headers, body)[1]
+
+    def test_fixed_provider_and_scope_are_derived_from_authenticated_task_and_target(self):
+        self.process.call.side_effect = lambda method, params, context, timeout: {
+            "available": True, "text": "self text" if method == "self.portrait" else "friend text", "stamp": [1, 2]}
+        result = self.call()
+        self.assertEqual(result["self"]["text"], "self text")
+        self.assertEqual(result["friend"]["text"], "friend text")
+        methods = [call.args[0] for call in self.process.call.call_args_list]
+        self.assertEqual(methods, ["self.portrait", "profile.context"])
+        for call in self.process.call.call_args_list:
+            self.assertEqual(call.args[2], {"account": ACCOUNT, "user": FRIEND})
+        # The friend side is asked for the advisor description (ta described, not played).
+        self.assertEqual([call.args[1] for call in self.process.call.call_args_list],
+                         [{"budgetChars": 2000, "beforeTimeMs": 1700000000000},
+                          {"budgetChars": 2000, "beforeTimeMs": 1700000000000, "audience": "advisor"}])
+        self.assertNotIn("mine", result)
+
+    def test_same_contact_preference_is_a_flag_only(self):
+        with self.assertRaises(ApiError):
+            self.call(preferSameContact=True)
+        self.process.call.assert_not_called()
+
+    def test_my_way_of_talking_to_the_friend_comes_back_bounded(self):
+        self.process.call.side_effect = lambda method, params, context, timeout: {
+            "available": True, "text": "t", **({"mine": "m" * 9000} if method == "profile.context" else {})}
+        self.assertEqual(self.call()["mine"], {"available": True, "text": "m" * 2000})
+        self.assertEqual([call.args[0] for call in self.core.supervisor.ensure.call_args_list],
+                         ["kyf.self-analysis", "kyf.friend-analysis"])
+
+    def test_no_generic_rpc_or_other_plugin_can_use_the_service(self):
+        with self.assertRaises(ApiError):
+            self.call(query="not accepted")
+        self.core.supervisor.plugin_for_token.return_value = "kyf.advisor"
+        with self.assertRaises(ApiError) as caught:
+            self.call()
+        self.assertEqual(caught.exception.status, 403)
+        self.process.call.assert_not_called()
+
+    def test_invalid_auth_execution_scope_and_target_fail_without_provider_call(self):
+        self.core.tasks.verify.return_value = {"account": ACCOUNT, "user": "another-friend"}
+        with self.assertRaises(ApiError) as caught:
+            self.call()
+        self.assertEqual(caught.exception.status, 409)
+        self.process.call.assert_not_called()
+
+    def test_provider_disabled_slow_crashed_and_oversized_results_fall_back(self):
+        self.core.registry.enabled.side_effect = lambda plugin: plugin == "kyf.friend-analysis"
+        self.process.call.side_effect = PluginError("plugin-crashed", "synthetic crash")
+        result = self.call()
+        self.assertEqual(result["self"], {"available": False, "reason": "plugin-disabled"})
+        self.assertEqual(result["friend"], {"available": False, "reason": "service-unavailable"})
+        self.core.registry.enabled.side_effect = None
+        self.process.call.side_effect = None
+        self.process.call.return_value = {"available": True, "text": "x" * 9000}
+        self.assertEqual(len(self.call()["friend"]["text"]), 2000)
+
+    def test_late_results_cannot_survive_stop_or_account_switch(self):
+        self.core.history.context.source_scope.side_effect = ["fixture-source", "another-source"]
+        self.process.call.return_value = {"available": True, "text": "late"}
+        with self.assertRaises(ApiError) as caught:
+            self.call()
+        self.assertEqual(caught.exception.status, 409)
+
+    def test_precise_validation_refs_are_bounded_and_cannot_override_source_scope(self):
+        with self.assertRaises(ApiError):
+            self.call(sources=[])
+
+
+class SimulateServiceTests(ExpressionServiceTests):
+    """回复调研 for 分析与建议 (2026-11-09): start/read/stop one 自我剖析 job for the task's own friend."""
+
+    def setUp(self):
+        super().setUp()
+        self.view = {"id": "job-1", "state": "done", "phase": "done", "depth": "deep", "queries": ["q" * 90],
+                     "sources": [{"timeMs": 5, "sameContact": True, "input": "i" * 900, "reply": "r" * 900,
+                                  "id": "s1", "hash": "h"}] * 10,
+                     "result": {"messages": ["好呀", "  "], "timeline": ["时间线·2026年：x"]}}
+        self.process.call.return_value = self.view
+        self.turns = [{"from": "me", "text": "在吗"}, {"from": "friend", "text": "在"}]
+
+    def call(self, **changes):
+        body = {"account": ACCOUNT, "user": FRIEND, **changes}
+        return self.api.handle("POST", "/plugin-api/v1/services/self-simulate", {}, self.headers, body)[1]
+
+    def test_fixed_provider_and_scope_are_derived_from_authenticated_task_and_target(self):
+        result = self.call(messageId="m1", messages=self.turns, depth="auto")
+        method, params, context = self.process.call.call_args.args
+        self.assertEqual((method, params, context),
+                         ("self.simulate", {"messages": self.turns, "depth": "auto"}, {"account": ACCOUNT, "user": FRIEND}))
+        self.assertEqual(result["result"], {"messages": ["好呀"], "timeline": ["时间线·2026年：x"]})
+        self.assertEqual(len(result["sources"]), 8)
+        self.assertEqual(set(result["sources"][0]), {"timeMs", "sameContact", "input", "reply"})
+        self.assertEqual((len(result["sources"][0]["input"]), len(result["queries"][0])), (600, 60))
+        self.call(id="job-1")
+        self.assertEqual(self.process.call.call_args.args[:2], ("self.simulateStatus", {"id": "job-1"}))
+        self.call(id="job-1", stop=True)
+        self.assertEqual(self.process.call.call_args.args[:2], ("self.simulateStop", {"id": "job-1"}))
+
+    def test_no_generic_rpc_or_other_plugin_can_use_the_service(self):
+        with self.assertRaises(ApiError):
+            self.call(messageId="m1", messages=self.turns, method="self.reset")
+        with self.assertRaises(ApiError):
+            self.call(messageId="m1", messages=self.turns, depth="everything")
+        self.core.supervisor.plugin_for_token.return_value = "kyf.advisor"
+        with self.assertRaises(ApiError) as caught:
+            self.call(id="job-1")
+        self.assertEqual(caught.exception.status, 403)
+        self.process.call.assert_not_called()
+
+    def test_invalid_auth_execution_scope_and_target_fail_without_provider_call(self):
+        self.core.tasks.verify.return_value = {"account": ACCOUNT, "user": "another-friend"}
+        with self.assertRaises(ApiError) as caught:
+            self.call(id="job-1")
+        self.assertEqual(caught.exception.status, 409)
+        self.core.tasks.verify.return_value = self.binding
+        self.core.history.rows.return_value = {"messages": [{"id": "m1", "side": "self", "group": False}]}
+        with self.assertRaises(ApiError):
+            self.call(messageId="m1", messages=self.turns)
+        self.process.call.assert_not_called()
+
+    def test_provider_disabled_slow_crashed_and_oversized_results_fall_back(self):
+        self.core.registry.enabled.return_value = False
+        self.assertEqual(self.call(id="job-1"), {"available": False, "reason": "plugin-disabled"})
+        self.core.registry.enabled.return_value = True
+        self.process.call.side_effect = PluginError("no-samples", "还没有可用的本人回复")
+        self.assertEqual(self.call(id="job-1")["reason"], "no-samples")
+        self.process.call.side_effect = None
+        self.process.call.return_value = {"id": "job-1", "state": "done", "result": {"messages": []}}
+        self.assertEqual(self.call(id="job-1")["state"], "error", "a finished job without messages is no result")
+
+    def test_late_results_cannot_survive_stop_or_account_switch(self):
+        def revoked(*_args, **_kwargs):
+            self.core.tasks.verify.side_effect = ApiError(409, "execution-revoked", "stopped")
+            return self.view
+        self.process.call.side_effect = revoked
+        with self.assertRaises(ApiError):
+            self.call(id="job-1")
+
+    def test_precise_validation_refs_are_bounded_and_cannot_override_source_scope(self):
+        with self.assertRaises(ApiError):
+            self.call(id="x" * 65)
+
+    def test_same_contact_preference_is_a_flag_only(self):
+        with self.assertRaises(ApiError):
+            self.call(preferSameContact=True)
+        self.process.call.assert_not_called()
 
 
 class SelfProfileTests(unittest.TestCase):

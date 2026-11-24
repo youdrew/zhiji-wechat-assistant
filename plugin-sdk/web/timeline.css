@@ -1,0 +1,51 @@
+/* Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0 */
+/* Shared timeline overview (plugin-sdk/web/timeline.js, added 2026-11-07). Uses the page's --line, --muted, --text, --bg
+   and --accent-text; link it after the page's own stylesheet. */
+/* 格子模式 */
+.tl-grid { display: grid; gap: 3px; align-items: center; min-width: max-content; }
+.tl-year-label { color: var(--muted); font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tl-year-label.chat-start { color: var(--text); text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+.tl-track-label { border: 0; background: transparent; padding: 0 6px 0 0; text-align: left; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.tl-track-label:hover:not(:disabled) { background: transparent; color: var(--text); }
+.tl-cell { display: block; width: 100%; height: 14px; border: 0; border-radius: 2px; padding: 0; background: var(--line); opacity: .45; transition: opacity .15s ease; }
+.tl-cell:disabled { opacity: .45; cursor: default; }
+.tl-cell.gap { background: transparent; }
+.tl-cell.level-1 { background: var(--track); opacity: .3; } .tl-cell.level-2 { background: var(--track); opacity: .5; }
+.tl-cell.level-3 { background: var(--track); opacity: .72; } .tl-cell.level-4 { background: var(--track); opacity: .95; }
+.tl-cell:hover:not(:disabled) { background: var(--track); outline: 1px solid var(--text); }
+.tl-cell.dim, .tl-track-label.dim { opacity: .15; }
+.tl-cell-slot { position: relative; height: 14px; }
+.tl-cell-slot.dim .tl-overview-star { opacity: .3; }
+.tl-overview-star { position: absolute; top: 0; width: 14px; height: 14px; margin-left: -7px; border: 0; border-radius: 0; background: transparent; padding: 0; color: var(--text); font-size: 11px; line-height: 14px; text-align: center; text-shadow: 0 0 2px var(--bg); }
+.tl-overview-star:hover:not(:disabled) { background: transparent; color: var(--accent-text); }
+.tl-tip { position: fixed; top: 0; right: auto; z-index: 30; max-width: 280px; padding: 6px 10px; display: grid; gap: 2px; font-size: 12px; pointer-events: none;
+  background: var(--card, var(--panel)); color: var(--text); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .28); }
+.tl-tip-line { display: flex; gap: 8px; } .tl-tip-when { flex: none; color: var(--muted); }
+/* 圆点模式：单行是一条带记号的细时间轴，多行时左侧 64px 是主线名 */
+.tl-dots { display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 0; min-width: max-content; overflow-y: clip; }
+.tl-dots.single { display: block; min-width: 0; }
+.tl-dots-labels { position: sticky; left: 0; z-index: 3; display: grid; grid-auto-rows: 14px; row-gap: 3px; align-content: start; padding-top: 16px; background: var(--bg); }
+.tl-dots-labels .tl-track-label { height: 14px; line-height: 14px; }
+.tl-dots-plot { position: relative; width: 100%; }
+.tl-dots-years { position: relative; height: 16px; margin: 0 10px; }
+.tl-dots-years .tl-year-label { position: absolute; top: 0; transform: translateX(-50%); line-height: 16px; }
+.tl-dots-body { position: relative; margin: 0 10px; }
+.tl-freq { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.tl-freq polyline { fill: none; stroke: var(--muted); stroke-width: 1px; opacity: .5; }
+.tl-dots-row { position: absolute; left: 0; right: 0; height: 14px; }
+.tl-dots-base { position: absolute; left: 0; right: 0; top: 7px; height: 1px; background: var(--line); }
+.tl-dots-period { position: absolute; top: 6px; height: 2px; min-width: 2px; border: 0; border-radius: 1px; padding: 0; background: var(--tl-color); opacity: .8; }
+.tl-dots-period::before { content: ""; position: absolute; inset: -5px 0; }
+.tl-dots-period:hover:not(:disabled) { background: var(--tl-color); opacity: 1; }
+.tl-dot { position: absolute; top: 4px; z-index: 1; width: 6px; height: 6px; margin-left: -3px; border: 0; border-radius: 50%; padding: 0; background: var(--tl-color); }
+.tl-dot::before { content: ""; position: absolute; inset: -4px; }
+.tl-dot:hover:not(:disabled) { background: var(--tl-color); box-shadow: 0 0 0 2px var(--line); }
+.tl-dot.planned { background: transparent; border: 1.5px solid var(--tl-color); }
+.tl-dot.planned:hover:not(:disabled) { background: transparent; }
+.tl-dot.uncertain { opacity: .5; }
+.tl-dot.memory { background: var(--muted); }
+.tl-dot.important { top: 0; z-index: 2; width: 14px; height: 14px; margin-left: -7px; border: 0; border-radius: 0; background: transparent; color: var(--tl-color); font-size: 12px; line-height: 14px; text-align: center; text-shadow: 0 0 2px var(--bg); }
+.tl-dot.important::before { inset: 0; }
+.tl-dot.important:hover:not(:disabled) { background: transparent; box-shadow: none; color: var(--text); }
+.tl-dots-row.dim { opacity: .25; }
+@media (prefers-reduced-motion: reduce) { .tl-cell { transition: none; } }

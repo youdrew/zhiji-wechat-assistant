@@ -8,6 +8,7 @@
   <title>自我剖析</title>
   <link rel="stylesheet" href="/plugin-sdk/web/persona-charts.css">
   <link rel="stylesheet" href="page.css">
+  <link rel="stylesheet" href="/plugin-sdk/web/timeline.css">
 </head>
 <body>
   <main class="page">
@@ -72,7 +73,8 @@
         </section>
       </section>
       <section id="panel-timeline" class="tab-panel" role="tabpanel" aria-labelledby="tab-timeline" tabindex="0" hidden>
-        <div class="tl-top"><label class="tl-filter"><input id="timelineImportantOnly" type="checkbox">只看重要节点</label><button id="timelineAdd" type="button" class="plain" disabled>添加</button></div>
+        <div id="timelineState" class="tl-state" role="status" hidden><div id="timelineProgress" class="tl-progress" aria-hidden="true"><span id="timelineProgressBar"></span></div><p id="timelineStateText"></p><button id="timelineRetry" type="button" class="plain" hidden>重试</button></div>
+        <div id="timelineTop" class="tl-top" hidden><label class="tl-filter"><input id="timelineImportantOnly" type="checkbox">只看重要节点</label><button id="timelineAdd" type="button" class="plain" disabled>添加</button></div>
         <div id="timelineAddForm" class="tl-form" hidden></div>
         <div id="timelinePeriodBar" class="tl-period-bar" hidden></div>
         <div id="timelineOverview" class="tl-overview"></div>
@@ -128,6 +130,7 @@
   </main>
   <script src="/plugin-sdk/web/kyf-host.js"></script>
   <script src="/plugin-sdk/web/persona-charts.js"></script>
+  <script src="/plugin-sdk/web/timeline.js"></script>
   <script src="page.js"></script>
 </body>
 </html>

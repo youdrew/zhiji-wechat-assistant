@@ -44,7 +44,7 @@ install_start_lock = adapter_module.install_start_lock
 ADAPTER = SCRIPTS / "mcp-stdio-adapter.py"
 CLIENT_ID = "mcp_smoketest"
 CREDENTIAL = "zmc_" + "a" * 64
-OPEN_CAPABILITIES = ["zhiji_edit_self_timeline", "zhiji_find_contacts", "zhiji_get_contact",
+OPEN_CAPABILITIES = ["zhiji_edit_friend_tags", "zhiji_edit_friend_timeline", "zhiji_edit_self_timeline", "zhiji_find_contacts", "zhiji_get_contact",
                      "zhiji_get_contact_brief", "zhiji_get_friend_analysis", "zhiji_get_media",
                      "zhiji_get_memory_evidence", "zhiji_get_message_context",
                      "zhiji_get_message_insights", "zhiji_get_recent_messages",
@@ -53,7 +53,8 @@ OPEN_CAPABILITIES = ["zhiji_edit_self_timeline", "zhiji_find_contacts", "zhiji_g
                      "zhiji_ping",
                      "zhiji_search_messages", "zhiji_start_friend_analysis",
                      "zhiji_start_message_insights", "zhiji_start_self_analysis",
-                     "zhiji_stop_self_analysis", "zhiji_stop_task", "zhiji_undo_self_timeline",
+                     "zhiji_stop_self_analysis", "zhiji_stop_task", "zhiji_undo_friend_tags", "zhiji_undo_friend_timeline",
+                     "zhiji_undo_self_timeline",
                      "zhiji_update_memory"]
 
 
@@ -370,6 +371,24 @@ class AdapterSmokeTests(unittest.TestCase):
                          ("zhiji_edit_self_timeline", "账号A", "r-13"))
         self.assertEqual(body["params"], {"target": "event", "action": "edit", "id": "e1",
                                           "fields": {"when": "2024.05"}, "expectedVersion": 3})
+        adapter.request(14, "tools/call",
+                        {"name": "zhiji_undo_friend_timeline",
+                         "arguments": {"accountId": "账号A", "subjectId": "好友1", "requestId": "r-14",
+                                       "expectedVersion": 4}})
+        body = self.core.rpc_bodies[-1]
+        self.assertEqual((body["action"], body["requestId"], body["params"]),
+                         ("zhiji_undo_friend_timeline", "r-14", {"expectedVersion": 4}))
+        self.assertEqual(body["subjects"], [{"accountId": "账号A", "subjectType": "wechat_contact",
+                                             "subjectId": "好友1"}])
+        adapter.request(15, "tools/call",
+                        {"name": "zhiji_edit_friend_tags",
+                         "arguments": {"accountId": "账号A", "subjectId": "好友1", "requestId": "r-15",
+                                       "action": "hide", "key": "phrase:哈哈哈", "expectedVersion": 2}})
+        body = self.core.rpc_bodies[-1]
+        self.assertEqual((body["action"], body["requestId"], body["params"]),
+                         ("zhiji_edit_friend_tags", "r-15", {"action": "hide", "key": "phrase:哈哈哈",
+                                                               "expectedVersion": 2}))
+        self.assertEqual(body["subjects"][0]["subjectId"], "好友1")
         # 未知工具是协议错误（-32602）；多余参数是工具执行错误，以 isError 结果交给模型。
         error = adapter.request(5, "tools/call", {"name": "zhiji_未知", "arguments": {}})
         self.assertEqual(error["error"]["code"], -32602)
@@ -839,6 +858,7 @@ class AutoStartPathTests(unittest.TestCase):
             default_port = staticmethod(launcher.default_port)
             selected_port = staticmethod(launcher.selected_port)
             checked_runtime_dir = staticmethod(launcher.checked_runtime_dir)
+            launch_mutex = staticmethod(launcher.launch_mutex)
 
             @staticmethod
             def health(config):
@@ -881,6 +901,39 @@ class AutoStartPathTests(unittest.TestCase):
             connection.resolve()
         self.assertEqual(caught.exception.code, "core-start-refused")
         self.assertIn("Automatic recovery", caught.exception.message)
+
+    def test_cold_start_reselects_under_the_lock_and_attaches_to_the_other_adapters_core(self):
+        # Observed 2026-11-08: an adapter read the pinned port, waited on the install lock
+        # while another adapter fell back to a new port and started Core there, then
+        # started a second Core over the same installation on the port it had read.
+        real = adapter_module.launcher
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        base = real.Config(root, Path(sys.executable), real.default_port(root))
+        base.runtime_dir.mkdir(parents=True)
+        marker = base.runtime_dir / "selected-port.json"
+        marker.write_text(json.dumps({"schema": 1, "instanceId": base.instance_id, "port": 47101}),
+                          encoding="utf-8")
+        winner, probed, started = 47102, [], []
+
+        def health(config):
+            probed.append(config.port)
+            if len(probed) == 1:
+                (base.runtime_dir / "bridge-47231.json").write_text(json.dumps({
+                    "pid": 47231, "port": winner, "instance_id": base.instance_id, "log": "synthetic",
+                    "started_at": "20261107T172718Z", "created_filetime": 42}), encoding="utf-8")
+                return "unavailable"
+            return "ready" if config.port == winner else "unavailable"
+
+        connection = adapter_module.CoreConnection(root, CLIENT_ID, CREDENTIAL,
+                                                   ensure=started.append, health=health)
+        with mock.patch.object(real, "process_identity", return_value=(True, 42)):
+            url = connection.resolve()
+        self.assertEqual(url, f"http://127.0.0.1:{winner}")
+        self.assertEqual(started, [], "a second Core was started for the same installation")
+        self.assertEqual(probed[0], 47101)
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["port"], winner)
 
     def test_outdated_install_stays_passive_for_the_auto_path(self):
         state = ["outdated"]

@@ -69,7 +69,7 @@ RESTART_NOTES = {
     "claude-code": "在 /mcp 查看状态。项目 .mcp.json 已更新时可先尝试 Reconnect；仍未加载请新开会话。",
     "codex": "需要重启 Codex 才会加载新的 MCP 服务器。",
     "cursor": "如果新服务器未出现，请重启 Cursor 并在 MCP 设置中查看。",
-    "deepseek-harness": "开启 HMR 的 profile 可自动重载配置；若未开启或未加载，请重启对应 profile。",
+    "deepseek-harness": "重新打开 DeepSeek Harness，“插件”页会列出“知己微信助手”，Agent 可用 mcp__zhiji__ 开头的工具。",
     "generic": "请按客户端说明粘贴配置并重新加载。",
 }
 EXIT_OK, EXIT_ERROR, EXIT_NOT_INSTALLED, EXIT_NOT_PAIRED, EXIT_CONFIG, EXIT_VERIFY, EXIT_WAITING = 0, 1, 2, 3, 4, 5, 6
@@ -79,6 +79,7 @@ VERIFY_TIMEOUT = 90.0
 NO_DISCOVERY_ENV = "ZHIJI_CLI_NO_SYSTEM_DISCOVERY"  # tests: skip registry and known install dirs
 CORE_URL_ENV = "ZHIJI_CORE_URL"                      # tests/advanced: use this Core, start nothing
 HOME_ENV = "ZHIJI_CLI_HOME"                          # tests: stand-in for the user's home directory
+DSH_COMMAND_ENV = "ZHIJI_CLI_DSH_COMMAND"            # tests: JSON argv standing in for the DeepSeek Harness CLI
 
 
 class CliError(Exception):
@@ -573,67 +574,166 @@ def _command_from(lines, separator):
     return None
 
 
-class HarnessPatchConfig:
-    """One managed ``insert`` patch in DSH's user patch layer (``$DSH_HOME/cordis.patch.yml``).
+class HarnessBundleConfig:
+    """知己 as a DeepSeek Harness plugin: a configuration-only bundle that mounts the MCP adapter.
 
-    Format from the official DeepSeek Harness guide (mcp-memory.zh.md); the default
-    ``DSH_HOME`` location and reload behaviour are not verified on a real install.
+    The bundle is a small package under ``~/.zhiji/dsh-plugin/<key>`` (manifest, patch, locale, icon). Its patch
+    inserts DSH's own ``@deepseek-ai/dsh-mcp-client`` with the adapter's launch command. DSH's ``plugin`` command
+    links the package into each initialized profile and selects it, so it shows up on DSH's Plugins page.
+    Verified with DeepSeek Harness 0.2.2-rc.1.
     """
 
-    BEGIN = "# >>> zhiji-mcp {key} (managed by zhiji-mcp-cli) >>>"
-    END = "# <<< zhiji-mcp {key} <<<"
+    ICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#07c160" '
+            'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4'
+            'A2.5 2.5 0 0 1 4 13.5z"/><path d="M9 9.5c1 1.6 5 1.6 6 0"/></svg>\n')
+    LOCALES = {
+        "en": {"title": "Zhiji WeChat assistant",
+               "description": "Lets the agent read your local WeChat relationship library in Zhiji: contacts, "
+                              "messages, memories and analyses, within the access you granted this connection."},
+        "zh": {"title": "知己微信助手",
+               "description": "让 Agent 读取本机知己里的微信关系资料：联系人、聊天记录、记忆与分析，范围以你给这条连接的授权为准。"},
+    }
 
-    def __init__(self, path):
-        self.path = Path(path)
+    def __init__(self, directory, key, dsh_home):
+        self.directory, self.key, self.dsh_home = Path(directory), key, Path(dsh_home)
+        self.path = self.directory / "cordis.patch.yml"
+        self.package = "@zhiji/dsh-" + re.sub(r"[^a-z0-9._-]", "-", key.lower())
 
-    def _span(self, lines, key):
-        begin, end = self.BEGIN.format(key=key), self.END.format(key=key)
-        start = next((index for index, line in enumerate(lines) if line.strip() == begin), None)
-        if start is None:
-            return None, None
-        stop = next((index for index in range(start, len(lines)) if lines[index].strip() == end), None)
-        if stop is None:
-            raise CliError(f"{self.path} 中知己配置块不完整，未作修改；请手动删除 {begin} 起的内容", EXIT_CONFIG)
-        return start, stop + 1
+    def render(self, _text, key, command, args):
+        return "\n".join(["# Managed by zhiji-mcp-cli; rerun `connect --client deepseek-harness` to change it.",
+                          "- insert:", f"    - id: mcp-{key}", "      name: '@deepseek-ai/dsh-mcp-client'",
+                          "      config:", f"        serverName: {key}", "        transport: stdio",
+                          f"        command: {_quoted(command)}",
+                          "        args: [" + ", ".join(_quoted(item) for item in args) + "]"]) + "\n"
 
-    def render(self, text, key, command, args):
-        lines = (text or "").splitlines()
-        start, stop = self._span(lines, key)
-        outside = lines if start is None else lines[:start] + lines[stop:]
-        first = next((line for line in outside if line.strip() and not line.lstrip().startswith("#")), None)
-        if first is not None and not first.lstrip().startswith("-"):
-            raise CliError(f"{self.path} 不是 patch 列表（顶层应为 '- insert:' 等条目），未作修改", EXIT_CONFIG)
-        block = [self.BEGIN.format(key=key), "- insert:", f"    - id: mcp-{key}",
-                 "      name: '@deepseek-ai/dsh-mcp-client'", "      config:",
-                 f"        serverName: {key}", "        transport: stdio",
-                 f"        command: {_quoted(command)}",
-                 "        args: [" + ", ".join(_quoted(item) for item in args) + "]",
-                 "        env: {}", self.END.format(key=key)]
-        if start is None:
-            while lines and not lines[-1].strip():
-                lines.pop()
-            lines = lines + block
-        else:
-            lines = lines[:start] + block + lines[stop:]
-        return "\n".join(lines) + "\n"
+    def read(self, text, _key):
+        return _command_from((text or "").splitlines(), ":")
 
-    def remove(self, text, key):
-        lines = (text or "").splitlines()
-        start, stop = self._span(lines, key)
-        if start is None:
-            return None
-        rest = lines[:start] + lines[stop:]
-        return "\n".join(rest) + ("\n" if rest else "")
+    def static_files(self):
+        manifest = {"name": self.package, "version": "1.0.0", "private": True, "type": "module",
+                    "description": "Zhiji WeChat assistant for DeepSeek Harness",
+                    "exports": {"./locale/*.json": "./locale/*.json", "./icon": "./icon.svg"},
+                    "files": ["cordis.patch.yml", "locale/*.json", "icon.svg"],
+                    "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}}
+        files = {"package.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", "icon.svg": self.ICON}
+        for language, meta in self.LOCALES.items():
+            files[f"locale/{language}.json"] = json.dumps({"meta": meta}, ensure_ascii=False, indent=2) + "\n"
+        return files
 
-    def read(self, text, key):
-        lines = (text or "").splitlines()
-        start, stop = self._span(lines, key)
-        if start is None:
-            return None
-        return _command_from(lines[start:stop], ":")
+    def profiles(self):
+        """Initialized DSH profiles: ``{name: package.json path}``."""
+        try:
+            return {item.name: item / "package.json" for item in sorted((self.dsh_home / "profiles").iterdir())
+                    if (item / "package.json").is_file()}
+        except OSError:
+            return {}
+
+    def registered(self, manifest):
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            return (self.package in (data.get("dependencies") or {})
+                    and self.package in data["dsh"]["profile"]["bundles"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def _plugin(self, profile, *arguments):
+        """Run ``dsh plugin --profile <profile> …``; None when it succeeded, else why not."""
+        launcher = dsh_launcher()
+        if launcher is None:
+            return "未找到 DeepSeek Harness 安装"
+        environment = {**os.environ, "ELECTRON_RUN_AS_NODE": "1", "DSH_HOME": str(self.dsh_home)}
+        try:
+            done = subprocess.run([*launcher, "plugin", "--profile", profile, *arguments], env=environment,
+                                  capture_output=True, timeout=300, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return str(exc)
+        output = (done.stdout + done.stderr).decode("utf-8", "replace").strip()
+        failed = done.returncode != 0 or re.search(r"^dsh: Error:", output, re.MULTILINE)
+        return (output.splitlines() or ["未知错误"])[-1] if failed else None
+
+    def register(self):
+        """Link the bundle into every initialized profile; ``(installed, {profile: reason})``."""
+        installed, pending = [], {}
+        for profile, manifest in self.profiles().items():
+            if self.registered(manifest):
+                continue
+            reason = self._plugin(profile, "add", "link:" + self.directory.as_posix())
+            if reason is None and not self.registered(manifest):
+                reason = "安装命令结束后 profile 中仍没有知己插件"
+            if reason is None:
+                installed.append(profile)
+            else:
+                pending[profile] = reason
+        return installed, pending
+
+    def unregister(self):
+        """Remove the bundle from every profile that lists it; ``{profile: reason}`` for those left."""
+        pending = {}
+        for profile, manifest in self.profiles().items():
+            try:
+                listed = self.package in manifest.read_text(encoding="utf-8")
+            except OSError:
+                listed = False
+            reason = self._plugin(profile, "remove", self.package) if listed else None
+            if reason is not None:
+                pending[profile] = reason
+        return pending
 
 
-def config_target(client, scope, project_dir):
+def dsh_launcher():
+    """The installed DeepSeek Harness' own CLI as an argv prefix, or None."""
+    override = os.environ.get(DSH_COMMAND_ENV)
+    if override:
+        return json.loads(override)
+    if os.environ.get(HOME_ENV) or os.environ.get(NO_DISCOVERY_ENV):
+        return None
+    folders = [os.environ.get("KYF_DSH_INSTALL")]
+    for variable, parts in (("LOCALAPPDATA", ("Programs", "DeepSeek Harness")), ("ProgramFiles", ("DeepSeek Harness",))):
+        if os.environ.get(variable):
+            folders.append(str(Path(os.environ[variable]).joinpath(*parts)))
+    for folder in filter(None, folders):
+        executable, archive = Path(folder) / "DeepSeek Harness.exe", Path(folder) / "resources" / "app.asar"
+        if executable.is_file() and archive.is_file():
+            return [str(executable), "--expose-internals",
+                    str(archive / "dsh" / "node_modules" / "@deepseek-ai" / "dsh-desktop-host" / "lib" / "cli.js")]
+    return None
+
+
+def apply_harness_bundle(adapter, label, key, command, args, *, dry_run):
+    files = {**adapter.static_files(), adapter.path.name: adapter.render(None, key, command, args)}
+    stale = [name for name, text in files.items() if read_text(adapter.directory / name) != text]
+    profiles = adapter.profiles()
+    unregistered = [name for name, manifest in profiles.items() if not adapter.registered(manifest)]
+    # Without an initialized profile there is nothing to install into yet; the bundle waits for the next run.
+    waiting = {} if profiles else {"desktop": "还没有初始化的 DeepSeek Harness profile；请先打开一次 DeepSeek Harness"}
+    result = {"path": adapter.path, "label": label, "changed": bool(stale or unregistered), "backup": None,
+              "via": "unchanged", "pending": waiting}
+    if dry_run or not result["changed"]:
+        result["via"] = "dry-run" if result["changed"] else "unchanged"
+        return result
+    for name in stale:
+        write_text(adapter.directory / name, files[name])
+    installed, pending = adapter.register()
+    result["pending"] = {**waiting, **pending}
+    result["via"] = "dsh plugin add → " + "、".join(installed) if installed else "file"
+    return result
+
+
+def remove_harness_bundle(adapter, label, *, dry_run):
+    if not adapter.directory.is_dir():
+        return {"path": adapter.path, "label": label, "changed": False, "backup": None}
+    if dry_run:
+        return {"path": adapter.path, "label": label, "changed": True, "backup": None}
+    pending = adapter.unregister()
+    if pending:
+        raise CliError("未能从 DeepSeek Harness 移除知己插件（" + "；".join(f"{name}：{reason}" for name, reason in pending.items())
+                       + "）。请完全退出 DeepSeek Harness 后重试。", EXIT_CONFIG)
+    shutil.rmtree(adapter.directory, ignore_errors=True)
+    return {"path": adapter.path, "label": label, "changed": True, "backup": None}
+
+
+def config_target(client, scope, project_dir, key="zhiji"):
     """``(adapter, description)`` of the config this client reads; ``(None, …)`` for generic."""
     base = home()
     testing = bool(os.environ.get(HOME_ENV))
@@ -655,10 +755,10 @@ def config_target(client, scope, project_dir):
         return CodexTomlConfig(path), "Codex config.toml"
     if client == "deepseek-harness":
         if scope == "project":
-            raise CliError("DeepSeek Harness 只写用户 patch 层（$DSH_HOME/cordis.patch.yml），请去掉 --scope project")
+            raise CliError("DeepSeek Harness 的插件装在用户的 profile 里，请去掉 --scope project")
         dsh_home = None if testing else os.environ.get("DSH_HOME")
-        path = Path(dsh_home) / "cordis.patch.yml" if dsh_home else base / ".dsh" / "cordis.patch.yml"
-        return HarnessPatchConfig(path), "DeepSeek Harness cordis.patch.yml（默认位置未实测）"
+        return (HarnessBundleConfig(base / ".zhiji" / "dsh-plugin" / key, key, dsh_home or base / ".dsh"),
+                "DeepSeek Harness 插件包")
     return None, "通用 MCP 配置片段"
 
 
@@ -672,9 +772,11 @@ def claude_cli():
 
 def apply_config(client, scope, project_dir, key, command, args, *, dry_run):
     """Merge the entry; ``{"path", "label", "changed", "backup", "via"}`` (generic: path None)."""
-    adapter, label = config_target(client, scope, project_dir)
+    adapter, label = config_target(client, scope, project_dir, key)
     if adapter is None:
         return {"path": None, "label": label, "changed": False, "backup": None, "via": "snippet"}
+    if isinstance(adapter, HarnessBundleConfig):
+        return apply_harness_bundle(adapter, label, key, command, args, dry_run=dry_run)
     text = read_text(adapter.path)
     rendered = adapter.render(text, key, command, args)
     same_entry = isinstance(adapter, JsonServersConfig) and adapter.read(text, key) == (command, args)
@@ -705,9 +807,11 @@ def apply_config(client, scope, project_dir, key, command, args, *, dry_run):
 
 
 def remove_config(client, scope, project_dir, key, *, dry_run):
-    adapter, label = config_target(client, scope, project_dir)
+    adapter, label = config_target(client, scope, project_dir, key)
     if adapter is None:
         return {"path": None, "label": label, "changed": False, "backup": None}
+    if isinstance(adapter, HarnessBundleConfig):
+        return remove_harness_bundle(adapter, label, dry_run=dry_run)
     text = read_text(adapter.path)
     rendered = adapter.remove(text, key) if text is not None else None
     if rendered is None:
@@ -720,7 +824,7 @@ def remove_config(client, scope, project_dir, key, *, dry_run):
 
 
 def configured_command(client, scope, project_dir, key):
-    adapter, _label = config_target(client, scope, project_dir)
+    adapter, _label = config_target(client, scope, project_dir, key)
     if adapter is None:
         return None
     try:
@@ -1319,6 +1423,11 @@ def cmd_connect(args):
         target = configured_command(client, scope, args.project_dir, key)
         if target is None:
             raise CliError("接入：失败 —— 写入后读不回知己条目，请检查配置文件。", EXIT_CONFIG)
+        for profile, reason in (result.get("pending") or {}).items():
+            say(f"DeepSeek Harness：插件包已生成，但还没装进 profile {profile}（{reason}）。")
+        if result.get("pending"):
+            say("  请完全退出 DeepSeek Harness 后重新运行本命令；或在 DeepSeek Harness 里让 Agent 安装本地插件包："
+                f"{result['path'].parent}")
     if args.install_skill:
         skill = install_skill(inst, scope, args.project_dir, dry_run=False)
         if skill["changed"]:

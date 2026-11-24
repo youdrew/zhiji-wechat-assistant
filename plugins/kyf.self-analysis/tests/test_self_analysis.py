@@ -11,6 +11,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / "plugin-sdk/python"), str(ROOT / "plugins/kyf.self-analysis/backend")]
@@ -338,6 +339,17 @@ class Tests(unittest.TestCase):
         self.service.reset(self.account)
         self.assertFalse(self.service.context(self.account, validation)["valid"])
 
+    def test_context_can_put_the_same_friend_first(self):
+        """分析与建议 (2026-11-09) asks for the user's replies to this friend before anyone else's."""
+        self.core.live["friend-a"] = dialogue(count=5)
+        self.build()
+        query = {"query": "对方：周末一起吃饭", "budgetChars": 6000, "limit": 4}
+        mixed = self.service.context(self.account, query, "friend-a")
+        own = self.service.context(self.account, {**query, "preferSameContact": True}, "friend-a")
+        self.assertLessEqual(sum(row["sameContact"] for row in mixed["sources"]), 2)
+        self.assertEqual([row["sameContact"] for row in own["sources"]], [True] * 4)
+        self.assertNotIn("onlyUser", json.dumps(own, ensure_ascii=False))
+
     def test_source_change_preserves_index_until_explicit_rebuild_and_account_isolation(self):
         store, _ = self.build()
         samples = store.rows("SELECT * FROM samples")
@@ -513,6 +525,50 @@ class Tests(unittest.TestCase):
         result = self.service.search(self.account, {"query": "周末一起吃饭0", "beforeTimeMs": BASE + 3000})
         self.assertFalse(result["available"])
         self.assertEqual(store.counts()["samples"], 0)
+
+
+class PrepareTimingTests(unittest.TestCase):
+    """self_worker._ready times out on stalls, never on a still-advancing first import."""
+
+    def _run_ready(self, status, clock):
+        import self_worker
+        from self_worker import Worker
+        worker = Worker(None, None, "synthetic-account")
+        worker.store = SimpleNamespace(meta=lambda key: "synthetic-source" if key == "source" else None)
+        core = SimpleNamespace(account="synthetic-account",
+                               history_prepare=lambda account, user, refresh=False, **options: status(clock[0]),
+                               history_status=lambda account, user: status(clock[0]))
+        worker.core = core
+        outcome = []
+        with patch("self_worker.time.monotonic", side_effect=lambda: clock[0]), \
+                patch.object(worker.cancel, "wait", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)):
+            try:
+                worker._ready("friend")
+                outcome.append("ready")
+            except SelfError as error:
+                outcome.append(error.code)
+        return outcome[0], clock[0]
+
+    def test_advancing_import_survives_well_past_the_wall_clock_total(self):
+        # A huge first import keeps advancing readCount; readiness may arrive far
+        # beyond the 180s no-progress budget and must not be failed by it.
+        def status(now):
+            ready = now >= 300
+            read = int(now // 10)
+            return {"state": "ready" if ready else "preparing", "importing": not ready,
+                    "sourceFingerprint": "synthetic-source", "readCount": read, "watermark": {"seq": read}}
+        outcome, elapsed = self._run_ready(status, [0.0])
+        self.assertEqual(outcome, "ready")
+        self.assertGreater(elapsed, 180)
+
+    def test_stationary_import_times_out_at_the_no_progress_budget(self):
+        def status(_now):
+            return {"state": "preparing", "importing": True, "sourceFingerprint": "synthetic-source",
+                    "readCount": 3, "watermark": {"seq": 3}}
+        outcome, elapsed = self._run_ready(status, [0.0])
+        self.assertEqual(outcome, "history-error")
+        self.assertGreaterEqual(elapsed, 180)
+        self.assertLess(elapsed, 181)
 
 
 if __name__ == "__main__":

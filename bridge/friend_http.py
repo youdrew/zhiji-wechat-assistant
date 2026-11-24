@@ -33,10 +33,9 @@ def get(service, path, query):
         _shape(query, scope)
         return service.overview(query["account"], query["user"])
     if path == "/api/friend/memories":
-        _shape(query, scope, ("view", "status", "offset", "limit"))
-        return service.memories(query["account"], query["user"], query.get("view", "tags"),
-                                query.get("status", "active"), _number(query.get("offset"), "offset", 0),
-                                _number(query.get("limit"), "limit", 50))
+        _shape(query, scope, ("status", "offset", "limit"))
+        return service.memories(query["account"], query["user"], query.get("status", "active"),
+                                _number(query.get("offset"), "offset", 0), _number(query.get("limit"), "limit", 50))
     if path == "/api/friend/memory":
         _shape(query, scope + ("id",))
         return service.memory_detail(query["account"], query["user"], query["id"])

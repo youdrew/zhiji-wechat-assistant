@@ -47,7 +47,7 @@ class ExternalImportService:
         manifest = self.core.registry.get(PLUGIN)
         dependency_error = self.core.registry.dependency_error(PLUGIN) if manifest else None
         model = {"available": False, "supportsVision": None, "destination": "", "model": "",
-                 "message": "请先在模型设置中配置主模型，导入素材需支持读取图片"}
+                 "message": "请先在模型设置中配置语言模型，导入素材需支持读取图片"}
         try:
             services = self.core.model_services(PLUGIN).get("services", [])
             if services:
@@ -55,8 +55,8 @@ class ExternalImportService:
                 vision = selected.get("supportsVision")
                 model.update(available=vision is not False, supportsVision=vision,
                              model=selected.get("actualModel") or selected.get("model", ""),
-                             message="当前主模型未声明支持图片，请在模型设置中核对模型能力" if vision is False else
-                             "主模型的图片能力尚未确认，将以实际识别结果为准" if vision is None else "当前主模型已声明支持图片")
+                             message="当前语言模型未声明支持图片，请在模型设置中核对模型能力" if vision is False else
+                             "语言模型的图片能力尚未确认，将以实际识别结果为准" if vision is None else "当前语言模型已声明支持图片")
             source_store = getattr(self.core.backend, "model_source_store", None)
             saved = source_store.saved_selection() if source_store is not None else None
             api = saved.get("api", {}) if isinstance(saved, dict) else {}

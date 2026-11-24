@@ -14,6 +14,7 @@ const { runOperation, recoverOperation, validateCandidate, atomicJournal, health
 
 const OLD = "1.0.1";
 const NEW = "1.0.2";
+const TEMP_ROOT = fs.realpathSync.native(os.tmpdir());
 function put(file, content = "fixture") {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
@@ -28,7 +29,7 @@ function buildClient(root, version, withLocal = false) {
   if (withLocal) put(path.join(root, "resources", "client", ".local", "account", "saved.db"), "private bytes");
 }
 function fixture() {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "kyf-helper-test-"));
+  const parent = fs.mkdtempSync(path.join(TEMP_ROOT, "kyf-helper-test-"));
   const installRoot = path.join(parent, "KnowYourFriends");
   const workDir = path.join(parent, ".kyf-update-fixture");
   const candidatePath = path.join(workDir, "win-unpacked");
@@ -112,7 +113,7 @@ function ageJournal(workDir, timestamp) {
 }
 function cleanup(parent) {
   const absolute = path.resolve(parent);
-  if (path.dirname(absolute) !== path.resolve(os.tmpdir()) ||
+  if (path.dirname(absolute) !== TEMP_ROOT ||
       !path.basename(absolute).startsWith("kyf-helper-test-")) {
     throw new Error("unsafe fixture cleanup path");
   }
@@ -120,7 +121,7 @@ function cleanup(parent) {
 }
 async function main() {
   {
-    const op = { workDir: path.join(os.tmpdir(), ".kyf-update-fixture") };
+    const op = { workDir: path.join(TEMP_ROOT, ".kyf-update-fixture") };
     const name = "KnowYourFriendsUpdate-.kyf-update-fixture";
     const key = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
     assert.equal(runOnceAbsent(op, () => `${key}\n    ${name}    REG_SZ    recover\n`), false);
@@ -142,7 +143,7 @@ async function main() {
     child.pid = 77776;
     let unrefed = false;
     child.unref = () => { unrefed = true; };
-    const root = path.join(os.tmpdir(), "kyf-visible-launch-fixture");
+    const root = path.join(TEMP_ROOT, "kyf-visible-launch-fixture");
     const result = await launchClient(root, (program, args, options) => {
       assert.equal(program, path.join(root, "KnowYourFriends.exe"));
       assert.deepEqual(args, []);

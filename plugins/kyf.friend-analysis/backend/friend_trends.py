@@ -2,9 +2,7 @@
 
 Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 
-Direction, time validation and conversation-start rules follow the behaviour of
-SuperDatingApp ``relationship_metrics.calculate_relationship_metrics`` (the maintainer's
-local reference project). Replies differ on purpose: a reply waits from the end of the
+Reply time is measured from the end of the
 other side's first burst, and nothing after 8 hours of silence counts as a reply, because
 that opens a new conversation. This module only decides the per-message
 facts (who, when, how many characters, turn and conversation starts, reply delays);

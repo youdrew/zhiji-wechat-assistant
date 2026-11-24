@@ -1,18 +1,20 @@
 "use strict";
 // Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
-// 关系记忆: candidates, confirmed records, tags/timeline views, editing and evidence.
+// 关系记忆: candidates and confirmed records grouped by category, editing and evidence.
+// Modified 2026-11-07: the 按标签/按时间线 switch is gone; 标签 and 时间线 are their own tabs now.
 (function () {
   const A = window.FriendApp;
   const TAGS = ["基本信息", "经历", "性格", "爱好", "偏好与忌口", "边界", "共同事件"];
   const PAGE = 50;
-  const M = { view: "tags", pending: [], confirmed: [], total: 0, version: 0, loading: false, request: 0,
+  const M = { pending: [], confirmed: [], total: 0, version: 0, loading: false, request: 0,
     editing: new Map(), adding: false, ignored: null, overview: null, pendingShown: PAGE };
   const page = () => A.byId("pageMemory");
   const evidenceWords = { changed: "原文已变化", missing: "原文当前缺失", recalled: "原文已撤回",
     unready: "原文待核对", "source-changed": "来源已变化" };
+  const roleWords = { friend: "对方本人", self: "我", forward: "转发内容", unknown: "未知发言人" };
 
   async function loadList(status, offset, limit) {
-    return A.api("/api/friend/memories?" + A.query({ view: M.view, status, offset: String(offset), limit: String(limit) }));
+    return A.api("/api/friend/memories?" + A.query({ status, offset: String(offset), limit: String(limit) }));
   }
   async function load(reset = true) {
     const request = ++M.request;
@@ -133,15 +135,12 @@
   function renderInto(root) {
     root.replaceChildren();
     if (M.ignored) { renderIgnored(root); return; }
-    const bar = A.el("div", "fa-bar");
-    const segment = A.el("div", "fa-segment");
-    for (const [view, label] of [["tags", "按标签"], ["timeline", "按时间线"]])
-      segment.append(A.button(label, "", () => { if (M.view !== view) { M.view = view; void load(); } },
-        { "aria-pressed": String(M.view === view) }));
     // Analysis schemes propose candidates; this host page reviews and edits the user's memories.
-    bar.append(segment, A.el("span", "fa-spacer"));
-    if (!A.restricted) bar.append(A.button("新增", "fa-plain", () => startAdd()));
-    root.append(bar);
+    if (!A.restricted) {
+      const bar = A.el("div", "fa-bar");
+      bar.append(A.el("span", "fa-spacer"), A.button("新增", "fa-plain", () => startAdd()));
+      root.append(bar);
+    }
     if (M.adding) {
       const block = A.el("div", "fa-list");
       block.append(editor(M.adding));
@@ -151,17 +150,15 @@
       const all = [["全部确认", () => batch("batch-confirm", { all: true })], ["全部忽略", () => batch("batch-ignore", { all: true })]];
       // Long candidate lists render in pages; group batches act only on what is shown.
       const shown = M.pending.slice(0, M.pendingShown);
-      if (M.view === "tags") {
-        root.append(A.el("div", "fa-group", `待确认 ${M.pending.length} 条`));
-        const head = root.lastChild;
-        head.append(A.el("span", "fa-spacer"));
-        if (!A.restricted) for (const [label, action] of all) head.append(A.button(label, "fa-plain", action));
-        for (const tag of TAGS) {
-          const items = shown.filter(item => firstTag(item) === tag);
-          if (items.length) root.append(group(`${tag} · ${items.length}`, items, [
-            ["确认本组", () => batch("batch-confirm", null, items)], ["忽略本组", () => batch("batch-ignore", null, items)]]));
-        }
-      } else root.append(group(`待确认 ${M.pending.length} 条`, shown, all));
+      root.append(A.el("div", "fa-group", `待确认 ${M.pending.length} 条`));
+      const head = root.lastChild;
+      head.append(A.el("span", "fa-spacer"));
+      if (!A.restricted) for (const [label, action] of all) head.append(A.button(label, "fa-plain", action));
+      for (const tag of TAGS) {
+        const items = shown.filter(item => firstTag(item) === tag);
+        if (items.length) root.append(group(`${tag} · ${items.length}`, items, [
+          ["确认本组", () => batch("batch-confirm", null, items)], ["忽略本组", () => batch("batch-ignore", null, items)]]));
+      }
       if (shown.length < M.pending.length)
         root.append(A.button(`显示更多待确认（还有 ${M.pending.length - shown.length} 条）`, "fa-plain", () => {
           M.pendingShown += PAGE;
@@ -170,12 +167,10 @@
     }
     if (M.confirmed.length) {
       if (M.pending.length) root.append(A.el("div", "fa-group", `已确认 ${M.total} 条`));
-      if (M.view === "tags") {
-        for (const tag of TAGS) {
-          const items = M.confirmed.filter(item => firstTag(item) === tag);
-          if (items.length) root.append(group(tag, items));
-        }
-      } else root.append(group("已确认 · 按事件或首次提及时间", M.confirmed));
+      for (const tag of TAGS) {
+        const items = M.confirmed.filter(item => firstTag(item) === tag);
+        if (items.length) root.append(group(tag, items));
+      }
       if (M.confirmed.length < M.total)
         root.append(A.button(`加载更多（还有 ${M.total - M.confirmed.length} 条）`, "fa-plain", () => load(false)));
     }

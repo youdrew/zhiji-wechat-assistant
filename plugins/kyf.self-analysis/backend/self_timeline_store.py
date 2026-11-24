@@ -11,16 +11,13 @@ finds the same evidence keeps the user's words.
 import json
 import threading
 
+from kyf_plugin.timeline import COLORS, IMPORTANCE, KINDS, PRECISIONS, STATUSES, UndoJournal  # noqa: F401
+
 from self_contracts import SelfError, now_ms
 
 # 内置 10 类主线；提取提示词依赖这份目录，内置主线不能删除或改名，但可以隐藏。
 BUILTIN_TRACKS = ("学业", "工作事业", "居住迁移", "感情婚恋", "家庭亲人", "健康", "旅行出行", "兴趣成就", "重大财务", "其他")
 OVERVIEW_TRACKS = BUILTIN_TRACKS[:6]
-COLORS = ("#07c160", "#576b95", "#c2841c", "#b05a4a", "#7f77dd", "#3d8f8a", "#9a6fb0", "#7b8a4e")
-STATUSES = ("occurred", "planned", "cancelled", "uncertain")
-KINDS = ("point", "start", "end", "state")
-IMPORTANCE = ("important", "general")
-PRECISIONS = ("day", "month", "season", "year", "about", "unknown")
 NAME_CHARS = 8
 DESC_CHARS = 60
 VERSION = 1
@@ -296,38 +293,21 @@ class TimelineStore:
             self.bump()
 
     # Undo journal: the page's Ctrl+Z and MCP share it, so it lives with the edits. ------------------------------------
+    def _journal(self):
+        return UndoJournal(self.db, self.lock, "timeline_undo", UNDO_TABLES, on_change=self.bump)
+
     def user_state(self):
         """Every row a user edit can touch, keyed so ``push_undo`` can diff before and after."""
-        return {table: {row[key]: dict(row) for row in self.rows(f"SELECT * FROM {table}")}
-                for table, key in UNDO_TABLES.items()}
+        return self._journal().snapshot()
 
     def push_undo(self, label, before):
         """Record the before-image of whatever changed since ``before``; a no-op records nothing."""
-        after = self.user_state()
-        changes = {table: [[key, before[table].get(key)] for key in before[table].keys() | after[table].keys()
-                           if before[table].get(key) != after[table].get(key)] for table in UNDO_TABLES}
-        if not any(changes.values()):
-            return
-        with self.lock, self.db:
-            self.db.execute("INSERT INTO timeline_undo(label,changes,updated_ms) VALUES(?,?,?)",
-                            (label, json.dumps(changes, ensure_ascii=False), now_ms()))
-            self.db.execute("DELETE FROM timeline_undo WHERE seq<=(SELECT max(seq) FROM timeline_undo)-?", (UNDO_LIMIT,))
+        self._journal().push(label, before, limit=UNDO_LIMIT, now_ms=now_ms())
 
     def undo(self):
         """Restore the newest journal entry and return its label, or None when there is nothing to undo."""
-        with self.lock, self.db:
-            rows = self.rows("SELECT * FROM timeline_undo ORDER BY seq DESC LIMIT 1")
-            if not rows:
-                return None
-            for table, changes in json.loads(rows[0]["changes"]).items():
-                for identifier, row in changes:
-                    self.db.execute(f"DELETE FROM {table} WHERE {UNDO_TABLES[table]}=?", (identifier,))
-                    if row is not None:
-                        marks = ",".join("?" for _ in row)
-                        self.db.execute(f"INSERT INTO {table}({','.join(row)}) VALUES({marks})", tuple(row.values()))
-            self.db.execute("DELETE FROM timeline_undo WHERE seq=?", (rows[0]["seq"],))
-            self.bump()
-            return rows[0]["label"]
+        entry = self._journal().undo()
+        return entry["label"] if entry else None
 
     def anchor_sets(self):
         """Edit anchors per event id, so re-analysis can re-anchor user decisions."""
