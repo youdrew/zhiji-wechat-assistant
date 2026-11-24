@@ -22,7 +22,7 @@ from test_analysis import ACCOUNT, USER, ScriptedRuntime, WindowSource, msg
 from test_support import FakeModelStore, wait_until
 
 DAY = 86_400_000
-BASE = 1_700_000_000_000  # 2023-11-14
+BASE = int(datetime.datetime(2023, 11, 15, 6).astimezone().timestamp() * 1000)
 LINE = re.compile(r"^\[(\d+)\] \S+ \S+ (我|对方): (.*)$", re.M)
 AGENT = {"account": ACCOUNT, "user": USER, "actor": "agent", "agent": "合成 Agent"}
 PAGE = {"account": ACCOUNT, "user": USER}
