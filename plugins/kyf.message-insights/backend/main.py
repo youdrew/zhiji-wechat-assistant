@@ -3,7 +3,7 @@
 Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 
 Host slots:
-- chat header toggle ``insights``: ``chatHeader.state`` / ``chatHeader.toggle``;
+- chat header toggles ``analysis`` and ``suggestions``: ``chatHeader.state`` / ``chatHeader.toggle``;
 - message annotations: ``annotations.status`` / ``annotations.generate`` / ``annotations.retry`` / ``annotations.copy``.
 New messages of enabled friends arrive as ``message.new`` events.
 """
@@ -51,7 +51,7 @@ def header_state(params, context):
 @plugin.method("chatHeader.toggle")
 def header_toggle(params, context):
     account, user = scoped(context)
-    return call(lambda: insights().set(account, user, params.get("enabled")))
+    return call(lambda: insights().set(account, user, params.get("enabled"), params.get("part", "all")))
 
 
 @plugin.method("annotations.status")

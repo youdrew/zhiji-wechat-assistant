@@ -25,11 +25,10 @@ from core_contracts import effective_model_budget
 from data_root_source import DataRootSource
 from history_browser import browse as browse_history, search as search_history
 from model_probe import ModelProbe
-from model_source import (ModelSourceStore, ModelSourceUnavailable, _MISSING, connection_values,
-                          model_concurrency, model_list_values, model_name)
+from model_source import (ROLES, SPEECH_PROTOCOLS, ModelSourceStore, ModelSourceUnavailable, _MISSING,
+                          connection_values, model_concurrency, model_list_values, model_name)
 from model_trace_context import traced_execution
 from usage_names import UsageNameCache
-from wechat_source import WeChatSource
 
 
 def _legacy_max_concurrent():
@@ -338,7 +337,7 @@ class Backend:
         state = "idle"
         error = None
         account = None
-        if isinstance(self.source, WeChatSource) or getattr(self.source, "db", None) is not None:
+        if callable(getattr(self.source, "advisor_identity", None)) or getattr(self.source, "db", None) is not None:
             try:
                 account, _ = self._status_identity()
                 state = "ready"
@@ -427,8 +426,10 @@ class Backend:
             revision = self.model_list_revision
         key = self.model_source_store.resolve_key(values["protocol"], values["baseUrl"],
                                                   values["apiKey"], model_id)
+        # Speech services list their catalog at the OpenAI-compatible /models path.
+        protocol = "chat_completions" if values["protocol"] in SPEECH_PROTOCOLS else values["protocol"]
         try:
-            reply = self.model_probe.model_list(values["protocol"], values["baseUrl"], key)
+            reply = self.model_probe.model_list(protocol, values["baseUrl"], key)
         except Exception as exc:
             raise model_source_failure(exc, "model list unavailable") from exc
         result = model_list_values(reply)
@@ -453,7 +454,10 @@ class Backend:
 
     def _test_connection(self, values, key):
         try:
-            reply = self.model_probe.model_test(values["protocol"], values["baseUrl"], key, values["model"])
+            if values["protocol"] in SPEECH_PROTOCOLS:
+                reply = self.model_probe.speech_test(values["baseUrl"], key, values["model"], values["voice"])
+            else:
+                reply = self.model_probe.model_test(values["protocol"], values["baseUrl"], key, values["model"])
         except Exception as exc:
             raise model_source_failure(exc, "model connection failed") from exc
         latency = reply.get("latencyMs") if isinstance(reply, dict) else None
@@ -479,6 +483,8 @@ class Backend:
             raise ValueError("invalid model source request")
         values = connection_values({key: value for key, value in request.items() if key != "mode"},
                                    require_model=True)
+        if values["protocol"] in SPEECH_PROTOCOLS:
+            raise ValueError("invalid protocol")
         values["contextTokens"] = effective_model_budget(values["contextTokens"])["contextTokens"]
         with self.model_lock:
             key = self.model_source_store.resolve_key(values["protocol"], values["baseUrl"], values["apiKey"])
@@ -521,11 +527,11 @@ class Backend:
         if not isinstance(request, dict):
             raise ValueError("invalid model source request")
         if not request.keys() <= {"id", "name", "protocol", "baseUrl", "apiKey", "model",
-                                  "contextTokens", "timeoutMs", "concurrency"} or \
+                                  "contextTokens", "timeoutMs", "concurrency", "voice"} or \
                 not {"protocol", "baseUrl", "model"} <= request.keys():
             raise ValueError("invalid model source request")
         entry_id = self._model_entry_id(request["id"]) if "id" in request else None
-        fields = {key: request[key] for key in ("protocol", "baseUrl", "model", "apiKey") if key in request}
+        fields = {key: request[key] for key in ("protocol", "baseUrl", "model", "apiKey", "voice") if key in request}
         if "contextTokens" in request:
             fields["contextTokens"] = request["contextTokens"]
         if "timeoutMs" in request:
@@ -546,8 +552,8 @@ class Backend:
                 if entry is None or entry.get("builtin"):
                     raise ValueError("unknown model")
                 unchanged = ((key is not None or values["protocol"] == "ollama") and
-                             (entry["protocol"], entry["baseUrl"], entry["model"]) ==
-                             (values["protocol"], values["baseUrl"], values["model"]))
+                             (entry["protocol"], entry["baseUrl"], entry["model"], entry.get("voice")) ==
+                             (values["protocol"], values["baseUrl"], values["model"], values["voice"]))
         if not unchanged:
             self._test_connection(values, key)
         with self.model_lock:
@@ -556,7 +562,7 @@ class Backend:
             self.model_source_store.save_model(
                 entry_id, name=name, protocol=values["protocol"], base_url=values["baseUrl"],
                 model=values["model"], key=values["apiKey"], context_tokens=context_tokens,
-                timeout_ms=timeout_ms, concurrency=concurrency)
+                timeout_ms=timeout_ms, concurrency=concurrency, voice=values["voice"])
             self._model_changed()
             return self.model_source()
 
@@ -575,7 +581,7 @@ class Backend:
             return self.model_source()
 
     def model_source_roles(self, request):
-        if not isinstance(request, dict) or not request or set(request) - {"main", "judge", "image"}:
+        if not isinstance(request, dict) or not request or set(request) - set(ROLES):
             raise ValueError("invalid model source request")
         parsed = {}
         for role, target in request.items():
@@ -597,6 +603,7 @@ class Backend:
                    if type(getattr(messages, "has_more_before", None)) is bool else {})}
 
     def message_windows(self, requested_account, users):
+        from wechat_source import WeChatSource
         if not isinstance(self.source, WeChatSource):
             ready = getattr(self.source, "require_messages_ready", None)
             if callable(ready):

@@ -106,8 +106,6 @@ button { cursor: pointer; }
 #draft { display: block; width: 100%; min-height: 62px; resize: vertical; border: 0; outline: 0; background: transparent; font-size: 14px; }
 #draft:focus-visible { outline: 1px solid var(--color-green); outline-offset: 3px; }
 .composer-tools { display: flex; align-items: center; gap: 8px; padding-top: 6px; }
-.composer-tools #assistant-toggle { padding: 4px 7px; border-color: transparent; background: transparent; }
-.composer-tools #assistant-toggle:hover { background: var(--bg-search); }
 #draft-status { flex: 1; color: var(--text-secondary); font-size: 11px; }
 #draft-clear { margin-left: auto; font-size: 11px; }
 
@@ -161,3 +159,8 @@ button { cursor: pointer; }
   .assistant-window .advisor-input-area { margin: 0 8px 8px; padding: 9px; }
   .assistant-question { padding: 4px 6px; }
 }
+
+/* v2.2: matching composer buttons and switchable reply plans. */
+.composer-tools #analysis-toggle[aria-checked="true"] {color:var(--color-green);border-color:#8fb997;background:#f0f6ef}
+.suggestion-tabs{display:flex;gap:6px;margin:8px 0}.suggestion-tab{padding:3px 9px;border:1px solid var(--border-color);border-radius:4px;background:transparent;font-size:12px}.suggestion-tab[aria-pressed="true"]{color:var(--color-green);border-color:#8fb997;background:#f0f6ef}
+.message-analysis-candidate-text{white-space:pre-wrap}

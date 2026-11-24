@@ -65,6 +65,11 @@ DATABASE_SUFFIX_RE = re.compile(r"\.(?:db|sqlite|sqlite3)(?:[-.](?:wal|shm|journ
 ALLOWED_APP_IMAGES = {
     ("resources", "client", "chatui", "assets", "app-icon.png"),
     ("resources", "client", "chatui", "assets", "app-icon.ico"),
+    # Reviewed fictional candidate UI illustrations linked by the bundled README.
+    ("resources", "client", "assets", "showcase", "chat-2.2.png"),
+    ("resources", "client", "assets", "showcase", "timeline-2.2.png"),
+    ("resources", "client", "assets", "showcase", "self-2.2.png"),
+    ("resources", "client", "assets", "showcase", "extensions-2.2.png"),
 }
 DEPENDENCY_IMAGE_ROOTS = (
     ("resources", "client", "runtime", "python", "lib", "site-packages", "win32com"),

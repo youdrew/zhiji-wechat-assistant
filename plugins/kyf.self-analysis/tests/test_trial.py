@@ -230,6 +230,50 @@ class TrialTests(unittest.TestCase):
         status = self.finish()
         self.assertEqual((status["state"], status["depth"], status["research"]), ("done", "standard", 0), status)
 
+    def test_simulation_researches_a_real_round_with_the_same_friend_first(self):
+        """回复调研 for 分析与建议 (2026-11-09): the conversation is real and samples of this friend lead."""
+        self.build()
+        turns = [{"from": "me", "text": "在的"}, {"from": "friend", "text": "周末一起吃饭吗"},
+                 {"from": "friend", "text": "去吃火锅"}]
+        route = json.dumps({"depth": "standard", "research": {"events": [], "periods": [], "queries": []}})
+        self.models.replies = [route, REPLY]
+        with mock.patch.object(Retrieval, "search", autospec=True, side_effect=Retrieval.search) as search:
+            started = self.service.simulate(self.account, "friend-a", {"messages": turns, "depth": "auto"})
+            for thread in self.plugin.threads:
+                thread.join(5)
+        status = self.service.simulate_status(self.account, "friend-a", {"id": started["id"]})
+        self.assertEqual(status["state"], "done", status)
+        self.assertEqual(status["result"], {"messages": ["好呀", "周六中午行不"], "timeline": []})
+        self.assertEqual(self.plugin.tasks[-1], {"account": self.account, "user": None, "kind": "background",
+                                                 "title": "回复调研"})
+        routing, final = self.models.requests[-2:]
+        for request in (routing, final):
+            self.assertIn("真实发出的消息", request["system"])
+            self.assertNotIn("试用中生成", request["system"])
+        self.assertIn("连续发来的这一轮消息", final["system"])
+        first = search.call_args_list[0]
+        self.assertEqual((first.args[1].get("onlyUser"), first.args[2]), (True, "friend-a"),
+                         "the same friend is searched first")
+        self.assertTrue(final["prompt"]["examples"])
+        # Another friend's task cannot read or stop this job; groups never research.
+        with self.assertRaises(SelfError):
+            self.service.simulate_status(self.account, "friend-b", {"id": started["id"]})
+        with self.assertRaises(SelfError):
+            self.service.simulate(self.account, "room@chatroom", {"messages": turns})
+        # The 聊天试用 page keeps its own wording and its own job.
+        self.assertEqual(self.service.reply_status(self.account), {"state": "idle"})
+
+    def test_only_user_retrieval_lifts_the_two_per_contact_cap(self):
+        self.core.live["friend-a"] = dialogue(count=6)
+        self.build()
+        store, _ = self.service.accounts[self.account]
+        retrieval = Retrieval(self.core, store, self.account)
+        own = retrieval.search({"query": "对方：周末一起吃饭", "limit": 5, "onlyUser": True}, "friend-a")
+        self.assertGreater(len(own), 2)
+        self.assertTrue(all(row["user"] == "friend-a" for row in own))
+        mixed = retrieval.search({"query": "对方：周末一起吃饭", "limit": 5}, "friend-a")
+        self.assertLessEqual(sum(row["user"] == "friend-a" for row in mixed), 2)
+
     def test_parse_route_cleans_the_router_answer(self):
         route = parse_route('前言 {"depth":"turbo","research":{"events":["a",3],"periods":[],'
                             '"queries":["  最近 ", "最近", 5]}} 后记')

@@ -123,6 +123,21 @@ test('enable errors from Core are reported and the switch is released', async ()
   assert.equal(f.switchOf(f.rows()[0]).disabled, false); assert.equal(f.changes.length, 0);
 });
 
+test('a slow enable paints immediately but contributions wait for Core confirmation', async () => {
+  const f = fixture(); await settle();
+  let release;
+  f.controls.reply = url => url === '/api/plugins/enable' ? new Promise(resolve => { release = resolve; }) : null;
+  const saving = f.switchOf(f.rows()[0]).click();
+  assert.equal(f.switchOf(f.rows()[0]).getAttribute('aria-checked'), 'false');
+  assert.equal(f.buttonOf(f.rows()[0], '设置').disabled, false);
+  assert.equal(f.settings.listing().plugins[0].enabled, true);
+  assert.equal(f.changes.length, 0);
+  release({ ok: false, status: 409, json: async () => ({ message: '后台拒绝了更改' }) });
+  await saving;
+  assert.equal(f.switchOf(f.rows()[0]).getAttribute('aria-checked'), 'true');
+  assert.equal(f.ids.get('pluginStatus').textContent, '后台拒绝了更改');
+});
+
 test('unmet dependencies explain the block without preventing an enabled plugin from being disabled', async () => {
   const f = fixture(), error = { code: 'plugin-dependency-disabled', message: '请先启用依赖插件 dev.provider' };
   f.controls.listing.plugins = [plugin('dev.waiting', { enabled: false, dependencies: ['dev.provider', 'dev.other'], dependencyError: error }),

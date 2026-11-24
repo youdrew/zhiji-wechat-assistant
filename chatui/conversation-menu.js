@@ -37,10 +37,15 @@
 
   function sortSessions(sessions) {
     const pins = visiblePins();
-    const timestamp = session => {
-      const value = Number(session.sortTimestamp || session.time);
-      return Number.isFinite(value) ? value : 0;
+    // WeChat's sort_timestamp is in seconds while `time` is in milliseconds, and old or
+    // empty conversations often lack sort_timestamp. Compare both in milliseconds, or those
+    // conversations would outrank every chat with a new message.
+    const milliseconds = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number <= 0) return 0;
+      return number < 10_000_000_000 ? number * 1000 : number;
     };
+    const timestamp = session => milliseconds(session.sortTimestamp) || milliseconds(session.time);
     return sessions.map((session, index) => ({ session, index }))
       .sort((left, right) =>
         Number(effectivePinned(right.session, pins)) - Number(effectivePinned(left.session, pins)) ||

@@ -66,7 +66,7 @@ def progress_line(run):
     parts = ["分析中" if step["key"] in ("history", "recent") else "历史分析中", step["title"]]
     if step.get("detail"):
         detail = step["detail"]
-        for prefix in ("聊天分析 · ", "性格与三观证据 · "):
+        for prefix in ("聊天分析 · ", "性格与三观证据 · ", step["title"] + " · "):
             if detail.startswith(prefix):
                 detail = detail[len(prefix):]
         parts.append(detail)

@@ -23,7 +23,7 @@ const audit = { requests: [], unexpected: [], rendererErrors: [], externalReques
 let window, server, timeout, finished = false;
 const account = "synthetic-settings-account";
 const plugin = { id: "synthetic.settings", name: "合成测试插件", version: "1.0.0", source: "bundled", enabled: true,
-  description: "仅用于设置窗口界面验证，不启动任何任务。", contributes: {} };
+  description: "仅用于设置窗口界面验证，不启动任何任务。", contributes: {}, models: { main: "界面验证", image: "截图验证" } };
 const source = { mode: "api", sourceId: "api:synthetic", status: "ready", api: { protocol: "chat_completions",
   baseUrl: "https://example.invalid/v1", model: "synthetic-model", contextTokens: 32768, timeoutMs: 3600000, hasKey: false },
   models: [{ id: "a".repeat(32), protocol: "chat_completions", baseUrl: "https://example.invalid/v1",
@@ -174,7 +174,15 @@ void app.whenReady().then(async () => {
   check("history is collapsed and summary stays compact", await evaluate(`!document.querySelector('#modelTraceHistory').open && document.querySelector('#modelTraceHistoryList').children.length === 30 && !document.querySelector('#modelTraceStorage').textContent.includes('中断')`));
   check("home keeps developer controls in a separate page", await evaluate(`!document.querySelector('#modelHomeView').hidden && document.querySelector('#developerSettingsView').hidden`));
   await screenshot("models-home");
+  await click(".model-role-info[data-role='image']");
+  await waitFor(() => evaluate(`!document.querySelector('#modelRoleUsage').hidden && document.querySelector('#modelRoleUsage').textContent.includes('截图验证')`), "Purpose usage did not list the declaring plugin");
+  check("purpose usage lists plugins from their plugin.json declaration");
   await click("#btnAddModel");
+  await waitFor(() => evaluate(`!document.querySelector('#modelAddMenu').hidden`), "Add menu did not open");
+  await screenshot("models-add-menu");
+  await click("#modelAddMenu [data-preset='custom']");
+  await waitFor(() => evaluate(`!document.querySelector('#modelDetailView').hidden && !document.querySelector('#apiProtocolField').hidden && document.querySelector('#modelAddMenu').hidden`), "Custom preset did not open the detail page");
+  check("the add menu opens a source preset");
   await change("inputApiBaseUrl", "https://judge.invalid/v1", "input");
   await change("inputApiKey", "synthetic-key", "input");
   await change("inputApiModelId", "synthetic-judge", "input");
@@ -182,6 +190,7 @@ void app.whenReady().then(async () => {
   await waitFor(() => evaluate(`!document.querySelector('#modelHomeView').hidden && document.querySelector('#modelListRows').children.length === 2`), "Added model did not return to home");
   await change("selectRoleJudge", "b".repeat(32));
   await waitFor(() => source.roles.judge === "b".repeat(32), "Judge role was not saved");
+  await screenshot("models-list");
   await waitFor(() => evaluate(`!document.querySelector('#selectRoleImage').disabled`), "Role save did not settle");
   await change("selectRoleImage", "b".repeat(32));
   await waitFor(() => source.roles.image === "b".repeat(32), "Image role was not saved");

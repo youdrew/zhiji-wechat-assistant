@@ -73,6 +73,7 @@ BRIDGE = (
     "core_mcp_proxy.py", "core_mcp_store.py", "core_mcp_admin.py",
     # Modified by Know Your Friends, 2026-10-27: the shared-Core leases and the saved-account offline scope.
     "core_leases.py", "core_mcp_offline.py",
+    "core_instance_lock.py",
     # Task, assistant and import capabilities share the Core proxy.
     "core_mcp_tasks.py", "core_mcp_assistant.py", "core_mcp_import.py",
     # Modified by Know Your Friends, 2026-10-27: phase-5 application management and the
@@ -100,6 +101,8 @@ NATIVE_READER = (
 )
 PUBLIC_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "chatui/index.html",
+    "assets/showcase/chat-2.2.png", "assets/showcase/timeline-2.2.png",
+    "assets/showcase/self-2.2.png", "assets/showcase/extensions-2.2.png",
     "licenses/Microsoft-Visual-Cpp-Runtime-2015-2022.rtf",
     "licenses/Microsoft-Visual-Cpp-Runtime-NOTICE.md",
     "licenses/Laya-Apache-2.0.txt", "licenses/Laya-NOTICE.txt",

@@ -73,7 +73,7 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(status["qualityVerified"])
         self.assertTrue(status["backgroundOnly"])
         self.assertEqual(status["latencyMs"], 700)
-        self.assertEqual(self.store.models()["roles"], {"main": self.main, "judge": None, "image": None})
+        self.assertEqual(self.store.models()["roles"], {"main": self.main, "judge": None, "image": None, "speech": None})
         entry = next(x for x in self.store.models()["models"] if x.get("builtin") == BUILTIN)
         self.assertEqual(entry["concurrency"], 1)
         self.service.prepare()
@@ -135,7 +135,7 @@ class JudgeTests(unittest.TestCase):
             release.set()
             deletion.join(5)
         self.assertFalse(deletion.is_alive())
-        self.assertEqual(self.store.models()["roles"], {"main": self.main, "judge": None, "image": None})
+        self.assertEqual(self.store.models()["roles"], {"main": self.main, "judge": None, "image": None, "speech": None})
         self.assertEqual(list(self.directory.iterdir()), [])
         self.assertEqual(self.service.status()["state"], "missing")
 

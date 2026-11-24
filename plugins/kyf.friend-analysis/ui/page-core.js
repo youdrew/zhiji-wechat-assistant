@@ -63,7 +63,7 @@
   function mask(message) {
     if (masked) return;
     masked = true;
-    for (const id of ["pageOverview", "pagePersona", "pageValues", "pageChat", "pageTrend", "faSheetBody"]) byId(id).replaceChildren();
+    for (const id of ["pageOverview", "pageTags", "pageTimeline", "pagePersona", "pageValues", "pageChat", "pageTrend", "pageSimulation", "faSheetBody"]) byId(id).replaceChildren();
     byId("pageOverview").hidden = false;
     byId("pageOverview").append(el("div", "fa-empty", message));
   }

@@ -7,6 +7,7 @@
   "author": "Know Your Friends",
   "core": { "api": [1] },
   "runtime": { "type": "python", "entry": "backend/main.py" },
+  "models": { "main": "自我剖析", "judge": "聊天窗口筛选" },
   "events": ["message.new"],
   "contributes": {
     "settings": {

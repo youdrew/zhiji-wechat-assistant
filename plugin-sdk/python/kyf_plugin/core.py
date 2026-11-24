@@ -129,10 +129,13 @@ class CoreClient:
         """Core-owned account background/style/version; plugins cannot silently overwrite it."""
         return self.get("account/self-profile", account=account)
 
-    def self_context(self, account, user, message_id, query, budget_chars=6000, limit=5):
-        """Execution-bound optional personal expression context (message-insights only)."""
+    def self_context(self, account, user, message_id, query, budget_chars=6000, limit=5, prefer_same_contact=False):
+        """Execution-bound optional personal expression context (message-insights only).
+
+        ``prefer_same_contact`` puts the user's replies to this same friend first."""
         return self.post("services/self-context", {"account": account, "user": user,
-            "messageId": message_id, "query": query, "budgetChars": budget_chars, "limit": limit})
+            "messageId": message_id, "query": query, "budgetChars": budget_chars, "limit": limit,
+            **({"preferSameContact": True} if prefer_same_contact else {})})
 
     def self_context_validate(self, account, user, message_id, context):
         """Validate the precise selected sample set before committing suggestions."""
@@ -140,6 +143,21 @@ class CoreClient:
             "validateOnly": True, "generation": context.get("generation"),
             "profileVersion": context.get("profileVersion"),
             "sources": [{"id": item.get("id"), "hash": item.get("hash")} for item in context.get("sources", [])]})
+
+    def self_simulate(self, account, user, message_id, messages, depth="deep"):
+        """Start 回复调研 (message-insights only): how the user would answer this real round."""
+        return self.post("services/self-simulate", {"account": account, "user": user, "messageId": message_id,
+                                                    "messages": messages, "depth": depth})
+
+    def self_simulate_status(self, account, user, identifier, stop=False):
+        """Read (or with ``stop`` cancel) one 回复调研 job started by ``self_simulate``."""
+        return self.post("services/self-simulate", {"account": account, "user": user, "id": identifier,
+                                                    **({"stop": True} if stop else {})})
+
+    def portrait_context(self, account, user, message_id, budget_chars=2000):
+        """Execution-bound 本人画像/对方画像 texts (message-insights only): ``{"self": {...}, "friend": {...}}``."""
+        return self.post("services/portrait-context", {"account": account, "user": user,
+            "messageId": message_id, "budgetChars": budget_chars})
 
     def human_snapshot(self, account, user):
         """The verified human-data snapshot with its ``stamp`` (changes whenever the user edits it)."""

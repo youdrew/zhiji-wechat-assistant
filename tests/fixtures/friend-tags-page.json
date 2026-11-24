@@ -1,0 +1,362 @@
+{
+ "page": {
+  "account": "synthetic-account-1",
+  "user": "wxid_synthetic_friend",
+  "version": 1,
+  "categories": [
+   "运动健身",
+   "游戏棋牌",
+   "影音娱乐",
+   "阅读学习",
+   "美食饮食",
+   "旅行出行",
+   "工作技能",
+   "身份生活",
+   "性格习惯",
+   "观点态度",
+   "其他",
+   "说话习惯"
+  ],
+  "habits": [
+   {
+    "key": "phrase:哈哈哈",
+    "label": "哈哈哈",
+    "detail": "3 次",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "particle:哈",
+    "label": "句末“哈”",
+    "detail": "33%",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "ending:不加标点",
+    "label": "句末不加标点",
+    "detail": "100%",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "length",
+    "label": "单条中位 5 字",
+    "detail": "九成不超过 12 字",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "manual:从不发语音",
+    "label": "从不发语音",
+    "detail": "我的补充",
+    "manual": true,
+    "hidden": false
+   }
+  ],
+  "tags": [
+   {
+    "key": "篮球",
+    "name": "篮球",
+    "category": "运动健身",
+    "level": "strong",
+    "relation": "interest",
+    "manual": false,
+    "mentions": 2,
+    "days": 1,
+    "firstMs": 1700000600000,
+    "lastMs": 1700004200000,
+    "memories": []
+   },
+   {
+    "key": "象棋",
+    "name": "象棋",
+    "category": "游戏棋牌",
+    "level": "possible",
+    "relation": "mention",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700003600000,
+    "lastMs": 1700003600000,
+    "memories": []
+   },
+   {
+    "key": "不吃辣",
+    "name": "不吃辣",
+    "category": "美食饮食",
+    "level": "strong",
+    "relation": "trait",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700001800000,
+    "lastMs": 1700001800000,
+    "memories": []
+   },
+   {
+    "key": "不吃香菜",
+    "name": "不吃香菜",
+    "category": "美食饮食",
+    "level": "strong",
+    "relation": "trait",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700004800000,
+    "lastMs": 1700004800000,
+    "memories": [
+     {
+      "id": "mem_33735246ca5d4a6cb973c1dc056f2e1d",
+      "text": "对方不吃香菜"
+     }
+    ]
+   },
+   {
+    "key": "日本",
+    "name": "日本",
+    "category": "旅行出行",
+    "level": "possible",
+    "relation": "mention",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700002400000,
+    "lastMs": 1700002400000,
+    "memories": []
+   }
+  ],
+  "undo": {
+   "user": {
+    "count": 1,
+    "label": "添加说话习惯：从不发语音"
+   },
+   "agent": {
+    "count": 0,
+    "label": null,
+    "items": []
+   }
+  },
+  "run": {
+   "state": "done",
+   "runState": "done",
+   "detail": "标签分析没有新内容",
+   "done": null,
+   "total": null,
+   "error": null,
+   "analyzed": true
+  },
+  "textMessages": 9
+ },
+ "tagEvidence": {
+  "name": "不吃香菜",
+  "items": [
+   {
+    "msgId": "msg-message__message_1.db-9-1",
+    "timeMs": 1700004800000,
+    "context": "我：我喜欢象棋\n对方：我朋友超爱象棋\n对方：打球真开心",
+    "text": "我不吃香菜",
+    "followup": "对方：哈哈哈\n我：好",
+    "relation": "uncertain",
+    "quote": "",
+    "reason": "合成依据",
+    "truncated": false,
+    "status": "ok"
+   }
+  ],
+  "total": 1
+ },
+ "habitEvidence": {
+  "key": "phrase:哈哈哈",
+  "items": [
+   {
+    "msgId": "msg-message__message_1.db-13-1",
+    "timeMs": 1700007200000,
+    "context": "对方：哈哈哈\n我：好\n对方：哈哈哈",
+    "text": "哈哈哈",
+    "followup": "",
+    "relation": null,
+    "quote": "",
+    "reason": "",
+    "truncated": false,
+    "status": "ok"
+   },
+   {
+    "msgId": "msg-message__message_1.db-12-1",
+    "timeMs": 1700006600000,
+    "context": "对方：我不吃香菜\n对方：哈哈哈\n我：好",
+    "text": "哈哈哈",
+    "followup": "对方：哈哈哈",
+    "relation": null,
+    "quote": "",
+    "reason": "",
+    "truncated": false,
+    "status": "ok"
+   },
+   {
+    "msgId": "msg-message__message_1.db-10-1",
+    "timeMs": 1700005400000,
+    "context": "对方：我朋友超爱象棋\n对方：打球真开心\n对方：我不吃香菜",
+    "text": "哈哈哈",
+    "followup": "我：好\n对方：哈哈哈",
+    "relation": null,
+    "quote": "",
+    "reason": "",
+    "truncated": false,
+    "status": "ok"
+   }
+  ],
+  "total": 3
+ },
+ "editHide": {
+  "account": "synthetic-account-1",
+  "user": "wxid_synthetic_friend",
+  "version": 2,
+  "categories": [
+   "运动健身",
+   "游戏棋牌",
+   "影音娱乐",
+   "阅读学习",
+   "美食饮食",
+   "旅行出行",
+   "工作技能",
+   "身份生活",
+   "性格习惯",
+   "观点态度",
+   "其他",
+   "说话习惯"
+  ],
+  "habits": [
+   {
+    "key": "phrase:哈哈哈",
+    "label": "哈哈哈",
+    "detail": "3 次",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "particle:哈",
+    "label": "句末“哈”",
+    "detail": "33%",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "ending:不加标点",
+    "label": "句末不加标点",
+    "detail": "100%",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "length",
+    "label": "单条中位 5 字",
+    "detail": "九成不超过 12 字",
+    "manual": false,
+    "hidden": false
+   },
+   {
+    "key": "manual:从不发语音",
+    "label": "从不发语音",
+    "detail": "我的补充",
+    "manual": true,
+    "hidden": true
+   }
+  ],
+  "tags": [
+   {
+    "key": "篮球",
+    "name": "篮球",
+    "category": "运动健身",
+    "level": "strong",
+    "relation": "interest",
+    "manual": false,
+    "mentions": 2,
+    "days": 1,
+    "firstMs": 1700000600000,
+    "lastMs": 1700004200000,
+    "memories": []
+   },
+   {
+    "key": "象棋",
+    "name": "象棋",
+    "category": "游戏棋牌",
+    "level": "possible",
+    "relation": "mention",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700003600000,
+    "lastMs": 1700003600000,
+    "memories": []
+   },
+   {
+    "key": "不吃辣",
+    "name": "不吃辣",
+    "category": "美食饮食",
+    "level": "strong",
+    "relation": "trait",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700001800000,
+    "lastMs": 1700001800000,
+    "memories": []
+   },
+   {
+    "key": "不吃香菜",
+    "name": "不吃香菜",
+    "category": "美食饮食",
+    "level": "strong",
+    "relation": "trait",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700004800000,
+    "lastMs": 1700004800000,
+    "memories": [
+     {
+      "id": "mem_33735246ca5d4a6cb973c1dc056f2e1d",
+      "text": "对方不吃香菜"
+     }
+    ]
+   },
+   {
+    "key": "日本",
+    "name": "日本",
+    "category": "旅行出行",
+    "level": "possible",
+    "relation": "mention",
+    "manual": false,
+    "mentions": 1,
+    "days": 1,
+    "firstMs": 1700002400000,
+    "lastMs": 1700002400000,
+    "memories": []
+   }
+  ],
+  "undo": {
+   "user": {
+    "count": 2,
+    "label": "隐藏说话习惯：从不发语音"
+   },
+   "agent": {
+    "count": 0,
+    "label": null,
+    "items": []
+   }
+  },
+  "run": {
+   "state": "done",
+   "runState": "done",
+   "detail": "标签分析没有新内容",
+   "done": null,
+   "total": null,
+   "error": null,
+   "analyzed": true
+  },
+  "textMessages": 9,
+  "editedId": "manual:从不发语音",
+  "editLabel": "隐藏说话习惯：从不发语音"
+ }
+}

@@ -696,9 +696,9 @@ class ExtractionRunTests(unittest.TestCase):
 
     def test_route_revision_change_keeps_the_extraction_cache(self):
         """网关换路顶高 route_revision 与联动 service fingerprint：不属内容身份，不得作废已提取窗口。"""
-        def service(actual_model="GLM-5.3-Flash-EXL3", route_revision=25, fingerprint="route-fp-25"):
+        def service(actual_model="synthetic-model-a", route_revision=25, fingerprint="route-fp-25"):
             return {"id": "synthetic-source", "model": "local-default", "contextTokens": 1000000,
-                    "actualModel": actual_model, "backendId": "glm",
+                    "actualModel": actual_model, "backendId": "synthetic-backend",
                     "routeRevision": route_revision, "fingerprint": fingerprint}
         replies = {TIMELINE_WINDOW: parse_reply(model_event(0, phrase="上个月", importance="important")),
                    TIMELINE_REVIEW: parse_reply()}

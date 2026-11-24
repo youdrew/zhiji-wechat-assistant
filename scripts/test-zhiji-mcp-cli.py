@@ -212,28 +212,89 @@ class CodexTomlTests(Sandbox):
         self.assertEqual(self.path.read_text(encoding="utf-8"), "model = \n")
 
 
-class HarnessPatchTests(Sandbox):
-    def test_managed_block_is_appended_replaced_and_removed(self):
-        path = self.home / ".dsh" / "cordis.patch.yml"
-        path.parent.mkdir(parents=True)
-        original = "# user patches\n- insert:\n    - id: memory-memorix\n      name: x\n"
-        path.write_text(original, encoding="utf-8")
-        cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)
-        text = path.read_text(encoding="utf-8")
-        self.assertTrue(text.startswith(original.rstrip("\n")))
-        self.assertIn("serverName: zhiji", text)
-        self.assertEqual(cli.configured_command("deepseek-harness", "user", None, "zhiji"), (COMMAND, ARGS))
-        cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND + "2", ARGS, dry_run=False)
-        self.assertEqual(path.read_text(encoding="utf-8").count("id: mcp-zhiji"), 1)
-        cli.remove_config("deepseek-harness", "user", None, "zhiji", dry_run=False)
-        self.assertEqual(path.read_text(encoding="utf-8"), original)
+# Stands in for `dsh plugin --profile <name> add link:<dir> | remove <package>`: edits the profile manifest like DSH does.
+DSH_STUB = """
+import json, os, sys
+from pathlib import Path
+_plugin, _flag, profile, action, target = sys.argv[1:6]
+manifest = Path(os.environ["DSH_HOME"]) / "profiles" / profile / "package.json"
+if profile == "desktop" and os.environ.get("STUB_DESKTOP_RUNNING"):
+    print("dsh: Error: fully quit DeepSeek Harness Desktop before running dsh plugin --profile desktop.")
+    sys.exit(0)
+data = json.loads(manifest.read_text(encoding="utf-8"))
+bundles = data["dsh"]["profile"]["bundles"]
+if action == "add":
+    name = json.loads((Path(target[len("link:"):]) / "package.json").read_text(encoding="utf-8"))["name"]
+    data.setdefault("dependencies", {})[name] = target
+    bundles.append(name)
+else:
+    data.get("dependencies", {}).pop(target, None)
+    bundles.remove(target)
+manifest.write_text(json.dumps(data), encoding="utf-8")
+"""
 
-    def test_a_mapping_document_is_refused(self):
-        path = self.home / ".dsh" / "cordis.patch.yml"
-        path.parent.mkdir(parents=True)
-        path.write_text("plugins:\n  a: 1\n", encoding="utf-8")
-        with self.assertRaises(cli.CliError):
-            cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)
+
+class HarnessBundleTests(Sandbox):
+    def setUp(self):
+        super().setUp()
+        self.bundle = self.home / ".zhiji" / "dsh-plugin" / "zhiji"
+        stub = self.tmp / "dsh-stub.py"
+        stub.write_text(DSH_STUB, encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {cli.DSH_COMMAND_ENV: json.dumps([sys.executable, str(stub)])})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def profile(self, name):
+        manifest = self.home / ".dsh" / "profiles" / name / "package.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"name": "dsh-profile-" + name, "dsh": {"profile": {"bundles": ["@deepseek-ai/dsh-base"]}}}),
+                            encoding="utf-8")
+        return manifest
+
+    def test_bundle_is_written_installed_in_every_profile_updated_and_removed(self):
+        desktop, headless = self.profile("desktop"), self.profile("headless")
+        result = cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)
+        self.assertEqual(result["pending"], {})
+        manifest = json.loads((self.bundle / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["dsh"], {"bundle": {"patch": "./cordis.patch.yml"}})
+        self.assertEqual(json.loads((self.bundle / "locale" / "zh.json").read_text(encoding="utf-8"))["meta"]["title"], "知己微信助手")
+        self.assertTrue((self.bundle / "icon.svg").is_file())
+        patch = (self.bundle / "cordis.patch.yml").read_text(encoding="utf-8")
+        self.assertIn("name: '@deepseek-ai/dsh-mcp-client'", patch)
+        self.assertIn("serverName: zhiji", patch)
+        for profile in (desktop, headless):
+            data = json.loads(profile.read_text(encoding="utf-8"))
+            self.assertEqual(data["dependencies"], {"@zhiji/dsh-zhiji": "link:" + self.bundle.as_posix()})
+            self.assertIn("@zhiji/dsh-zhiji", data["dsh"]["profile"]["bundles"])
+        self.assertEqual(cli.configured_command("deepseek-harness", "user", None, "zhiji"), (COMMAND, ARGS))
+        self.assertFalse(cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)["changed"])
+        cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND + "2", ARGS, dry_run=False)
+        self.assertEqual(cli.configured_command("deepseek-harness", "user", None, "zhiji"), (COMMAND + "2", ARGS))
+        self.assertEqual(json.loads(desktop.read_text(encoding="utf-8"))["dsh"]["profile"]["bundles"].count("@zhiji/dsh-zhiji"), 1)
+        self.assertTrue(cli.remove_config("deepseek-harness", "user", None, "zhiji", dry_run=False)["changed"])
+        self.assertFalse(self.bundle.exists())
+        self.assertEqual(json.loads(desktop.read_text(encoding="utf-8"))["dsh"]["profile"]["bundles"], ["@deepseek-ai/dsh-base"])
+        self.assertIsNone(cli.configured_command("deepseek-harness", "user", None, "zhiji"))
+
+    def test_a_running_desktop_leaves_the_bundle_pending_and_a_later_run_installs_it(self):
+        desktop = self.profile("desktop")
+        with mock.patch.dict(os.environ, {"STUB_DESKTOP_RUNNING": "1"}):
+            result = cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)
+        self.assertIn("fully quit", result["pending"]["desktop"])
+        self.assertTrue((self.bundle / "cordis.patch.yml").is_file())
+        result = cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)
+        self.assertEqual(result["pending"], {})
+        self.assertIn("@zhiji/dsh-zhiji", json.loads(desktop.read_text(encoding="utf-8"))["dependencies"])
+
+    def test_without_an_initialized_profile_the_bundle_waits(self):
+        result = cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=False)
+        self.assertIn("desktop", result["pending"])
+        self.assertEqual(cli.configured_command("deepseek-harness", "user", None, "zhiji"), (COMMAND, ARGS))
+
+    def test_a_dry_run_writes_nothing(self):
+        self.profile("desktop")
+        self.assertTrue(cli.apply_config("deepseek-harness", "user", None, "zhiji", COMMAND, ARGS, dry_run=True)["changed"])
+        self.assertFalse(self.bundle.exists())
 
 
 @unittest.skipUnless(sys.platform == "win32", "DPAPI is Windows-only")
@@ -767,7 +828,8 @@ class EndToEndTests(Sandbox):
         self.assertEqual(code, 0, output)
         self.assertIn("设置 → 插件 → MCP", output)
         self.assertIn("修改资料与发起分析", output)
-        self.assertIn("serverName: zhiji", (self.home / ".dsh" / "cordis.patch.yml").read_text(encoding="utf-8"))
+        self.assertIn("serverName: zhiji", (self.home / ".zhiji" / "dsh-plugin" / "zhiji" / "cordis.patch.yml").read_text(encoding="utf-8"))
+        self.assertIn("还没装进 profile", output)
 
     def test_generic_prints_snippet_and_marks_config_incomplete(self):
         self.core(approve)

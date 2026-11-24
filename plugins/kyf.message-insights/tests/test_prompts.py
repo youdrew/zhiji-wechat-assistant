@@ -22,7 +22,7 @@ class StructuredOutputTests(unittest.TestCase):
         self.target_source = json.loads(self.prompt)["targetSourceIds"][TARGET]
         self.previous_source = next(key for key, source in self.sources.items()
                                     if source.get("messageId") == "synthetic-previous")
-        self.analysis = {"messageId": TARGET, "summary": "一句合成原意", "meaning": "结合合成语境理解",
+        self.analysis = {"summary": "一句合成原意", "meaning": "结合合成语境理解",
                          "uncertainty": "仍需对方补充", "responseDirection": "可以自然回应",
                          "evidenceIds": [self.target_source]}
         self.replies = {"replies": [{"label": "简短", "text": "好呀，慢慢来。"},
@@ -35,7 +35,7 @@ class StructuredOutputTests(unittest.TestCase):
                 "kind": "text", "text": "合成测试原文", "time_ms": number * 1000, "raw": "{}"}
 
     def result_text(self, item=None):
-        return json.dumps({"analyses": [self.analysis if item is None else item]}, ensure_ascii=False)
+        return json.dumps({"analysis": self.analysis if item is None else item}, ensure_ascii=False)
 
     def test_initial_prompt_names_actual_target_sources_and_no_invented_example_id(self):
         payload = json.loads(self.prompt)
@@ -66,9 +66,9 @@ class StructuredOutputTests(unittest.TestCase):
 
     def test_duplicate_json_keys_are_rejected_instead_of_silently_picking_one(self):
         valid = self.result_text()
-        cases = [valid.replace('"analyses":', '"analyses":[],"analyses":', 1),
+        cases = [valid.replace('"analysis":', '"analysis":{},"analysis":', 1),
                  valid.replace('"evidenceIds":', '"evidenceIds":["invented"],"evidenceIds":', 1),
-                 valid.replace('"messageId":', '"messageId":"wrong-target","messageId":', 1)]
+                 valid.replace('"summary":', '"summary":"重复","summary":', 1)]
         for text in cases:
             with self.subTest(text=text[:55]), self.assertRaises(InsightError):
                 parse_result(text, [TARGET], self.sources)
@@ -84,13 +84,28 @@ class StructuredOutputTests(unittest.TestCase):
                          {**self.sources, "visual": observation})
 
     def test_wrong_target_missing_fields_and_empty_content_are_not_filled_in(self):
-        for item in ({**self.analysis, "messageId": "wrong"}, {**self.analysis, "meaning": " "},
+        for item in ({**self.analysis, "messageId": TARGET}, {**self.analysis, "meaning": " "},
                      {**self.analysis, "summary": "长" * 161}, {**self.analysis, "summary": None},
                      {key: value for key, value in self.analysis.items() if key != "uncertainty"}):
             with self.subTest(item=item), self.assertRaises(InsightError):
                 parse_result(self.result_text(item), [TARGET], self.sources)
+        for value in ({"analyses": [self.analysis]}, {"analysis": [self.analysis]},
+                      {"analysis": self.analysis, "extra": 1}):
+            with self.subTest(value=list(value)), self.assertRaises(InsightError):
+                parse_result(json.dumps(value), [TARGET], self.sources)
+
+    def test_round_analysis_cites_any_target_and_is_saved_under_the_anchor(self):
+        rows = [self.row("synthetic-previous", 1), self.row("round-first", 2), self.row(TARGET, 3)]
+        prompt, sources = material(rows, ["round-first", TARGET], [], {}, 10000)
+        first = json.loads(prompt)["targetSourceIds"]["round-first"]
+        result = parse_result(self.result_text({**self.analysis, "evidenceIds": [first]}),
+                              ["round-first", TARGET], sources, anchor=TARGET)
+        self.assertEqual(list(result), [TARGET])
+        self.assertEqual(result[TARGET]["evidence"][0]["messageId"], "round-first")
+        previous = next(key for key, source in sources.items() if source.get("messageId") == "synthetic-previous")
         with self.assertRaises(InsightError):
-            parse_result(json.dumps({"analyses": [self.analysis, self.analysis]}), [TARGET], self.sources)
+            parse_result(self.result_text({**self.analysis, "evidenceIds": [previous]}),
+                         ["round-first", TARGET], sources, anchor=TARGET)
 
     def test_correction_uses_only_available_reference_ids_without_source_text(self):
         instruction = correction_instruction("analysis", [TARGET], self.sources)
@@ -99,16 +114,31 @@ class StructuredOutputTests(unittest.TestCase):
                                       "allowedSourceIds": list(self.sources)})
         self.assertNotIn("合成测试原文", instruction)
         self.assertIn("只引用目标 chat 来源", instruction)
-        self.assertIn("恰好三条不同回复", correction_instruction("suggestions", [TARGET], self.sources))
+        self.assertIn("恰好三个不同方案", correction_instruction("suggestions", [TARGET], self.sources))
         with self.assertRaises(ValueError):
             correction_instruction("other", [TARGET], self.sources)
 
     def test_complete_reply_fences_keep_text_labels_and_linebreaks(self):
         self.replies["replies"][0]["text"] = "好呀，\n慢慢来。"
         original = json.dumps(self.replies, ensure_ascii=False)
+        expected = [{**reply, "messages": [reply["text"]]} for reply in self.replies["replies"]]
         for wrapped in (original, "\ufeff" + original, "```json\n" + original + "\n```"):
             with self.subTest(wrapped=wrapped[:15]):
-                self.assertEqual(parse_reply_candidates(wrapped), self.replies["replies"])
+                self.assertEqual(parse_reply_candidates(wrapped), expected)
+
+    def test_multi_message_plans_keep_order_and_join_for_the_whole_draft(self):
+        plans = {"replies": [{"label": "干脆答应", "messages": ["可以啊", "周六下午？"]},
+                             {"label": "先聊书", "messages": ["书怎么样"]},
+                             {"label": "问细节", "messages": [" 哪家店呀 ", "远不远", "几点"]}]}
+        result = parse_reply_candidates(json.dumps(plans, ensure_ascii=False))
+        self.assertEqual(result[0], {"label": "干脆答应", "text": "可以啊\n周六下午？", "messages": ["可以啊", "周六下午？"]})
+        self.assertEqual(result[2]["messages"], ["哪家店呀", "远不远", "几点"])
+        # A saved plan (text and messages) reads back unchanged.
+        self.assertEqual(parse_reply_candidates(json.dumps({"replies": result}, ensure_ascii=False)), result)
+        for broken in ([], ["一"] * 6, [""], [1], "一句"):
+            plans["replies"][1]["messages"] = broken
+            with self.subTest(broken=broken), self.assertRaises(InsightError):
+                parse_reply_candidates(json.dumps(plans, ensure_ascii=False))
 
     def test_incomplete_duplicate_or_ambiguous_replies_are_never_repaired_locally(self):
         cases = [json.dumps({"replies": self.replies["replies"][:2]}),

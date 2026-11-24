@@ -2,10 +2,9 @@
 
 Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 
-Field choices follow the overview of SuperDatingApp ``analysis.py`` (the maintainer's
-local reference project): an evidence-backed summary and one next step that prefers
-waiting when the user sent the last message. Only these two items call the model;
-the rest of the overview is assembled locally from other pages.
+The model provides an evidence-backed summary and suggests a next step. When the user
+sent the last message, the next step generally allows time for a reply. The rest
+of the overview is assembled locally from other pages.
 """
 from __future__ import annotations
 

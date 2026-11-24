@@ -27,7 +27,7 @@ class JudgeService:
         self.supported = (sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64")) \
             if supported is None else supported
         self.assets = ModelAssets(root, directory, gateway, manifest_path=manifest_path, opener=opener,
-            manifest_name="judge-model.json", label="判断模型", code_prefix="judge")
+            manifest_name="judge-model.json", label="判别模型", code_prefix="judge")
         self.lock = threading.RLock()
         self.cancelled = threading.Event()
         self.worker = None
@@ -107,7 +107,7 @@ class JudgeService:
     def _check_resources(self):
         import psutil
         if not self.supported:
-            raise ModelAssetError("judge-platform", "本地判断模型仅支持 Windows x64")
+            raise ModelAssetError("judge-platform", "内置判别模型仅支持 Windows x64")
         if not Path(self.local_config()["runtimePath"]).is_file():
             raise ModelAssetError("judge-runtime", "本地判断运行时未随软件提供")
         if psutil.virtual_memory().available < 2 * 1024**3:
@@ -123,9 +123,9 @@ class JudgeService:
             if self.closed:
                 raise ModelAssetError("judge-closed", "应用正在关闭")
             if self.deleting:
-                raise ModelAssetError("judge-busy", "判断模型正在删除")
+                raise ModelAssetError("judge-busy", "判别模型正在删除")
             if self.assets.thread and self.assets.thread.is_alive() and self.cancelled.is_set():
-                raise ModelAssetError("judge-busy", "判断模型正在停止，请稍后重试")
+                raise ModelAssetError("judge-busy", "判别模型正在停止，请稍后重试")
             if self.worker and self.worker.is_alive():
                 return self.status()
             if self.status()["ready"]:
@@ -149,7 +149,7 @@ class JudgeService:
                 self.assets.thread.join(.1)
             self._check()
             if not self.assets.status()["ready"]:
-                raise ModelAssetError("judge-download", "国内判断模型资源准备失败，可重试；已保留下载进度")
+                raise ModelAssetError("judge-download", "国内判别模型资源准备失败，可重试；已保留下载进度")
             with self.lock:
                 self.phase = "selftest"
             result = self.gateway.local_judge("selftest", self.local_config(), timeout=120, check=self._check)
@@ -157,7 +157,7 @@ class JudgeService:
             latency = result.get("latencyMs")
             if (result.get("formatValid") is not True or type(latency) not in (int, float) or
                     not math.isfinite(latency) or latency < 0):
-                raise ModelAssetError("judge-selftest", "判断模型自测失败")
+                raise ModelAssetError("judge-selftest", "判别模型自测失败")
             record = {"revision": self.assets.manifest["revision"],
                 "sha256": self.assets.manifest["files"][0]["sha256"], "formatValid": True,
                 "latencyMs": latency, "qualityVerified": False}
@@ -168,7 +168,7 @@ class JudgeService:
             os.replace(temporary, target)
             with self.lock:
                 self._check()
-                self.store.ensure_builtin(BUILTIN, "本地判断模型", BUILTIN)
+                self.store.ensure_builtin(BUILTIN, "内置判别模型", BUILTIN)
                 self.result, self.phase, self.error = record, None, None
             # No automatic assignment: the candidate has not passed quality validation.
             self.changed()
@@ -176,7 +176,7 @@ class JudgeService:
             with self.lock:
                 self.phase = None
                 self.error = None if self.cancelled.is_set() or self.closed else (
-                    exc.message if isinstance(exc, ModelAssetError) else "本地判断模型准备失败，可重试")
+                    exc.message if isinstance(exc, ModelAssetError) else "内置判别模型准备失败，可重试")
 
     def cancel(self):
         with self.lock:
@@ -190,13 +190,13 @@ class JudgeService:
     def delete(self):
         with self.lock:
             if self.deleting:
-                raise ModelAssetError("judge-busy", "判断模型正在删除")
+                raise ModelAssetError("judge-busy", "判别模型正在删除")
             self.deleting = True
             self.phase = "checking"
         try:
             self.cancel()
             if (self.worker and self.worker.is_alive()) or (self.assets.thread and self.assets.thread.is_alive()):
-                raise ModelAssetError("judge-busy", "判断模型正在停止，请稍后重试")
+                raise ModelAssetError("judge-busy", "判别模型正在停止，请稍后重试")
             # Remove the route before killing its process, then cancel admitted
             # local calls. Main-model requests and tokens are unaffected.
             entry_id = self._entry_id()
@@ -213,7 +213,7 @@ class JudgeService:
             self.result, self.phase, self.error = None, None, None
         except Exception:
             with self.lock:
-                self.phase, self.error = None, "判断模型删除失败，可重试"
+                self.phase, self.error = None, "判别模型删除失败，可重试"
         finally:
             with self.lock:
                 self.deleting = False

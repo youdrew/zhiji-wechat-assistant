@@ -7,6 +7,7 @@
   "author": "Know Your Friends",
   "core": { "api": [1] },
   "runtime": { "type": "python", "entry": "backend/main.py" },
+  "models": { "main": "对话与资料整理", "image": "图片与表情理解" },
   "events": ["human.changed"],
   "contributes": {
     "settings": {

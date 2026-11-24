@@ -81,6 +81,13 @@ class ModuleRegistryTests(unittest.TestCase):
             if entry["surface"] == "friend":
                 self.assertIn(entry["tab"], tabs, name)
 
+    def test_tags_and_timeline_tabs_open_for_one_contact(self):
+        for module_id, tab in (("contact.tags", "tags"), ("contact.timeline", "timeline")):
+            spec = resolve(module_id, {"accountId": "acc-1", "subjectId": "wxid_friend"})
+            self.assertEqual((spec["surface"], spec["tab"], spec["capability"]), ("friend", tab, "read"))
+            self.assertIn(module_id, openable_modules())
+            self.assertEqual(self.code(module_id, {"accountId": "a", "subjectId": "1@chatroom"}), "context-invalid")
+
     def test_error_statuses(self):
         self.assertEqual(UiError("module-unknown").status, 404)
         self.assertEqual(UiError("contact-not-authorized").status, 403)

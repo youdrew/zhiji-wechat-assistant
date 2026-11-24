@@ -3,6 +3,8 @@
 Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 Moved from Core (message_analysis_store) into kyf.message-insights, 2026-10-13. The tables
 keep their names, so results copied from the old account database stay readable.
+Modified 2026-11-09: a row is one round of the friend's messages, keyed by the round's last
+message; ``round_json`` lists the round's message ids.
 """
 import json
 import threading
@@ -38,6 +40,16 @@ def source_binding(row):
                                              "message_hash", "context_version")}, "context_hashes": hashes}
 
 
+def round_ids(row):
+    try:
+        value = json.loads(row.get("round_json") or "[]")
+    except (ValueError, TypeError):
+        value = []
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        return value
+    return [row["message_id"]]
+
+
 def result_bindings(row):
     try:
         value = json.loads(row.get("result_bindings_json") or "{}")
@@ -49,7 +61,8 @@ FILE = "insights.sqlite3"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS message_analysis_settings (
     user TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
-    revision INTEGER NOT NULL DEFAULT 0, unified_enabled INTEGER
+    revision INTEGER NOT NULL DEFAULT 0, unified_enabled INTEGER,
+    analysis_enabled INTEGER, suggestions_enabled INTEGER
 );
 CREATE TABLE IF NOT EXISTS message_analyses (
     user TEXT NOT NULL, message_id TEXT NOT NULL, generation TEXT NOT NULL,
@@ -57,7 +70,7 @@ CREATE TABLE IF NOT EXISTS message_analyses (
     context_epoch TEXT, message_hash TEXT, analysis_json TEXT, error TEXT,
     updated_at_ms INTEGER NOT NULL, analysis_state TEXT, suggestions_state TEXT NOT NULL DEFAULT 'none',
     replies_json TEXT, suggestions_error TEXT, context_hashes_json TEXT, context_version TEXT, result_bindings_json TEXT,
-    schema_version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(user,message_id)
+    schema_version INTEGER NOT NULL DEFAULT 1, round_json TEXT, PRIMARY KEY(user,message_id)
 );
 CREATE INDEX IF NOT EXISTS message_analyses_state ON message_analyses(user,state);
 CREATE TABLE IF NOT EXISTS auto_reply (
@@ -73,11 +86,14 @@ def ensure_schema(connection):
     settings = {row[1] for row in connection.execute("PRAGMA table_info(message_analysis_settings)")}
     if "unified_enabled" not in settings:
         connection.execute("ALTER TABLE message_analysis_settings ADD COLUMN unified_enabled INTEGER")
+    for field in ("analysis_enabled", "suggestions_enabled"):
+        if field not in settings:
+            connection.execute(f"ALTER TABLE message_analysis_settings ADD COLUMN {field} INTEGER")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(message_analyses)")}
     additions = {"analysis_state": "TEXT", "suggestions_state": "TEXT NOT NULL DEFAULT 'none'",
                  "replies_json": "TEXT", "suggestions_error": "TEXT", "context_hashes_json": "TEXT",
                  "context_version": "TEXT", "result_bindings_json": "TEXT",
-                 "schema_version": "INTEGER NOT NULL DEFAULT 1"}
+                 "schema_version": "INTEGER NOT NULL DEFAULT 1", "round_json": "TEXT"}
     for name, declaration in additions.items():
         if name not in columns:
             connection.execute("ALTER TABLE message_analyses ADD COLUMN " + name + " " + declaration)
@@ -131,8 +147,13 @@ class AnalysisStore:
             return action(self.connection)
 
     def settings(self, user):
-        return self._row("SELECT * FROM message_analysis_settings WHERE user=?", (user,)) or {
-            "user": user, "enabled": 0, "unified_enabled": None, "revision": 0}
+        # Rows imported from a pre-split database inherit its explicit combined switch.
+        return self._row("SELECT user,enabled,revision,unified_enabled,"
+                         "COALESCE(analysis_enabled,unified_enabled,0) AS analysis_enabled,"
+                         "COALESCE(suggestions_enabled,unified_enabled,0) AS suggestions_enabled "
+                         "FROM message_analysis_settings WHERE user=?", (user,)) or {
+            "user": user, "enabled": 0, "unified_enabled": None, "revision": 0,
+            "analysis_enabled": 0, "suggestions_enabled": 0}
 
     def legacy_auto_reply(self, user):
         row = self._row("SELECT enabled FROM auto_reply WHERE user=?", (user,))
@@ -141,11 +162,13 @@ class AnalysisStore:
     def enabled_users(self):
         return [row["user"] for row in self._rows("SELECT user FROM message_analysis_settings WHERE unified_enabled=1")]
 
-    def set(self, user, enabled):
+    def set(self, user, analysis, suggestions=None):
+        suggestions = analysis if suggestions is None else suggestions
         self.write(lambda c: c.execute(
-            "INSERT INTO message_analysis_settings(user,unified_enabled,revision) VALUES(?,?,1) "
-            "ON CONFLICT(user) DO UPDATE SET unified_enabled=excluded.unified_enabled,revision=revision+1",
-            (user, int(enabled))))
+            "INSERT INTO message_analysis_settings(user,unified_enabled,analysis_enabled,suggestions_enabled,revision) "
+            "VALUES(?,?,?,?,1) ON CONFLICT(user) DO UPDATE SET unified_enabled=excluded.unified_enabled,"
+            "analysis_enabled=excluded.analysis_enabled,suggestions_enabled=excluded.suggestions_enabled,revision=revision+1",
+            (user, int(analysis or suggestions), int(analysis), int(suggestions))))
         return self.settings(user)
 
     def pending_count(self, user):
@@ -163,8 +186,8 @@ class AnalysisStore:
     def begin(self, user, ids, generation, *, parts=("analysis",), unified=False):
         def action(c):
             for message_id in ids:
-                c.execute("INSERT INTO message_analyses(user,message_id,generation,state,updated_at_ms) "
-                          "VALUES(?,?,?,'pending',?) ON CONFLICT(user,message_id) DO UPDATE SET "
+                c.execute("INSERT INTO message_analyses(user,message_id,generation,state,analysis_state,updated_at_ms) "
+                          "VALUES(?,?,?,'pending','none',?) ON CONFLICT(user,message_id) DO UPDATE SET "
                           "generation=excluded.generation,state='pending',updated_at_ms=excluded.updated_at_ms",
                           (user, message_id, generation, int(time.time() * 1000)))
                 if "analysis" in parts:
@@ -177,9 +200,12 @@ class AnalysisStore:
                           (2 if unified else 1, user, message_id))
         self.write(action)
 
-    def bind(self, user, ids, generation, binding, hashes, context_version=None):
+    def bind(self, user, ids, generation, binding, hashes, context_version=None, round_ids=None):
         def action(c):
             for message_id in ids:
+                if round_ids:
+                    c.execute("UPDATE message_analyses SET round_json=? WHERE user=? AND message_id=? AND generation=?",
+                              (json.dumps(list(round_ids)), user, message_id, generation))
                 c.execute("UPDATE message_analyses SET state='running',scope=?,config_stamp=?,profile_stamp=?,"
                           "context_epoch=?,message_hash=? WHERE user=? AND message_id=? AND generation=? "
                           "AND state='pending'", (*binding, hashes[message_id], user, message_id, generation))
@@ -214,6 +240,23 @@ class AnalysisStore:
                 self._aggregate(c, user, message_id)
         self.write(action)
 
+    def remove(self, user, ids):
+        """Drop rows of rounds that a longer round of the same messages replaced."""
+        if ids:
+            self.write(lambda c: c.execute("DELETE FROM message_analyses WHERE user=? AND message_id IN (" +
+                                           ",".join("?" for _ in ids) + ")", (user, *ids)))
+
+    def withdraw(self, user, message_id, generation, part, row):
+        # A withdrawn refresh leaves the saved output and its original source binding intact.
+        state = "ready" if saved_result(row, part) is not None else "none"
+        error_field = "error" if part == "analysis" else "suggestions_error"
+        def action(c):
+            c.execute(f"UPDATE message_analyses SET {part}_state=?,{error_field}=NULL "
+                      f"WHERE user=? AND message_id=? AND generation=? AND {part}_state IN ('pending','running')",
+                      (state, user, message_id, generation))
+            self._aggregate(c, user, message_id)
+        self.write(action)
+
     def stale(self, user, ids):
         for row in self.rows(user, ids):
             self.finish(user, [row["message_id"]], row["generation"], "error", error="任务已中断，请重试")
@@ -223,7 +266,8 @@ class AnalysisStore:
         c.execute("UPDATE message_analyses SET state=CASE "
                   "WHEN analysis_state='running' OR suggestions_state='running' THEN 'running' "
                   "WHEN analysis_state='pending' OR suggestions_state='pending' THEN 'pending' "
-                  "WHEN analysis_state='ready' AND suggestions_state IN ('ready','none') THEN 'ready' "
+                  "WHEN (analysis_state='ready' AND suggestions_state IN ('ready','none')) "
+                  "OR (analysis_state='none' AND suggestions_state='ready') THEN 'ready' "
                   "WHEN analysis_state='ready' OR suggestions_state='ready' THEN 'partial' "
                   "ELSE 'error' END "
                   "WHERE user=? AND message_id=?", (user, message_id))

@@ -190,5 +190,77 @@ lines.on('line', raw => {
         self.assertTrue(sent.empty())
 
 
+class HarnessDiscoveryTests(unittest.TestCase):
+    """DeepSeek Harness is found in its installation; only synthetic stub files are used."""
+
+    def install(self, folder, platform="win32"):
+        executable = engine_client.harness_executable(folder, platform)
+        archive = engine_client.harness_archive(folder, platform)
+        for item in (executable, archive):
+            item.parent.mkdir(parents=True, exist_ok=True)
+            item.write_bytes(b"synthetic")
+
+    def test_candidates_prefer_the_override_then_a_bundled_copy_then_the_user_install(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            root, local = Path(temp) / "app", Path(temp) / "local"
+            environ = {"LOCALAPPDATA": str(local), "KYF_DSH_INSTALL": str(Path(temp) / "custom")}
+            folders = engine_client.harness_candidates(root, environ, "win32")
+            self.assertEqual(folders[:3], [Path(temp) / "custom", root / "runtime" / "dsh",
+                                           local / "Programs" / "DeepSeek Harness"])
+            self.assertIsNone(engine_client.harness_install(root, environ, "win32"))
+            self.install(local / "Programs" / "DeepSeek Harness")
+            self.assertEqual(engine_client.harness_install(root, environ, "win32"), local / "Programs" / "DeepSeek Harness")
+            self.install(root / "runtime" / "dsh")
+            self.assertEqual(engine_client.harness_install(root, environ, "win32"), root / "runtime" / "dsh")
+
+    def test_the_user_install_is_found_when_the_environment_names_no_program_folders(self):
+        # Core starts plugins without LOCALAPPDATA; the shell's known folders stand in for it.
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as temp:
+            local = Path(temp) / "local"
+            self.install(local / "Programs" / "DeepSeek Harness")
+            found = {"LOCALAPPDATA": str(local)}
+            with (mock.patch.dict(engine_client.os.environ, {"TEMP": temp}, clear=True),
+                  mock.patch.object(engine_client, "known_folders", return_value=found),
+                  mock.patch.object(engine_client.sys, "platform", "win32")):
+                self.assertEqual(engine_client.harness_install(Path(temp) / "app"), local / "Programs" / "DeepSeek Harness")
+
+    def test_a_folder_without_the_application_archive_is_not_an_installation(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / "runtime" / "dsh"
+            folder.mkdir(parents=True)
+            (folder / "DeepSeek Harness.exe").write_bytes(b"synthetic")
+            self.assertIsNone(engine_client.harness_install(temp, {}, "win32"))
+
+    def test_macos_layout_is_the_application_bundle(self):
+        from pathlib import Path
+        folder = Path("/Applications/DeepSeek Harness.app")
+        self.assertEqual(engine_client.harness_candidates("/app", {}, "darwin")[1], folder)
+        self.assertEqual(engine_client.harness_executable(folder, "darwin"), folder / "Contents" / "MacOS" / "DeepSeek Harness")
+        self.assertEqual(engine_client.harness_archive(folder, "darwin"), folder / "Contents" / "Resources" / "app.asar")
+
+    def test_engine_is_available_only_with_node_the_worker_and_an_installation(self):
+        import sys
+        import tempfile
+        from pathlib import Path
+        plugin = Path(engine_client.__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp:
+            env = {"KYF_NODE": sys.executable, "KYF_TSX_LOADER": "loader", "KYF_DSH_INSTALL": str(Path(temp) / "dsh"),
+                   # No real installation of this computer may answer for the fixture.
+                   "LOCALAPPDATA": temp, "ProgramFiles": temp, "ProgramFiles(x86)": temp, "HOME": temp}
+            with patch.dict(os.environ, env):
+                self.assertFalse(engine_client.engine_available(plugin, temp))
+                self.install(Path(temp) / "dsh", sys.platform)
+                self.assertTrue(engine_client.engine_available(plugin, temp))
+            with patch.dict(os.environ, {**env, "KYF_NODE": ""}):
+                self.assertFalse(engine_client.engine_available(plugin, temp))
+
+
 if __name__ == "__main__":
     unittest.main()

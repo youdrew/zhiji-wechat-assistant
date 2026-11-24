@@ -59,6 +59,7 @@ class FakeAnalysis:
 
     def friend_analysis_page(self, account, user, method, params=None):
         self.calls.append(("page", account, user, method))
+        self.page_params = params
         return {"account": account, "user": user, "method": method, "payload": [{"id": 1}]}
 
     def start_message_insights(self, account, user, message_id):
@@ -102,6 +103,27 @@ class FakeAnalysis:
     def undo_self_timeline(self, account, params):
         self.calls.append(("self.timelineUndo", account, params))
         return {"version": 9, "undone": "添加“入职”", "events": [{"id": "x"}]}
+
+    def edit_friend_timeline(self, account, user, params, agent=None):
+        self.calls.append(("friend.timelineEdit", account, user, params, agent))
+        if params["expectedVersion"] != 3:
+            raise McpError(409, "version-conflict", "时间线已修改")
+        return {"version": 4, "editedId": "manual-1", "editLabel": "添加“一起去爬山”", "events": [{"id": "x"}]}
+
+    def undo_friend_timeline(self, account, user, params, agent=None):
+        self.calls.append(("friend.timelineUndoAgent", account, user, params, agent))
+        return {"version": 5, "undone": None, "events": [{"id": "x"}],
+                "skipped": {"label": "添加“一起去爬山”", "reason": "这处之后被用户改过"}}
+
+    def edit_friend_tags(self, account, user, params, agent=None):
+        self.calls.append(("friend.tagEdit", account, user, params, agent))
+        if params["expectedVersion"] != 3:
+            raise McpError(409, "version-conflict", "标签已修改")
+        return {"version": 4, "editedId": "爱爬山", "editLabel": "添加标签：爱爬山", "tags": [{"name": "x"}]}
+
+    def undo_friend_tags(self, account, user, params, agent=None):
+        self.calls.append(("friend.tagUndoAgent", account, user, params, agent))
+        return {"version": 5, "undone": "添加标签：爱爬山", "skipped": None, "tags": [{"name": "x"}]}
 
 
 class TaskToolHarness(unittest.TestCase):
@@ -541,6 +563,198 @@ class BridgeTests(unittest.TestCase):
             self.tasks.finish(token, "kyf.friend-analysis", task_id, "done")
         self.assertEqual(getattr(caught.exception, "code", None), "execution-revoked")
         self.assertEqual(self.tasks.task(task_id)["state"], "stopping")
+
+
+class FriendTagsTimelineToolTests(TaskToolHarness):
+    """§7: friend tags/timeline reads, timeline writes as the Agent, per-contact authorization."""
+
+    EDIT = {"target": "event", "action": "add", "fields": {"title": "一起去爬山", "when": "2024.05"},
+            "expectedVersion": 3}
+
+    def read(self, principal, params, subjects=SUBJECT_A):
+        return self.call(principal, {"action": "zhiji_get_friend_analysis", "subjects": subjects,
+                                     "params": params})
+
+    def test_every_new_section_reads_its_own_page_method(self):
+        principal, _created = self.principal()
+        for section, params, method in (("tags", {}, "page.tags"),
+                                        ("tagEvidence", {"name": "爱爬山"}, "page.tagEvidence"),
+                                        ("tagEvidence", {"key": "phrase:哈哈哈"}, "page.tagEvidence"),
+                                        ("timelineEvidence", {"id": "e1"}, "page.timelineEvidence")):
+            view = self.read(principal, {"section": section, **params})
+            self.assertEqual(view["section"], section)
+            self.assertEqual(self.provider.calls[-1], ("page", "账号甲", "好友1", method))
+            self.assertEqual(self.provider.page_params, params)
+
+    def test_timeline_read_is_paged_inside_the_result_limit(self):
+        principal, _created = self.principal()
+        self.read(principal, {"section": "timeline", "offset": 20})
+        self.assertEqual(self.provider.calls[-1], ("page", "账号甲", "好友1", "page.timeline"))
+        self.assertEqual(self.provider.page_params["offset"], 20)
+        self.assertLess(self.provider.page_params["pageBytes"], McpServices.ANALYSIS_RESULT_MAX_CHARS)
+
+    def test_sections_reject_parameters_they_do_not_take(self):
+        principal, _created = self.principal()
+        for params in ({"section": "overview", "offset": 1}, {"section": "tags", "name": "x"},
+                       {"section": "timeline", "pageBytes": 9_999_999},
+                       {"section": "timeline", "user": "好友2"}):
+            with self.assertRaises(McpError) as caught:
+                self.read(principal, params)
+            self.assertEqual(caught.exception.code, "invalid-request", params)
+        self.assertEqual(self.provider.calls, [])
+
+    def test_edit_writes_as_the_named_agent_and_answers_compactly(self):
+        principal, _created = self.principal("合成 Agent")
+        edited = self.write(principal, "zhiji_edit_friend_timeline", self.EDIT)
+        self.assertEqual({key: edited[key] for key in ("version", "id", "label")},
+                         {"version": 4, "id": "manual-1", "label": "添加“一起去爬山”"})
+        self.assertNotIn("events", edited)
+        self.assertEqual(self.provider.calls,
+                         [("friend.timelineEdit", "账号甲", "好友1", self.EDIT, "合成 Agent")])
+
+    def test_undo_reports_a_cross_source_skip(self):
+        principal, _created = self.principal("合成 Agent")
+        undone = self.write(principal, "zhiji_undo_friend_timeline", {"expectedVersion": 4}, request_id="u1")
+        self.assertEqual((undone["version"], undone["undone"]), (5, None))
+        self.assertEqual(undone["skipped"]["reason"], "这处之后被用户改过")
+        self.assertNotIn("events", undone)
+        self.assertEqual(self.provider.calls[-1],
+                         ("friend.timelineUndoAgent", "账号甲", "好友1", {"expectedVersion": 4}, "合成 Agent"))
+
+    def test_edit_is_idempotent_and_checks_target_action_and_version(self):
+        principal, _created = self.principal()
+        first = self.write(principal, "zhiji_edit_friend_timeline", self.EDIT, request_id="e-1")
+        second = self.write(principal, "zhiji_edit_friend_timeline", self.EDIT, request_id="e-1")
+        self.assertEqual(first["version"], second["version"])
+        self.assertEqual(len(self.provider.calls), 1)
+        base = {"target": "event", "id": "e1", "expectedVersion": 3}
+        for index, bad in enumerate(({**base, "action": "unlink"}, {**base, "action": "merge"},
+                                     {**base, "target": "memory", "action": "edit"},
+                                     {**base, "target": "period", "action": "restore"},
+                                     {**base, "action": ["edit"]}, {"target": "event", "action": "confirm"},
+                                     {**base, "action": "confirm", "expectedVersion": -1},
+                                     {**base, "action": "confirm", "actor": "user"})):
+            with self.assertRaises(McpError) as caught:
+                self.write(principal, "zhiji_edit_friend_timeline", bad, request_id=f"bad-{index}")
+            self.assertEqual(caught.exception.code, "invalid-request", bad)
+        with self.assertRaises(McpError) as caught:
+            self.write(principal, "zhiji_edit_friend_timeline", {**self.EDIT, "expectedVersion": 2},
+                       request_id="stale")
+        self.assertEqual(caught.exception.code, "version-conflict")
+        self.assertEqual(len(self.provider.calls), 2)
+
+    TAG_EDIT = {"action": "add", "name": "爱爬山", "category": "运动健身", "expectedVersion": 3}
+
+    def test_tag_edit_and_undo_write_as_the_named_agent_and_answer_compactly(self):
+        principal, _created = self.principal("合成 Agent")
+        edited = self.write(principal, "zhiji_edit_friend_tags", self.TAG_EDIT, request_id="t-1")
+        self.assertEqual(edited, {"version": 4, "id": "爱爬山", "label": "添加标签：爱爬山",
+                                  "requestScope": edited["requestScope"]})
+        again = self.write(principal, "zhiji_edit_friend_tags", self.TAG_EDIT, request_id="t-1")
+        self.assertEqual(again["version"], 4)
+        undone = self.write(principal, "zhiji_undo_friend_tags", {"expectedVersion": 4}, request_id="t-2")
+        self.assertEqual((undone["version"], undone["undone"], undone["skipped"]), (5, "添加标签：爱爬山", None))
+        self.assertNotIn("tags", undone)
+        self.assertEqual(self.provider.calls,
+                         [("friend.tagEdit", "账号甲", "好友1", self.TAG_EDIT, "合成 Agent"),
+                          ("friend.tagUndoAgent", "账号甲", "好友1", {"expectedVersion": 4}, "合成 Agent")])
+
+    def test_tag_edit_checks_the_action_whitelist_and_version(self):
+        principal, _created = self.principal()
+        base = {"name": "篮球", "expectedVersion": 3}
+        for index, bad in enumerate(({**base, "action": "unlink", "memoryId": "m1"}, {**base, "action": "unlink"},
+                                     {**base, "action": "merge"}, {**base, "action": ["confirm"]},
+                                     {**base, "action": "add"}, {"action": "hide", "name": "哈哈哈",
+                                                                 "expectedVersion": 3},
+                                     {"action": "confirm", "expectedVersion": 3}, {"action": "confirm", "name": "x"},
+                                     {**base, "action": "confirm", "actor": "user"},
+                                     {**base, "action": "confirm", "expectedVersion": -1})):
+            with self.assertRaises(McpError) as caught:
+                self.write(principal, "zhiji_edit_friend_tags", bad, request_id=f"bad-{index}")
+            self.assertEqual(caught.exception.code, "invalid-request", bad)
+        self.assertEqual(self.provider.calls, [])
+        self.write(principal, "zhiji_edit_friend_tags", {"action": "hide", "key": "phrase:哈哈哈",
+                                                         "expectedVersion": 3}, request_id="hide")
+        with self.assertRaises(McpError) as caught:
+            self.write(principal, "zhiji_edit_friend_tags", {**self.TAG_EDIT, "expectedVersion": 2}, request_id="old")
+        self.assertEqual(caught.exception.code, "version-conflict")
+
+    def test_groups_are_refused(self):
+        principal, _created = self.principal()
+        group = [{"accountId": "id-A", "subjectType": "wechat_contact", "subjectId": "房间@chatroom"}]
+        for action, params in (("zhiji_edit_friend_timeline", self.EDIT),
+                               ("zhiji_undo_friend_timeline", {"expectedVersion": 3}),
+                               ("zhiji_edit_friend_tags", self.TAG_EDIT),
+                               ("zhiji_undo_friend_tags", {"expectedVersion": 3})):
+            with self.assertRaises(McpError) as caught:
+                self.write(principal, action, params, subjects=group, request_id=action)
+            self.assertEqual(caught.exception.code, "invalid-request")
+        self.assertEqual(self.provider.calls, [])
+
+    def test_per_contact_mode_reads_and_writes_only_authorized_friends(self):
+        principal, created = self.principal("逐联系人客户端", mode="per_contact")
+        self.mcp.store.grant_contact(created["clientId"], FINGERPRINT, "id-A", "wechat_contact", "好友1")
+        principal = self.re_pair(created)
+        for attempt in (lambda: self.read(principal, {"section": "tags"}, subjects=SUBJECT_B),
+                        lambda: self.read(principal, {"section": "timeline"}, subjects=SUBJECT_B),
+                        lambda: self.write(principal, "zhiji_edit_friend_timeline", self.EDIT,
+                                           subjects=SUBJECT_B, request_id="b-1"),
+                        lambda: self.write(principal, "zhiji_undo_friend_timeline", {"expectedVersion": 3},
+                                           subjects=SUBJECT_B, request_id="b-2"),
+                        lambda: self.write(principal, "zhiji_edit_friend_tags", self.TAG_EDIT,
+                                           subjects=SUBJECT_B, request_id="b-3"),
+                        lambda: self.write(principal, "zhiji_undo_friend_tags", {"expectedVersion": 3},
+                                           subjects=SUBJECT_B, request_id="b-4")):
+            with self.assertRaises(McpError) as caught:
+                attempt()
+            self.assertEqual(caught.exception.code, "contact-not-authorized")
+        self.assertEqual(self.provider.calls, [])
+        self.assertEqual(self.read(principal, {"section": "tags"})["requestScope"], "authorized_contacts")
+        edited = self.write(principal, "zhiji_edit_friend_timeline", self.EDIT, request_id="a-1")
+        self.assertEqual(edited["requestScope"], "authorized_contacts")
+        self.assertEqual(self.provider.calls[-1][:3], ("friend.timelineEdit", "账号甲", "好友1"))
+        tagged = self.write(principal, "zhiji_edit_friend_tags", self.TAG_EDIT, request_id="a-2")
+        self.assertEqual(tagged["requestScope"], "authorized_contacts")
+        self.assertEqual(self.provider.calls[-1][:3], ("friend.tagEdit", "账号甲", "好友1"))
+
+
+class AgentContextBridgeTests(unittest.TestCase):
+    """Every MCP-originated plugin call says it came from an Agent; undo goes to the Agent's own stack."""
+
+    def setUp(self):
+        self.supervisor = FakeSupervisor()
+        self.services = FakePluginServices(None, self.supervisor)
+        self.bridge = McpAnalysisBridge(self.services, "unused")
+
+    def test_reads_and_writes_carry_actor_agent(self):
+        read = self.bridge.friend_analysis_page("账号甲", "好友1", "page.tags")
+        self.assertEqual(read["context"], {"account": "账号甲", "user": "好友1", "actor": "agent"})
+        self.assertEqual(self.bridge.self_analysis_status("账号甲")["context"],
+                         {"account": "账号甲", "actor": "agent"})
+        edit = self.bridge.edit_friend_timeline("账号甲", "好友1", {"expectedVersion": 1}, agent="  合成\nAgent ")
+        self.assertEqual((edit["method"], edit["context"]),
+                         ("page.timelineEdit", {"account": "账号甲", "user": "好友1", "actor": "agent",
+                                                "agent": "合成 Agent"}))
+
+    def test_agent_undo_never_reaches_the_users_undo(self):
+        undo = self.bridge.undo_friend_timeline("账号甲", "好友1", {"expectedVersion": 1}, agent="甲")
+        self.assertEqual((undo["plugin"], undo["method"]), ("kyf.friend-analysis", "page.timelineUndoAgent"))
+        self.assertEqual(undo["context"]["actor"], "agent")
+        edit = self.bridge.edit_friend_tags("账号甲", "好友1", {"expectedVersion": 1}, agent="甲")
+        self.assertEqual((edit["method"], edit["context"]["actor"], edit["context"]["agent"]),
+                         ("page.tagEdit", "agent", "甲"))
+        undo = self.bridge.undo_friend_tags("账号甲", "好友1", {"expectedVersion": 1}, agent="甲")
+        self.assertEqual((undo["plugin"], undo["method"]), ("kyf.friend-analysis", "page.tagUndoAgent"))
+
+    def test_a_stale_friend_timeline_write_becomes_the_stable_conflict_code(self):
+        for method, call in (("page.timelineEdit", self.bridge.edit_friend_timeline),
+                             ("page.timelineUndoAgent", self.bridge.undo_friend_timeline),
+                             ("page.tagEdit", self.bridge.edit_friend_tags),
+                             ("page.tagUndoAgent", self.bridge.undo_friend_tags)):
+            self.supervisor.rpc_results[("kyf.friend-analysis", method)] = PluginError("conflict", "时间线已修改")
+            with self.assertRaises(McpError) as caught:
+                call("账号甲", "好友1", {"expectedVersion": 1})
+            self.assertEqual((caught.exception.status, caught.exception.code), (409, "version-conflict"))
 
 
 if __name__ == "__main__":

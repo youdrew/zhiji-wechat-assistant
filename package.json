@@ -1,6 +1,6 @@
 {
   "name": "know-your-friends",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "description": "知己微信助手 · Zhiji WeChat Assistant 本地优先的微信聊天理解与关系记忆助手",
@@ -12,7 +12,6 @@
   "scripts": {
     "start": "electron .",
     "start:service": "python scripts/run-project-python.py scripts/start-real-client.py",
-    "setup:advisor-engine": "python scripts/setup-advisor-engine.py",
     "build:advisor-ui": "node scripts/build-advisor-ui.mjs",
     "test": "npm run typecheck && npm run test:node && npm run test:scripts && npm run test:python",
     "test:node": "node --import tsx --test tests/*.test.ts tests/*.test.cjs plugins/*/tests/*.test.ts plugins/*/tests/*.test.cjs",
@@ -29,7 +28,6 @@
     "@anthropic-ai/sdk": "0.128.0",
     "@google/genai": "2.24.0",
     "@huggingface/tokenizers": "0.2.0",
-    "@opencode-ai/sdk": "1.18.34",
     "ollama": "0.6.3",
     "onnxruntime-node": "1.30.0",
     "openai": "7.23.0",

@@ -12,6 +12,11 @@ The default ``auto`` depth adds one cheap routing call before the reply: it pick
 concrete depth and, for personal questions (plans, feelings, recent changes), selects
 timeline entries to research from ``timeline_catalog`` plus retrieval queries. Timeline
 lines join the reply's facts; a failed route falls back to standard with no research.
+
+Modified 2026-11-09: ``Simulation`` runs the same research on a real WeChat round for
+分析与建议 (kyf.message-insights): the conversation is real (``me`` turns were actually sent),
+the friend's last run of messages is answered as a whole, and samples from the same friend
+come first. Its result also carries the researched timeline lines.
 """
 import json
 import random
@@ -73,6 +78,21 @@ ROUTE = """你替用户本人决定怎么回复一位微信好友。输入 JSON�
 第一步选 depth：basic 适合寒暄、接梗、问候或一眼能答的简单问题；standard 适合一般聊天；deep 适合需要回忆本人经历、想法或细节才能答好的问题。拿不准就选 standard。
 第二步选 research：好友的问题是否需要了解本人最近的真实经历、状态或打算（如近况、计划、感受、变化）才答得好。需要才从 timeline 里选出确实相关的条目 id（events 和 periods 合计最多 12 个，宁缺毋滥），并给出 queries：最多 3 条检索短句，用来查本人过去怎么聊这类话题。不需要调研时三项都用空数组。
 只输出 JSON：{"depth":"basic|standard|deep","research":{"events":[],"periods":[],"queries":[]}}，不输出代码围栏。"""
+
+
+# 真实聊天（分析与建议的回复调研）：conversation 里本人的话是真实发出的，不是试用生成的。
+REAL_NOTES = (
+    ("，me 的早先回复是试用中生成的，不是事实）", "，me 是用户本人真实发出的消息）"),
+    ("conversation 里 from=me 的早先回复是这次试用中生成的，不是事实依据；与上述资料不符时以资料为准，可以像本人那样自然改口。",
+     "conversation 是真实的微信聊天，from=me 是用户本人真实发出的消息，可以作为事实和说话方式的依据。"),
+    ("只回复 conversation 中好友最后发来的消息，", "回复 conversation 末尾好友连续发来的这一轮消息（当作一轮整体回复，不必逐条各回一句），"),
+)
+
+
+def real(prompt):
+    for old, new in REAL_NOTES:
+        prompt = prompt.replace(old, new)
+    return prompt
 
 
 def depth(value=None):
@@ -271,6 +291,8 @@ def eval_guard(params):
 class Trial(Job):
     title, kind, fallback = "聊天试用", "self-trial", "回复生成未完成，请重试"
 
+    real, user = False, None
+
     def __init__(self, plugin, store, account, turns, tags=None, level=DEFAULT_REPLY_DEPTH,
                  before_time_ms=None, exclude_sample_ids=None, exclude_message_ids=None):
         super().__init__(plugin, store, account, phase="reading", depth=level)
@@ -286,7 +308,7 @@ class Trial(Job):
         ids 只保留目录里真实存在的条目，合计不超过 ``MAX_RESEARCH``——路由模型说的
         其余一切都被丢弃。
         """
-        request = {"system": ROUTE, "prompt": json.dumps({"conversation": self.turns, "facts": route_facts,
+        request = {"system": real(ROUTE) if self.real else ROUTE, "prompt": json.dumps({"conversation": self.turns, "facts": route_facts,
                                                           "timeline": catalog}, ensure_ascii=False),
                    "jsonMode": True, "thinking": False, "maxOutputTokens": 512}
         try:
@@ -305,7 +327,7 @@ class Trial(Job):
 
     def _plan(self, context, known):
         """深度: the model names what to look up first; a failed plan only narrows the search."""
-        request = {"system": PLAN, "prompt": json.dumps({"conversation": self.turns, "facts": known}, ensure_ascii=False),
+        request = {"system": real(PLAN) if self.real else PLAN, "prompt": json.dumps({"conversation": self.turns, "facts": known}, ensure_ascii=False),
                    "jsonMode": True, "thinking": False, "maxOutputTokens": 512}
         try:
             return self.generate(context, request, "self-trial-plan", parse_plan)
@@ -329,7 +351,13 @@ class Trial(Job):
                 params["beforeTimeMs"] = self.before_time_ms
             if self.exclude_message_ids:
                 params["excludeMessageIds"] = sorted(self.exclude_message_ids)
-            rows = retrieval.search(params, None)
+            if self.user:
+                # The same friend first (up to half), the rest from everyone.
+                own = retrieval.search({**params, "onlyUser": True, "limit": max(1, (params["limit"] + 1) // 2)}, self.user)
+                taken = {row["id"] for row in own}
+                rows = (own + [row for row in retrieval.search(params, self.user) if row["id"] not in taken])[:params["limit"]]
+            else:
+                rows = retrieval.search(params, None)
             # search 的 excludeMessageIds 只在同联系人时生效，排除样例须在此再过滤一次。
             if self.exclude_sample_ids:
                 rows = [row for row in rows if row["id"] not in self.exclude_sample_ids]
@@ -387,6 +415,20 @@ class Trial(Job):
             sources = sources[:-1]
         self._set(phase="writing", sources=sources, mode=mode, depth=route["depth"] if route else self.level,
                   research=len(known) - len(base))
-        request = {"system": SYSTEM, "prompt": render(sources), "jsonMode": True, "maxOutputTokens": output,
-                   **({} if level["thinking"] else {"thinking": False})}
-        return {"messages": fit(self.generate(context, request, "self-trial", parse), count)}
+        request = {"system": real(SYSTEM) if self.real else SYSTEM, "prompt": render(sources), "jsonMode": True,
+                   "maxOutputTokens": output, **({} if level["thinking"] else {"thinking": False})}
+        result = {"messages": fit(self.generate(context, request, "self-trial", parse), count)}
+        if self.real:
+            result["timeline"] = known[len(base):]
+        return result
+
+
+class Simulation(Trial):
+    """回复调研 for 分析与建议: how the user would likely answer a real round of a friend's messages."""
+    title, kind, fallback = "回复调研", "self-simulate", "回复调研未完成"
+    task_kind = "background"
+    real = True
+
+    def __init__(self, plugin, store, account, user, turns, tags=None, level="deep"):
+        super().__init__(plugin, store, account, turns, tags, level)
+        self.user = user

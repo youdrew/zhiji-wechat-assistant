@@ -145,6 +145,12 @@ class Retrieval:
         if user and before_seq:
             conditions.append("(s.user<>? OR s.to_seq<?)")
             values.extend((user, before_seq))
+        # ``onlyUser`` (分析与建议, 2026-11-09): only this contact's samples, without the two-per-contact cap.
+        only = bool(user) and params.get("onlyUser") is True
+        if only:
+            conditions.append("s.user=?")
+            values.append(user)
+        cap = limit if only else 2
         rows = self._lexical(tokens, conditions, values)
         target_scene = scene(query)
         query_weights = {token: 0.22 if len(token) == 1 else 1 for token in tokens}
@@ -175,6 +181,8 @@ class Retrieval:
             for row in semantic_rows:
                 if user and before_seq and row["user"] == user and row["to_seq"] >= before_seq:
                     continue
+                if only and row["user"] != user:
+                    continue
                 combined[row["id"]] = row
         for row in combined.values():
             kinds = [kind for kind, order in (("lexical", lexical_order), ("semantic", semantic_order)) if row["id"] in order]
@@ -192,7 +200,7 @@ class Retrieval:
             batch, batch_users, batch_norms = [], {}, set()
             while position < min(16, len(ranked)) and len(batch) < min(4, limit - len(selected)):
                 row = ranked[position]
-                if row["norm"] in seen or per_user.get(row["user"], 0) >= 2:
+                if row["norm"] in seen or per_user.get(row["user"], 0) >= cap:
                     position += 1
                     continue
                 if row["user"] == user and any(item["id"] in excluded for item in json.loads(row["evidence"])):
@@ -201,14 +209,14 @@ class Retrieval:
                 # Wait for this batch before spending reads on a duplicate or
                 # third sample from a contact. Retry it only if earlier ones
                 # fail verification, matching the sequential selection policy.
-                if row["norm"] in batch_norms or per_user.get(row["user"], 0) + batch_users.get(row["user"], 0) >= 2:
+                if row["norm"] in batch_norms or per_user.get(row["user"], 0) + batch_users.get(row["user"], 0) >= cap:
                     break
                 position += 1
                 batch.append(row)
                 batch_norms.add(row["norm"])
                 batch_users[row["user"]] = batch_users.get(row["user"], 0) + 1
             for row, valid in zip(batch, self._verify_many(batch)):
-                if not valid or row["norm"] in seen or per_user.get(row["user"], 0) >= 2:
+                if not valid or row["norm"] in seen or per_user.get(row["user"], 0) >= cap:
                     continue
                 selected.append({"id": row["id"], "hash": digest(row), "user": row["user"], "name": row["name"],
                                  "sameContact": row["user"] == user, "timeMs": row["time_ms"], "scene": row["scene"],

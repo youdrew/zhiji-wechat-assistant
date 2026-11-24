@@ -62,9 +62,15 @@ test("the window and the scheme page load only local scripts under a strict cont
     "/friend.js"]);
   // The analysis pages run in the plugin's sandboxed frame, never inside the host window.
   assert.deepEqual(scripts(page), ["/plugin-sdk/web/kyf-host.js", "/plugin-sdk/web/time-trend.js", "/plugin-sdk/web/persona-charts.js",
-    "page-core.js", "friend-trend-math.js",
-    "friend-trend.js", "friend-overview.js", "friend-persona.js", "friend-chat.js", "page.js"]);
+    "/plugin-sdk/web/timeline.js", "page-core.js", "friend-trend-math.js", "friend-trend.js", "friend-overview.js", "friend-tags.js",
+    "friend-timeline.js", "friend-persona.js", "friend-chat.js", "friend-simulation.js", "page.js"]);
+  // The shared timeline stylesheet comes after the page's own, so its rules read the page's colors.
+  assert.deepEqual([...page.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map(match => match[1]),
+    ["/plugin-sdk/web/persona-charts.css", "page.css", "/plugin-sdk/web/timeline.css"]);
   assert.doesNotMatch(html, /friend-insight\.js/);
+  // 标签 and 时间线 each fill their own section.
+  assert.match(page, /<section id="pageTags" class="fa-page fa-split" hidden><\/section>/);
+  assert.match(page, /<section id="pageTimeline" class="fa-page" hidden><\/section>/);
 });
 
 class Element {
@@ -124,7 +130,7 @@ test("tabs follow the scheme manifest with 关系记忆 from the host, and 好�
   const h = schemeHarness();
   await h.context.FriendScheme.load();
   const tabs = h.byId("faTabs").children;
-  assert.deepEqual(tabs.map(tab => tab.textContent), ["好友概述", "关系记忆", "性格分析", "三观分析", "聊天分析", "关系趋势"]);
+  assert.deepEqual(tabs.map(tab => tab.textContent), ["好友概述", "标签", "时间线", "关系记忆", "性格分析", "三观分析", "聊天分析", "关系趋势", "模拟对话"]);
   assert.deepEqual(tabs.filter(tab => tab.attributes["aria-selected"] === "true").map(tab => tab.dataset.tab), ["overview"]);
   assert.equal(h.byId("faSchemeLabel").hidden, true, "one scheme needs no picker");
   assert.deepEqual(JSON.parse(JSON.stringify(h.schemes)), [{ plugin: "kyf.friend-analysis", scheme: "default", name: "默认方案" }]);

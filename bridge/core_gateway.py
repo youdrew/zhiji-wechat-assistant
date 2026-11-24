@@ -12,7 +12,9 @@ import hashlib
 import itertools
 import json
 import logging
+import math
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -27,6 +29,11 @@ READY_TIMEOUT = 20.0
 PROBE_TIMEOUT = 45.0
 RESTART_WINDOW = 600.0
 RESTART_LIMIT = 5
+RESTART_COOLDOWN = 30.0  # after RESTART_LIMIT starts in RESTART_WINDOW, the next start waits this long
+STDERR_TAIL_LINES = 20
+STDERR_LINE_CHARS = 300
+# Gateway stderr is logged only after a crash; drop anything shaped like a credential first.
+SECRET_TEXT = re.compile(r"(?i)\bbearer\s+\S+|(?<![\w+=-])(?=[\w+=-]*\d)(?=[\w+=-]*[a-z])[\w+=-]{24,}")
 MAX_OUTBOUND_MESSAGES = 256
 MAX_OUTBOUND_BYTES = 8 * 1024 * 1024
 WRITE_TIMEOUT = 3.0
@@ -49,6 +56,9 @@ class _ControlChannel:
         self.ready = threading.Event()
         self.port = None
         self.failure = None
+        self.stderr_tail = deque(maxlen=STDERR_TAIL_LINES)
+        self.stderr_done = threading.Event()
+        self.stderr_done.set()  # cleared while a reader drains the process's stderr
 
 
 class GatewayUnavailable(RuntimeError):
@@ -95,9 +105,12 @@ class ModelGatewayHost:
                 return self.port
             if not self._alive():
                 now = time.monotonic()
-                self.starts = [stamp for stamp in self.starts if now - stamp < RESTART_WINDOW] + [now]
-                if len(self.starts) > RESTART_LIMIT:
-                    raise GatewayUnavailable("gateway-crashed", "模型网关连续异常退出，请重新启动应用")
+                # Only real starts count: a refused attempt must not extend the pause it was refused by.
+                self.starts = [stamp for stamp in self.starts if now - stamp < RESTART_WINDOW]
+                if len(self.starts) >= RESTART_LIMIT and now - self.starts[-1] < RESTART_COOLDOWN:
+                    wait = math.ceil(RESTART_COOLDOWN - (now - self.starts[-1]))
+                    raise GatewayUnavailable("gateway-crashed", f"模型网关连续异常退出，{wait} 秒后可重试")
+                self.starts.append(now)
                 self._start()
             channel = self._channel
         if not channel.ready.wait(timeout):
@@ -122,9 +135,15 @@ class ModelGatewayHost:
         self.port = None
         group = ProcessGroup()
         try:
+            # --no-maglev: V8's Maglev tier trips Windows 11 Insider build 26200's
+            # stricter CFG and dies via __fastfail (exit 0xC0000409, no stderr, no
+            # WER) once hot fetch/timer paths are tiered up — nodejs/node #62260.
+            # The gateway is I/O and JSON bound, so losing one JIT tier costs
+            # little; TurboFan still compiles the hot paths.
             process = subprocess.Popen(
-                [node, "--import", loader, str(self.root / "scripts" / "model-gateway.ts")], cwd=self.root,
-                env=base_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                [node, "--no-maglev", "--import", loader, str(self.root / "scripts" / "model-gateway.ts")],
+                cwd=self.root,
+                env=base_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 bufsize=0, **ProcessGroup.popen_options())
             group.adopt(process)
         except BaseException:
@@ -136,6 +155,21 @@ class ModelGatewayHost:
         threading.Thread(target=self._write, args=(channel,), daemon=True, name="model-gateway-write").start()
         threading.Thread(target=self._watch_write, args=(channel,), daemon=True, name="model-gateway-watch").start()
         threading.Thread(target=self._read, args=(channel,), daemon=True, name="model-gateway-read").start()
+        channel.stderr_done.clear()
+        threading.Thread(target=self._drain_stderr, args=(channel,), daemon=True, name="model-gateway-stderr").start()
+
+    @staticmethod
+    def _drain_stderr(channel):
+        """Keep the last stderr lines in memory; they are logged only if this generation crashes."""
+        try:
+            for line in iter(lambda: channel.process.stderr.readline(8192), b""):
+                text = SECRET_TEXT.sub("<redacted>", line.decode("utf-8", "replace").rstrip())
+                if text:
+                    channel.stderr_tail.append(text[:STDERR_LINE_CHARS])
+        except (OSError, ValueError):
+            pass
+        finally:
+            channel.stderr_done.set()
 
     def _send(self, message, channel=None):
         """Enqueue one bounded control message; never write to an OS pipe on a Core thread."""
@@ -213,12 +247,16 @@ class ModelGatewayHost:
                 channel.ready.set()  # Wake ensure() so failure is not a startup timeout.
                 # Normal close is not a failure. Publish genuine failures only after cleanup.
                 if not self.closed:
+                    peak = getattr(channel.group, "peak_memory", lambda: None)()
+                    if not isinstance(peak, int):
+                        peak = None
                     channel.failure = {"at": int(time.time() * 1000), "code": code if code in (
                         "gateway-unavailable", "gateway-start", "gateway-write-timeout", "gateway-backpressure",
                         "gateway-config-timeout") else "gateway-unavailable",
                         "stage": stage if stage in ("control", "stdout-eof", "read", "ledger-record", "ledger-track") else "control",
                         "exception": exception if exception in ("OSError", "ValueError", "GatewayUnavailable") else None,
-                        "exitCode": channel.process.poll(), "closing": False}
+                        "exitCode": channel.process.poll(), "closing": False,
+                        "peakMemoryMb": round(peak / (1 << 20)) if peak else None}
             if channel is self._channel:
                 self.ready.clear()
                 self.port = None
@@ -237,7 +275,8 @@ class ModelGatewayHost:
             except (subprocess.TimeoutExpired, OSError):
                 pass
             channel.writer_done.wait(1)
-            for stream in (channel.process.stdin, channel.process.stdout):
+            channel.stderr_done.wait(1)
+            for stream in (channel.process.stdin, channel.process.stdout, channel.process.stderr):
                 try:
                     stream.close()
                 except (OSError, ValueError):
@@ -263,6 +302,9 @@ class ModelGatewayHost:
                 if failure is not None:
                     self.failures.append(failure)
                     LOGGER.warning("model-gateway failure %s", json.dumps(failure, separators=(",", ":")))
+                    if channel.stderr_tail:
+                        LOGGER.warning("model-gateway stderr (last %d lines):\n%s", len(channel.stderr_tail),
+                                       "\n".join(channel.stderr_tail))
                 self._channels.discard(channel)
             channel.cleaned.set()
 

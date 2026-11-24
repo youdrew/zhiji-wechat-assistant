@@ -15,16 +15,21 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from backend_service import Backend  # noqa: E402
+from backend_contracts import AccountUnavailableError  # noqa: E402
 from conversation_selection import ConversationSelectionStore  # noqa: E402
+from core_accounts import AccountDataService  # noqa: E402
 from core_http import post as host_post  # noqa: E402
 from core_services import CoreServices  # noqa: E402
 from core_tasks import TaskError  # noqa: E402
-from real_http import make_handler  # noqa: E402
+from data_root_source import DataRootSource  # noqa: E402
+from model_traces import ModelTraceService  # noqa: E402
+from real_http import make_backend, make_handler  # noqa: E402
 from test_support import FakeSource  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = "kyf.external-chat-import"
+SELF_ANALYSIS = "kyf.self-analysis"
+ACCOUNT = "synthetic-import-account"
 TSX_LOADER = ROOT / "node_modules" / "tsx" / "dist" / "loader.mjs"
 
 
@@ -71,12 +76,26 @@ class VisionProvider(BaseHTTPRequestHandler):
         if self.server.hold or (review and self.server.hold_review):
             self.server.release.wait(15)
         content = self.server.review_reply if review else self.server.reply
+        prompt = body["messages"][-1]["content"]
+        if isinstance(prompt, str):
+            content = self.profile_reply(json.loads(prompt))
         self.send_json({"id": "synthetic-response", "object": "chat.completion", "created": 1,
             "model": "synthetic-vision", "choices": [{"index": 0, "finish_reason": "stop",
             "message": {"role": "assistant", "content": content if isinstance(content, str) else json.dumps(content)}}],
             "usage": {"prompt_tokens": 91, "completion_tokens": 37, "total_tokens": 128}})
         if review:
             self.server.review_replied.set()
+
+    @staticmethod
+    def profile_reply(prompt):
+        if "chats" in prompt:
+            own_lines = [line for chat in prompt["chats"] for line in chat["lines"] if isinstance(line, dict)]
+            return {"profile": [{"i": line["i"], "section": "style", "relation": "trait",
+                                 "text": "Uses short replies", "quote": line["text"], "reason": "Fixture observation"}
+                                for line in own_lines], "tags": [], "persona": [], "values": []}
+        if "proposed" in prompt:
+            return {key: [{"n": i} for i in range(len(rows))] for key, rows in prompt["proposed"].items()}
+        return {"background": "Synthetic imported profile", "style": "Synthetic reply style"}
 
 
 class ModelStore:
@@ -90,6 +109,19 @@ class ModelStore:
 
     def resolve_key(self, *_args):
         return "synthetic-provider-token"
+
+
+class ImportSource(FakeSource):
+    """Synthetic account scope for self-analysis, with an empty native conversation list."""
+
+    def advisor_identity(self, *, messages=False):
+        if not self.account:
+            raise AccountUnavailableError()
+        return self.identity()
+
+    def history_conversations(self):
+        return {"account": self.account, "conversations": [],
+                "coverage": {"state": "complete", "readableShards": 0, "failedShards": [], "unresolvedTables": 0}}
 
 
 class ExternalImportPluginTests(unittest.TestCase):
@@ -110,35 +142,55 @@ class ExternalImportPluginTests(unittest.TestCase):
         self.provider.entered, self.provider.release, self.provider.review_entered = threading.Event(), threading.Event(), threading.Event()
         self.provider.review_replied = threading.Event()
         threading.Thread(target=self.provider.serve_forever, daemon=True).start()
-        # This source is never read for imports: the friend has no WeChat binding.
-        self.backend = Backend(FakeSource(account="synthetic-wechat"),
+        # The import is unbound. Only the explicit self-analysis needs a synthetic account scope.
+        self.source = ImportSource(account=ACCOUNT, workdir=base)
+        self.backend = make_backend(None, source=self.source, data_root_store=DataRootSource(base),
             selection_store=ConversationSelectionStore(base / "selection"),
             model_source_store=ModelStore(f"http://127.0.0.1:{self.provider.server_port}/v1"))
+        self.backend._accounts = AccountDataService(self.source, base)
+        self.backend._model_traces = ModelTraceService(base)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.backend))
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.backend._core = self.core = CoreServices(self.backend, ROOT, self.url, local=base / ".local",
             bundled_dir=ROOT / "plugins", local_dir=base / "none")
         self.service = self.core.external_import
-        self.friend = self.service.store.create_friend("合成好友")
-        self.batch = self.service.store.create_batch(self.friend["id"], "synthetic-source", "synthetic-self", "synthetic-chat")
+        self.friend = self.request("/api/external-import/friends", {"name": "合成好友"})["friend"]
+        self.batch = self.request("/api/external-import/batches", {
+            "friendId": self.friend["id"], "platform": "synthetic-source",
+            "ownAccount": "synthetic-self", "conversationKey": "synthetic-chat"})
         picture = Image.new("RGB", (500, 800), "#f5f5f5")
         draw = ImageDraw.Draw(picture)
         draw.rectangle((50, 160, 350, 240), fill="white")
         draw.text((65, 185), "Synthetic hello", fill="black")
         buffer = io.BytesIO()
         picture.save(buffer, "PNG")
-        raw = buffer.getvalue()
-        self.service.upload(self.batch["id"], "synthetic-chat.png", io.BytesIO(raw), len(raw))
+        self.request(f"/api/external-import/upload?batchId={self.batch['id']}&name=synthetic-chat.png",
+                     buffer.getvalue())
 
     def tearDown(self):
         self.provider.release.set()
-        self.core.close()
         self.server.shutdown()
         self.server.server_close()
+        self.backend.shutdown()
         self.provider.shutdown()
         self.provider.server_close()
         self.temp.cleanup()
+
+    def request(self, path, body=None):
+        headers = {}
+        if isinstance(body, bytes):
+            headers["Content-Type"] = "application/octet-stream"
+        elif body is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(body).encode()
+        request = urllib.request.Request(self.url + path, data=body, headers=headers)
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+
+    def self_rpc(self, method, params=None):
+        return self.request("/api/plugins/rpc", {
+            "plugin": SELF_ANALYSIS, "method": method, "params": params or {}, "account": ACCOUNT})["result"]
 
     def wait_until(self, check, timeout=30):
         deadline = time.monotonic() + timeout
@@ -157,8 +209,39 @@ class ExternalImportPluginTests(unittest.TestCase):
         self.core.ledger.flush()
         return self.core.ledger.records({"account": "external-chat"})["records"]
 
+    def test_saved_external_messages_flow_into_explicit_self_analysis(self):
+        self.assertEqual(self.request("/api/health")["data"], {"state": "ready", "account": ACCOUNT})
+        self.assertIsNone(self.friend["wechatAccount"])
+        batch_id = self.batch["id"]
+        self.request("/api/external-import/start", {"batchId": batch_id})
+        self.assertEqual(self.wait_batch()["state"], "review")
+        self.request("/api/external-import/save", {"batchId": batch_id})
+        visible = self.request(f"/api/external-import/messages?friendId={self.friend['id']}")
+        self.assertEqual([message["text"] for message in visible["messages"]],
+                         ["Synthetic hello", "Synthetic reply"])
+        self.assertFalse(self.core.tasks.tasks(account=ACCOUNT), "saving does not start self-analysis")
+
+        started = self.self_rpc("self.analyze", {"depth": "basic", "outputs": ["profile"]})
+        self.assertEqual(started["state"], "running")
+
+        def finished():
+            status = self.self_rpc("self.analysisStatus")
+            return status if status["state"] != "running" else None
+
+        result = self.wait_until(finished)
+        self.assertEqual(result["state"], "done", result)
+        self.assertEqual(result["coverage"]["externalMessages"], 1)
+        self.assertEqual(result["coverage"]["evidence"]["analyzedMessages"], 1)
+        self.assertEqual(self.self_rpc("self.draftStatus")["result"]["background"], "Synthetic imported profile")
+        analysis_prompts = [json.loads(prompt) for call in self.provider.calls
+                            if isinstance(prompt := call["body"]["messages"][-1]["content"], str)]
+        lines = [line for prompt in analysis_prompts for chat in prompt.get("chats", []) for line in chat["lines"]]
+        self.assertEqual([line["text"] for line in lines if isinstance(line, dict)], ["Synthetic reply"])
+        self.assertTrue(any("Synthetic hello" in line for line in lines if isinstance(line, str)))
+
     def test_actual_plugin_image_call_is_metered_and_only_clear_candidates_save(self):
         self.backend.source.account = ""
+        self.assertEqual(self.request("/api/health")["data"]["state"], "account-unavailable")
         selected = self.service.status()["model"]
         self.assertTrue(selected["supportsVision"])
         self.assertEqual(selected["model"], "synthetic-vision", "show the primary gateway's actual model, not its alias")
@@ -311,7 +394,7 @@ class ExternalImportPluginTests(unittest.TestCase):
         self.service.start(self.batch["id"])
         failed = self.wait_batch()
         self.assertEqual(failed["state"], "failed")
-        self.assertIn("当前图片模型", failed["error"])
+        self.assertIn("当前视觉模型", failed["error"])
         self.assertEqual(self.provider.calls, [])
         self.assertEqual(failed["candidates"], [])
 

@@ -6,6 +6,9 @@ saved profile must never imply a successful switch. Modified by Know Your
 Friends, 2026-10-16 (Apache-2.0): configurable generation deadlines.
 Modified 2026-11-01: multi-model storage with roles; a version 1 document is
 migrated on first write, with the original kept as ``api-model-source.v1.json``.
+Modified 2026-11-07: a fourth purpose, speech synthesis, served by models of the
+``openai_speech`` protocol. It is written only when assigned, so builds that
+know three purposes keep reading a document without one.
 """
 
 from __future__ import annotations
@@ -22,9 +25,11 @@ from urllib.parse import urlsplit
 from backend_contracts import LOCAL_SOURCE_ID, ModelSourceUnavailable
 
 
-PROTOCOLS = frozenset({"anthropic", "responses", "chat_completions", "gemini", "ollama"})
+SPEECH_PROTOCOLS = frozenset({"openai_speech"})
+PROTOCOLS = frozenset({"anthropic", "responses", "chat_completions", "gemini", "ollama"}) | SPEECH_PROTOCOLS
 BUILTIN_PROTOCOL = "systemone"
-ROLES = ("main", "judge", "image")
+ROLES = ("main", "judge", "image", "speech")
+MAX_VOICE = 128
 MAX_MODELS = 16
 DEFAULT_CONCURRENCY = 4
 MAX_BASE_URL = 2048
@@ -43,6 +48,27 @@ def _source_fingerprint(protocol, base_url, model):
     identity = json.dumps(["api-source-v1", protocol, base_url, model],
                           ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def empty_roles():
+    return {role: None for role in ROLES}
+
+
+def _stored_roles(roles):
+    """Leave an unassigned speech purpose out so older builds still read the file."""
+    return {role: target for role, target in roles.items() if role != "speech" or target is not None}
+
+
+def _speech_voice(protocol, voice):
+    """Speech models need a voice; text models must not carry one."""
+    if protocol not in SPEECH_PROTOCOLS:
+        if voice is not None:
+            raise ValueError("invalid voice")
+        return None
+    voice = _text(voice, "voice", MAX_VOICE).strip()
+    if not voice:
+        raise ValueError("invalid voice")
+    return voice
 
 
 def _text(value, name, maximum):
@@ -77,7 +103,7 @@ def connection_values(request, require_model=False):
     """Validate user-controlled endpoint fields before handing them to an SDK."""
     if not isinstance(request, dict):
         raise ValueError("invalid model source request")
-    allowed = {"protocol", "baseUrl", "apiKey", "model", "contextTokens", "timeoutMs"} if require_model else {"protocol", "baseUrl", "apiKey"}
+    allowed = {"protocol", "baseUrl", "apiKey", "model", "contextTokens", "timeoutMs", "voice"} if require_model else {"protocol", "baseUrl", "apiKey"}
     required = {"protocol", "baseUrl", "model"} if require_model else {"protocol", "baseUrl"}
     if not required <= request.keys() or not request.keys() <= allowed:
         raise ValueError("invalid model source request")
@@ -117,6 +143,7 @@ def connection_values(request, require_model=False):
             raise ValueError("invalid contextTokens")
         result["contextTokens"] = context_tokens
         result["timeoutMs"] = model_timeout_ms(request.get("timeoutMs", DEFAULT_MODEL_TIMEOUT_MS))
+        result["voice"] = _speech_voice(protocol, request.get("voice"))
     return result
 
 
@@ -228,7 +255,7 @@ class ModelSourceStore:
     def _api_entry(entry):
         if not isinstance(entry, dict) or set(entry) - {
                 "id", "name", "protocol", "baseUrl", "model", "contextTokens", "timeoutMs",
-                "concurrency", "encryptedKey"}:
+                "concurrency", "encryptedKey", "voice"}:
             raise ModelSourceUnavailable("model settings unavailable")
         try:
             name = model_name(entry.get("name", ""))
@@ -246,11 +273,13 @@ class ModelSourceStore:
             encrypted = entry.get("encryptedKey")
             if encrypted is not None and (not isinstance(encrypted, str) or len(encrypted) > 16384):
                 raise ValueError("invalid encryptedKey")
+            voice = _speech_voice(protocol, entry.get("voice"))
         except (KeyError, ValueError, TypeError) as exc:
             raise ModelSourceUnavailable("model settings unavailable") from exc
         return {"name": name, "protocol": protocol, "baseUrl": base_url, "model": model_id,
                 "contextTokens": context_tokens, "timeoutMs": timeout_ms,
-                "concurrency": concurrency, "encryptedKey": encrypted}
+                "concurrency": concurrency, "encryptedKey": encrypted,
+                **({"voice": voice} if voice is not None else {})}
 
     @staticmethod
     def _builtin_entry(entry):
@@ -286,16 +315,17 @@ class ModelSourceStore:
             ids.add(entry_id)
             models.append({"id": entry_id, **entry})
         roles = raw.get("roles")
-        if not isinstance(roles, dict) or set(roles) != set(ROLES):
+        if not isinstance(roles, dict) or set(roles) not in (set(ROLES), set(ROLES) - {"speech"}):
             raise ModelSourceUnavailable("model settings unavailable")
+        roles = {**empty_roles(), **roles}
         for role, target in roles.items():
             if target is not None and (not _valid_id(target) or target not in ids):
                 raise ModelSourceUnavailable("model settings unavailable")
-        main_entry = next((item for item in models if item["id"] == roles["main"]), None)
-        image_entry = next((item for item in models if item["id"] == roles["image"]), None)
-        if (roles["main"] is not None and (main_entry is None or "builtin" in main_entry)) or \
-                (roles["main"] is None and any("builtin" not in item for item in models)) or \
-                (image_entry is not None and "builtin" in image_entry):
+            entry = next((item for item in models if item["id"] == target), None)
+            if entry is not None and not self._fits_role(role, entry):
+                raise ModelSourceUnavailable("model settings unavailable")
+        if roles["main"] is None and any("builtin" not in item and item["protocol"] not in SPEECH_PROTOCOLS
+                                         for item in models):
             raise ModelSourceUnavailable("model settings unavailable")
         selected_mode = raw.get("selectedMode", "api")
         if selected_mode not in ("local", "api"):
@@ -306,6 +336,16 @@ class ModelSourceStore:
         return {"version": 2, "selectedMode": selected_mode, "models": models,
                 "roles": dict(roles), "sourceIds": source_ids}
 
+    @staticmethod
+    def _fits_role(role, entry):
+        """Speech models serve only speech; the bundled judge serves only judging."""
+        speech = entry.get("protocol") in SPEECH_PROTOCOLS
+        if role == "speech":
+            return speech
+        if speech:
+            return False
+        return role == "judge" or "builtin" not in entry
+
     def _normalize_v1(self, raw):
         """Version 1 held one profile; it becomes models[0] with roles.main."""
         if not isinstance(raw, dict) or raw.get("version") != 1:
@@ -315,8 +355,7 @@ class ModelSourceStore:
             if source_ids is None:
                 raise ModelSourceUnavailable("model settings unavailable")
             return {"version": 2, "selectedMode": "local", "models": [],
-                    "roles": {"main": None, "judge": None, "image": None},
-                    "sourceIds": source_ids}
+                    "roles": empty_roles(), "sourceIds": source_ids}
         if not isinstance(raw.get("api"), dict):
             raise ModelSourceUnavailable("model settings unavailable")
         api = raw["api"]
@@ -351,7 +390,7 @@ class ModelSourceStore:
                  "contextTokens": validated["contextTokens"], "timeoutMs": validated["timeoutMs"],
                  "concurrency": self.initial_concurrency, "encryptedKey": encrypted}
         return {"version": 2, "selectedMode": selected_mode, "models": [entry],
-                "roles": {"main": source_id, "judge": None, "image": None},
+                "roles": {**empty_roles(), "main": source_id},
                 "sourceIds": source_ids}
 
     def _read(self):
@@ -402,14 +441,15 @@ class ModelSourceStore:
         with self.lock:
             saved = self._read()
         if not saved:
-            return {"models": [], "roles": {"main": None, "judge": None, "image": None}}
+            return {"models": [], "roles": empty_roles()}
         entries = []
         for item in saved["models"]:
             entries.append({"id": item["id"], "name": item["name"], "protocol": item["protocol"],
                             "model": item["model"], "concurrency": item["concurrency"],
                             **({"builtin": item["builtin"]} if "builtin" in item else {
                                 "baseUrl": item["baseUrl"], "contextTokens": item["contextTokens"],
-                                "timeoutMs": item["timeoutMs"], "hasKey": bool(item["encryptedKey"])})})
+                                "timeoutMs": item["timeoutMs"], "hasKey": bool(item["encryptedKey"]),
+                                **({"voice": item["voice"]} if "voice" in item else {})})})
         return {"models": entries, "roles": dict(saved["roles"])}
 
     def api_profile(self, entry_id):
@@ -465,7 +505,7 @@ class ModelSourceStore:
             return None
 
     def _upsert(self, saved, *, entry_id=None, name="", protocol=None, base_url=None, model=None,
-                key=_MISSING, context_tokens=_MISSING, timeout_ms=_MISSING, concurrency=None):
+                key=_MISSING, context_tokens=_MISSING, timeout_ms=_MISSING, concurrency=None, voice=None):
         """Insert or update one model entry; returns (id, models, sourceIds).
 
         A blank key reuses the ciphertext of the stored model with the same
@@ -486,6 +526,7 @@ class ModelSourceStore:
         if not model:
             raise ValueError("invalid model")
         name = model_name(name)
+        voice = _speech_voice(protocol, voice)
         fingerprint = _source_fingerprint(protocol, base_url, model)
         existing_id = entry_id or source_ids.get(fingerprint)
         existing = next((item for item in models if item["id"] == existing_id), None)
@@ -493,6 +534,11 @@ class ModelSourceStore:
             raise ValueError("unknown model")
         if existing is not None and "builtin" in existing:
             raise ValueError("invalid model")
+        if existing is not None and saved and any(
+                target == existing["id"] and not self._fits_role(role, {"protocol": protocol})
+                for role, target in saved["roles"].items()):
+            # A model cannot change between text and speech while it serves a purpose.
+            raise ValueError("invalid protocol")
         if entry_id is not None and source_ids.get(fingerprint, entry_id) != entry_id:
             raise ValueError("duplicate model")
         if existing is None and len(models) >= MAX_MODELS:
@@ -540,7 +586,7 @@ class ModelSourceStore:
                                timeout_ms is not _MISSING else DEFAULT_MODEL_TIMEOUT_MS),
                  "concurrency": (existing["concurrency"] if existing is not None and
                                  concurrency is None else concurrency or DEFAULT_CONCURRENCY),
-                 "encryptedKey": encrypted}
+                 "encryptedKey": encrypted, **({"voice": voice} if voice is not None else {})}
         models = [item for item in models if item["id"] != entry_id]
         models.append(entry)
         source_ids[fingerprint] = entry_id
@@ -549,34 +595,39 @@ class ModelSourceStore:
     def save_api(self, protocol, base_url, model, key, source_id=None, context_tokens=None,
                  timeout_ms=_MISSING, concurrency=None):
         """Call only after the analysis worker has atomically activated this source."""
+        if protocol in SPEECH_PROTOCOLS:
+            raise ValueError("invalid protocol")
         with self.lock:
             saved = self._read()
             entry_id, models, source_ids = self._upsert(
                 saved, entry_id=source_id, protocol=protocol, base_url=base_url, model=model,
                 key=key, context_tokens=context_tokens, timeout_ms=timeout_ms,
                 concurrency=concurrency)
-            roles = dict(saved["roles"]) if saved else {"main": None, "judge": None, "image": None}
+            roles = dict(saved["roles"]) if saved else empty_roles()
             roles["main"] = entry_id
-            self._write({"version": 2, "selectedMode": "api", "models": models, "roles": roles,
-                         "sourceIds": source_ids})
+            self._write({"version": 2, "selectedMode": "api", "models": models,
+                         "roles": _stored_roles(roles), "sourceIds": source_ids})
             return entry_id
 
     def save_model(self, entry_id=None, *, name="", protocol, base_url, model, key=_MISSING,
-                   context_tokens=_MISSING, timeout_ms=_MISSING, concurrency=None):
+                   context_tokens=_MISSING, timeout_ms=_MISSING, concurrency=None, voice=None):
         """Add or edit a model without changing role assignments (the main model
-        keeps its identity through this path; /activate remains the main save)."""
+        keeps its identity through this path; /activate remains the main save).
+        The first text model becomes the main model and the first speech model
+        the speech model."""
         with self.lock:
             saved = self._read()
             result = self._upsert(saved, entry_id=entry_id, name=name, protocol=protocol,
                                   base_url=base_url, model=model, key=key,
                                   context_tokens=context_tokens, timeout_ms=timeout_ms,
-                                  concurrency=concurrency)
+                                  concurrency=concurrency, voice=voice)
             entry_id, models, source_ids = result
-            roles = dict(saved["roles"]) if saved else {"main": None, "judge": None, "image": None}
-            if roles["main"] is None:
-                roles["main"] = entry_id
+            roles = dict(saved["roles"]) if saved else empty_roles()
+            role = "speech" if protocol in SPEECH_PROTOCOLS else "main"
+            if roles[role] is None:
+                roles[role] = entry_id
             self._write({"version": 2, "selectedMode": saved["selectedMode"] if saved else "api",
-                         "models": models, "roles": roles, "sourceIds": source_ids})
+                         "models": models, "roles": _stored_roles(roles), "sourceIds": source_ids})
             return entry_id
 
     def ensure_builtin(self, builtin, name, model):
@@ -594,10 +645,10 @@ class ModelSourceStore:
             models = ([dict(item) for item in saved["models"]] if saved else [])
             models.append({"id": entry_id, "name": model_name(name), "protocol": BUILTIN_PROTOCOL,
                            "builtin": builtin, "model": model, "concurrency": 1})
-            roles = dict(saved["roles"]) if saved else {"main": None, "judge": None, "image": None}
+            roles = dict(saved["roles"]) if saved else empty_roles()
             source_ids = dict(saved["sourceIds"]) if saved else {}
             self._write({"version": 2, "selectedMode": saved["selectedMode"] if saved else "api",
-                         "models": models, "roles": roles, "sourceIds": source_ids})
+                         "models": models, "roles": _stored_roles(roles), "sourceIds": source_ids})
             return entry_id
 
     def delete_model(self, entry_id):
@@ -612,7 +663,7 @@ class ModelSourceStore:
             roles = {role: (None if target == entry_id else target)
                      for role, target in saved["roles"].items()}
             self._write({"version": 2, "selectedMode": saved["selectedMode"], "models": models,
-                         "roles": roles, "sourceIds": saved["sourceIds"]})
+                         "roles": _stored_roles(roles), "sourceIds": saved["sourceIds"]})
 
     def set_roles(self, **changes):
         """Assign models to purposes; ``main`` must be an existing API model."""
@@ -629,14 +680,13 @@ class ModelSourceStore:
                         raise ValueError("invalid roles")
                     roles[role] = None
                     continue
-                if not _valid_id(target) or not any(item["id"] == target for item in saved["models"]):
-                    raise ValueError("invalid roles")
-                if role in ("main", "image") and any(item["id"] == target and "builtin" in item
-                                          for item in saved["models"]):
+                entry = next((item for item in saved["models"] if item["id"] == target), None) \
+                    if _valid_id(target) else None
+                if entry is None or not self._fits_role(role, entry):
                     raise ValueError("invalid roles")
                 roles[role] = target
             self._write({"version": 2, "selectedMode": saved["selectedMode"],
-                         "models": saved["models"], "roles": roles,
+                         "models": saved["models"], "roles": _stored_roles(roles),
                          "sourceIds": saved["sourceIds"]})
 
     def save_local(self):
@@ -645,7 +695,7 @@ class ModelSourceStore:
             saved = self._read()
             if saved:
                 self._write({"version": 2, "selectedMode": "local", "models": saved["models"],
-                             "roles": saved["roles"], "sourceIds": saved["sourceIds"]})
+                             "roles": _stored_roles(saved["roles"]), "sourceIds": saved["sourceIds"]})
 
     def clear_key(self):
         with self.lock:
@@ -660,7 +710,7 @@ class ModelSourceStore:
                         return
                     item["encryptedKey"] = None
             self._write({"version": 2, "selectedMode": "local", "models": models,
-                         "roles": saved["roles"], "sourceIds": saved["sourceIds"]})
+                         "roles": _stored_roles(saved["roles"]), "sourceIds": saved["sourceIds"]})
 
     def model_list(self):
         """A missing or damaged discovery cache must not disable the saved model."""

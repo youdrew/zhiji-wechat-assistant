@@ -181,6 +181,20 @@ class ProcessGroup:
             return handles
         return []
 
+    def peak_memory(self):
+        """Peak commit charge in bytes of every process this job ever held, or None.
+
+        Readable after the processes have exited: the accounting lives on the
+        still-open job handle, so a crash record can carry the peak with it.
+        """
+        if os.name != "nt" or not self.job:
+            return None
+        limits = _ExtendedLimits()
+        if not _kernel32.QueryInformationJobObject(self.job, _JOB_EXTENDED_LIMITS, ctypes.byref(limits),
+                                                  ctypes.sizeof(limits), None):
+            return None
+        return limits.PeakJobMemoryUsed
+
     def close(self):
         """End and reap the group before releasing its handle, including concurrent closes."""
         with self.lock:

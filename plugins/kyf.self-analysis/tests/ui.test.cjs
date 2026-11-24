@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, "..");
 const html = readFileSync(path.join(root, "ui/index.html"), "utf8");
 const source = readFileSync(path.join(root, "ui/page.js"), "utf8");
 const charts = readFileSync(path.join(root, "../../plugin-sdk/web/persona-charts.js"), "utf8");
+const timeline = readFileSync(path.join(root, "../../plugin-sdk/web/timeline.js"), "utf8");
 const plain = value => JSON.parse(JSON.stringify(value));
 const allOutputs = ["profile", "tags", "persona", "values", "library"];
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -69,7 +70,7 @@ function environment(options = {}) {
     events[name] = earlier ? event => { earlier(event); return handler(event); } : handler;
   } };
   const Clock = options.now === undefined ? Date : class extends Date { static now() { return options.now; } };
-  vm.runInNewContext(charts + "\n" + source, { window, document, Date: Clock, innerWidth: 800, innerHeight: 600, setTimeout: handler => { const id = ++timerId; timers.set(id, handler); return id; }, clearTimeout: id => timers.delete(id) });
+  vm.runInNewContext(charts + "\n" + timeline + "\n" + source, { window, document, Date: Clock, innerWidth: 800, innerHeight: 600, setTimeout: handler => { const id = ++timerId; timers.set(id, handler); return id; }, clearTimeout: id => timers.delete(id) });
   const find = (item, id) => item.id === id ? item : item.children.map(child => find(child, id)).find(Boolean);
   env.get = id => elements.get(id) || [...elements.values()].map(item => find(item, id)).find(Boolean);
   env.click = async id => { const item = env.get(id); assert.equal(item.disabled, false, id + " must be enabled"); for (const callback of item.listeners.click || []) callback({}); await settle(); };
@@ -218,20 +219,76 @@ test("a stale version reloads the timeline instead of leaving the page stuck", a
   assert.equal(within(timelineRow(env, "入学"), "tl-star").textContent, "★", "the optimistic change is rolled back");
 });
 
-test("the timeline shows a reading message until the first read returns, not the empty pane", async () => {
+test("the timeline shows a centred reading state until the first read returns, without the controls or the empty pane", async () => {
   const gate = deferred();
+  let reads = 0;
   const env = environment({ rpc(method, params, scope) {
-    if (method === "self.timeline") return gate.promise;
+    if (method === "self.timeline") { reads++; return reads === 1 ? gate.promise : plain(timelineView([timelineEvent("e1", "入学", { importance: "important" })])); }
     return status(scope.account);
   } });
   await settle(); await env.click("tab-timeline");
-  assert.equal(env.get("timelineMessage").textContent, "正在读取…");
+  assert.equal(env.get("timelineState").hidden, false);
+  assert.equal(env.get("timelineState").className, "tl-state loading");
+  assert.equal(env.get("timelineStateText").textContent, "正在读取…");
+  assert.equal(env.get("timelineProgress").className, "tl-progress indeterminate", "no page has come back yet, so no percentage");
+  assert.equal(env.get("timelineTop").hidden, true, "the filter and add button wait for the first read");
+  assert.equal(env.get("timelineMessage").hidden, true);
   assert.equal(env.get("timelineEmpty").hidden, true, "the empty pane stays hidden while reading");
   gate.resolve(plain(timelineView([timelineEvent("e1", "入学", { importance: "important" })])));
   await settle();
+  assert.equal(env.get("timelineState").hidden, true);
+  assert.equal(env.get("timelineTop").hidden, false);
   assert.equal(env.get("timelineMessage").hidden, true);
   assert.equal(timelineRow(env, "入学") !== undefined, true);
   assert.equal(env.get("timelineEmpty").hidden, true);
+  await env.click("tab-tags"); await env.click("tab-timeline");
+  assert.equal(env.get("timelineState").hidden, true, "coming back to the tab refreshes quietly instead of flashing the reading state");
+  assert.equal(env.get("timelineTop").hidden, false);
+  await settle();
+  assert.equal(reads, 2);
+});
+
+test("a paged first read shows the real read / total count", async () => {
+  const events = ["e1", "e2", "e3"].map(id => timelineEvent(id, "事件" + id, { importance: "important" }));
+  const gate = deferred(), pages = [];
+  const env = environment({ rpc(method, params, scope) {
+    if (method !== "self.timeline") return status(scope.account);
+    pages.push(params.offset ?? 0);
+    if (!params.offset) return { ...plain(timelineView(events.slice(0, 1))), eventsTotal: 3, nextOffset: 1 };
+    return gate.promise.then(() => ({ ...plain(timelineView(events.slice(1))), eventsTotal: 3, nextOffset: null }));
+  } });
+  await settle(); await env.click("tab-timeline"); await settle();
+  assert.deepEqual(pages, [0, 1]);
+  assert.equal(env.get("timelineStateText").textContent, "正在读取… 1 / 3 条");
+  assert.equal(env.get("timelineProgress").className, "tl-progress");
+  assert.match(env.get("timelineProgressBar").style.width, /^33\.3+\d*%$/);
+  assert.equal(env.get("timelineTop").hidden, true);
+  gate.resolve(); await settle();
+  assert.equal(env.get("timelineState").hidden, true);
+  assert.equal(timelineByClass(env, "timelineList", "tl-event").length, 3);
+  assert.equal(env.get("timelineTop").hidden, false);
+});
+
+test("a failed first read shows the error and a retry in the centre, still without the controls", async () => {
+  let reads = 0;
+  const env = environment({ rpc(method, params, scope) {
+    if (method !== "self.timeline") return status(scope.account);
+    if (++reads === 1) throw new Error("时间线暂时无法读取，请稍后重试。");
+    return plain(timelineView([timelineEvent("e1", "入学", { importance: "important" })]));
+  } });
+  await settle(); await env.click("tab-timeline"); await settle();
+  assert.equal(env.get("timelineState").hidden, false);
+  assert.equal(env.get("timelineState").className, "tl-state failed");
+  assert.equal(env.get("timelineStateText").textContent, "时间线暂时无法读取，请稍后重试。");
+  assert.equal(env.get("timelineProgress").hidden, true);
+  assert.equal(env.get("timelineRetry").hidden, false);
+  assert.equal(env.get("timelineTop").hidden, true);
+  assert.equal(env.get("timelineEmpty").hidden, true);
+  await env.click("timelineRetry"); await settle();
+  assert.equal(reads, 2);
+  assert.equal(env.get("timelineState").hidden, true);
+  assert.equal(env.get("timelineTop").hidden, false);
+  assert.equal(timelineRow(env, "入学") !== undefined, true);
 });
 
 test("a year folds general events behind one plain button and opens them in date order", async () => {
@@ -308,7 +365,7 @@ test("global nav page uses the host bridge and keeps private content out of brow
   assert.equal(manifest.id, "kyf.self-analysis"); assert.equal(manifest.name, "自我剖析");
   assert.deepEqual(manifest.contributes.nav, [{ id: "self-analysis", label: "自我剖析", page: "ui/index.html", icon: "self" }]);
   assert.ok(html.includes("connect-src 'none'")); assert.ok(html.includes("form-action 'none'"));
-  assert.deepEqual([...html.matchAll(/<script src="([^"]+)"/g)].map(match => match[1]), ["/plugin-sdk/web/kyf-host.js", "/plugin-sdk/web/persona-charts.js", "page.js"]);
+  assert.deepEqual([...html.matchAll(/<script src="([^"]+)"/g)].map(match => match[1]), ["/plugin-sdk/web/kyf-host.js", "/plugin-sdk/web/persona-charts.js", "/plugin-sdk/web/timeline.js", "page.js"]);
   assert.doesNotMatch(source, /\bfetch\(|localStorage|sessionStorage|indexedDB|\.innerHTML/);
   assert.doesNotMatch(html, /embedding|RAG|API Key|ANTHROPIC/);
   assert.doesNotMatch(source, /models\.generate|message\.send|clipboard\.copy/);

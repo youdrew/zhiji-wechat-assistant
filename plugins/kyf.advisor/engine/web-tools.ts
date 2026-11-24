@@ -1,7 +1,7 @@
 // Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
 // Added 2026-10-15: web search for the 聊天助手, only when the user configured an external search source.
 //
-// A loopback MCP server (streamable HTTP, plain JSON responses) gives opencode two tools, `web_search` and
+// A loopback MCP server (streamable HTTP, plain JSON responses) gives the engine's agent two tools, `web_search` and
 // `web_fetch`; the engine process itself still has no network access of its own. Searches go to the user's
 // SearXNG instance. A page can be opened only when it appeared in a search result here, and never on a loopback,
 // private or link-local address, so a page's text cannot steer the model into reading local services.
@@ -158,7 +158,7 @@ export class WebTools {
   constructor(readonly settings: WebSearchSettings, private readonly fetcher: Fetcher = webFetch,
               private readonly resolve: Resolver = resolveAll) {}
 
-  /** The MCP endpoint opencode is configured with. */
+  /** The MCP endpoint the engine is configured with. */
   async start(): Promise<string> {
     const server = createServer((request, response) => { void this.serve(request, response); });
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve()); });

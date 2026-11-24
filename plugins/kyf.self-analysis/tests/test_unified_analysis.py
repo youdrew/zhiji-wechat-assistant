@@ -224,6 +224,37 @@ class UnifiedTests(unittest.TestCase):
         view = self.service.timeline(self.account)
         self.assertEqual((view["events"], view["periods"]), ([], []))
 
+    def test_timeline_steps_call_the_model_write_results_and_rest_when_nothing_is_new(self):
+        # 2026-11-07: the timeline functions moved to kyf_plugin.timeline; both steps must still
+        # reach the model and write events and periods, and an unchanged second round is free.
+        self.setup_unified()
+        generate = self.models.generate
+
+        def with_events(task, request, step=None, timeout=None):
+            if step == "self-timeline-extract":
+                items = window_messages(json.loads(request["prompt"]))
+                self.models.replies = [json.dumps({"events": [
+                    {"i": item["i"], "title": f"合成事件{index}", "track": "工作事业", "kind": "start" if index == 0 else "point",
+                     "status": "occurred", "importance": "important", "phrase": "", "when": f"2023-0{index % 9 + 1}",
+                     "precision": "month", "place": "", "people": "", "reason": "合成依据"}
+                    for index, item in enumerate(items)]}, ensure_ascii=False)]
+                return fixture.Models.generate(self.models, task, request, step, timeout)
+            return generate(task, request, step, timeout)
+        self.models.generate = with_events
+        result = self.run_analysis(outputs=["timeline"])
+        self.assertEqual(result["state"], "done", result)
+        steps = [item["step"] for item in self.models.requests]
+        self.assertIn("self-timeline-extract", steps)
+        self.assertIn("self-timeline-merge", steps)
+        view = self.service.timeline(self.account)
+        self.assertTrue(view["events"])
+        self.assertTrue(all(event["track"] == "工作事业" and event["whenText"].startswith("2023年") for event in view["events"]))
+        self.assertTrue(view["periods"])
+        calls = len(self.models.requests)
+        self.assertEqual(self.run_analysis(outputs=["timeline"])["state"], "done")
+        self.assertEqual([item["step"] for item in self.models.requests[calls:] if item["step"].startswith("self-timeline")], [])
+        self.assertEqual(self.service.timeline(self.account)["events"], view["events"])
+
     def test_summary_finishes_before_long_life_event_extraction(self):
         self.setup_unified()
         result = self.run_analysis(outputs=["profile", "timeline"])

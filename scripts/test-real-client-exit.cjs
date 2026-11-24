@@ -20,6 +20,9 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   const appEvents = new Map();
   const windowEvents = new Map();
   const ipcHandlers = new Map();
+  const ipcListeners = new Map();
+  const windowState = { hidden: 0, shown: 0 };
+  let trayState = null;
   const stopCalls = [];
   const dialogs = [];
   const fetchCalls = [];
@@ -38,6 +41,7 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
   const window = {
     webContents: contents, isDestroyed: () => false, isVisible: () => true,
     isMinimized: () => false,
+    hide() { windowState.hidden++; }, show() { windowState.shown++; }, focus() {}, restore() {},
     on(name, callback) {
       const listeners = windowEvents.get(name) || [];
       listeners.push(callback);
@@ -69,7 +73,16 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
     dialog: { showErrorBox: (title, message) => dialogs.push({ title, message }),
       showMessageBox: options => dialogs.push({ title: options.message, message: options.message,
         detail: options.detail }) },
-    ipcMain: { on() {}, handle: (name, callback) => ipcHandlers.set(name, callback) },
+    ipcMain: { on: (name, callback) => ipcListeners.set(name, callback),
+      handle: (name, callback) => ipcHandlers.set(name, callback) },
+    Menu: { buildFromTemplate: template => template },
+    Tray: class {
+      constructor(icon) { trayState = { icon, events: new Map(), destroyed: false }; }
+      setToolTip(text) { trayState.tooltip = text; }
+      setContextMenu(menu) { trayState.menu = menu; }
+      on(name, callback) { trayState.events.set(name, callback); }
+      destroy() { trayState.destroyed = true; }
+    },
     session: { defaultSession: {
       setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, on() {},
       webRequest: { onBeforeRequest() {} },
@@ -147,6 +160,10 @@ async function startShell(extraEnv = {}, extraArgs = [], monitorDrain, options =
     get updateOptions() { return updateOptions; },
     get quitAttempts() { return quitAttempts; },
     get completedQuits() { return completedQuits; },
+    get tray() { return trayState; },
+    windowState,
+    setCloseAction: (action, sender = contents) =>
+      ipcListeners.get("real-client:set-close-action")({ sender, senderFrame: mainFrame }, action),
     exitApp: () => ipcHandlers.get("real-client:exit-app")({ sender: contents, senderFrame: mainFrame }),
     closeWindow() {
       let prevented = false;
@@ -335,6 +352,33 @@ async function testMcpConnectionsKeepCoreRunning() {
   assert.equal(shell.dialogs.length, 1);
 }
 
+async function testCloseButtonHidesToTray() {
+  const shell = await startShell();
+  assert.equal(shell.tray.tooltip, "知己微信助手");
+  assert.equal(shell.tray.icon, path.join(ROOT, "chatui", "assets", "app-icon.ico"));
+  assert.equal(shell.closeWindow(), true, "the close button hides the window to the tray by default");
+  assert.equal(shell.windowState.hidden, 1);
+  assert.equal(shell.quitAttempts, 0);
+  assert.equal(shell.stopCalls.length, 0, "hiding must not stop the bridge");
+
+  shell.tray.events.get("click")();
+  assert.equal(shell.windowState.shown, 1, "clicking the tray icon shows the window again");
+
+  shell.setCloseAction("quit", { id: "untrusted" });
+  assert.equal(shell.closeWindow(), true, "an untrusted sender cannot change the close action");
+  shell.setCloseAction("bogus");
+  assert.equal(shell.closeWindow(), true, "an unknown close action is ignored");
+  shell.setCloseAction("quit");
+  assert.equal(shell.closeWindow(), false, "the quit choice lets the close button close the window");
+  shell.setCloseAction("tray");
+  assert.equal(shell.closeWindow(), true);
+
+  shell.tray.menu.find(item => item.label === "退出").click();
+  await settle();
+  assert.equal(shell.stopCalls.length, 1, "the tray quit item takes the normal quit path");
+  assert.equal(shell.closeWindow(), false, "windows close normally once the app is quitting");
+}
+
 async function main() {
   await testNormalQuitWaitsForOwnedBridge();
   await testDevelopmentInterpreterKeepsItsUserSite();
@@ -347,6 +391,7 @@ async function main() {
   await testUncommittedFinalUpdateStopsOwnedBridge();
   await testSelfTestSkipsStop();
   await testMcpConnectionsKeepCoreRunning();
+  await testCloseButtonHidesToTray();
   process.stdout.write("real-client shell exit lifecycle checks passed\n");
 }
 

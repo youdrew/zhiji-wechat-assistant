@@ -86,7 +86,9 @@
       node.textContent = item.label;
       node.dataset.plugin = item.plugin; node.dataset.contribution = item.id;
       node.addEventListener("click", () => { void openWindow(item.plugin, item.id); });
-      bar?.appendChild(node);
+      // 分析与建议 (a host switch, 2026-11-09) stays after the plugin buttons.
+      const analysis = byId("btnMessageAnalysis");
+      if (bar && analysis?.parentNode === bar) bar.insertBefore(node, analysis); else bar?.appendChild(node);
     }
   }
   function hasFriendEntry(plugin, id) {

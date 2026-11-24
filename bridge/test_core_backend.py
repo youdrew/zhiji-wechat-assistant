@@ -12,14 +12,14 @@ import unittest
 from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from backend_contracts import AccountChangedError
 from backend_service import Backend
 from instance_identity import instance_id
 from legacy_portrait import read_legacy_portrait, result_database
 from model_source import ModelSourceStore
-from real_http import ROOT, make_handler
+from real_http import ROOT, make_backend, make_handler
 from wechat_source import WeChatSource, avatar_candidates, message_id
 
 
@@ -100,6 +100,13 @@ class BackendTests(unittest.TestCase):
         self.source = SyntheticSource(Path(self.temp.name))
         self.probe = FakeProbe()
         self.backend = Backend(self.source, model_source_store=model_store(self.temp.name), model_probe=self.probe)
+
+    def test_default_http_backend_uses_the_wechat_source(self):
+        classifier = Mock()
+        with patch("wechat_source.WeChatSource", return_value=self.source) as default_source:
+            backend = make_backend(classifier, model_source_store=model_store(self.temp.name))
+        self.assertIs(backend.source, self.source)
+        default_source.assert_called_once_with(classifier=classifier)
 
     def test_account_switch_during_messages_read_never_returns_mixed_payload(self):
         self.source.add("friend", 1)

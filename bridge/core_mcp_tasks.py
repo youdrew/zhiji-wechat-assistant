@@ -24,6 +24,19 @@ FRIEND_ANALYSIS_PLUGIN = "kyf.friend-analysis"
 INSIGHTS_PLUGIN = "kyf.message-insights"
 SELF_ANALYSIS_PLUGIN = "kyf.self-analysis"
 FRIEND_ANALYSIS_SCHEME = "default"
+# 插件经 kyf_plugin.actor 读取来源：MCP 转来的调用一律是 Agent；页面调用的上下文由
+# core_http 只按 account/user 构造，没有这两个字段，所以页面冒充不了 Agent。
+AGENT_ACTOR = "agent"
+AGENT_NAME_LIMIT = 64
+
+
+def agent_context(account=None, user=None, agent=None):
+    """The RPC context of one MCP-originated plugin call."""
+    context = {key: value for key, value in (("account", account), ("user", user)) if value}
+    context["actor"] = AGENT_ACTOR
+    if isinstance(agent, str) and agent.strip():
+        context["agent"] = " ".join(agent.split())[:AGENT_NAME_LIMIT]
+    return context
 
 
 def _from_plugin_error(exc):
@@ -48,12 +61,12 @@ class McpAnalysisBridge:
         return record["account"]
 
     # -- plugin rpc -----------------------------------------------------------
-    def _rpc(self, plugin, method, params, *, account=None, user=None):
+    def _rpc(self, plugin, method, params, *, account=None, user=None, agent=None):
         try:
             self.services.require_plugin(plugin, account)
         except PluginUnavailable as exc:
             raise McpError(503, exc.code, exc.message) from None
-        context = {key: value for key, value in (("account", account), ("user", user)) if value}
+        context = agent_context(account, user, agent)
         try:
             return self.services.supervisor.rpc(plugin, method, params, context)
         except PluginUnavailable as exc:
@@ -87,7 +100,7 @@ class McpAnalysisBridge:
         """One registered saved-result read of the friend-analysis plugin."""
         return self._rpc(FRIEND_ANALYSIS_PLUGIN, method, params or {}, account=account, user=user)
 
-    # -- per-message insights (逐句分析与回复建议) -------------------------------
+    # -- round insights (按轮分析与建议) -------------------------------------
     def start_message_insights(self, account, user, message_id):
         return self._rpc(INSIGHTS_PLUGIN, "annotations.generate", {"messageId": message_id},
                          account=account, user=user)
@@ -110,16 +123,40 @@ class McpAnalysisBridge:
         """One registered saved-result read (persona, values, tags, periods, timeline) of the plugin."""
         return self._rpc(SELF_ANALYSIS_PLUGIN, method, params or {}, account=account)
 
-    def _self_timeline_write(self, method, account, params):
+    @staticmethod
+    def _timeline_write(call):
         try:
-            return self._rpc(SELF_ANALYSIS_PLUGIN, method, params, account=account)
+            return call()
         except McpError as exc:
             if exc.code == "conflict":  # MCP 写入的稳定冲突码，与其他带版本的写入一致
                 raise McpError(409, "version-conflict", exc.message) from None
             raise
+
+    def _self_timeline_write(self, method, account, params):
+        return self._timeline_write(lambda: self._rpc(SELF_ANALYSIS_PLUGIN, method, params, account=account))
 
     def edit_self_timeline(self, account, params):
         return self._self_timeline_write("self.timelineEdit", account, params)
 
     def undo_self_timeline(self, account, params):
         return self._self_timeline_write("self.timelineUndo", account, params)
+
+    # -- friend timeline (好友时间线) ---------------------------------------------
+    # 撤销按来源分开：上下文带 actor=agent，插件把这次写入记在 Agent 的撤销栈里；
+    # MCP 只调 page.timelineUndoAgent，碰不到用户自己的撤销记录。
+    def _friend_timeline_write(self, method, account, user, params, agent):
+        return self._timeline_write(lambda: self._rpc(FRIEND_ANALYSIS_PLUGIN, method, params,
+                                                      account=account, user=user, agent=agent))
+
+    def edit_friend_timeline(self, account, user, params, agent=None):
+        return self._friend_timeline_write("page.timelineEdit", account, user, params, agent)
+
+    def undo_friend_timeline(self, account, user, params, agent=None):
+        return self._friend_timeline_write("page.timelineUndoAgent", account, user, params, agent)
+
+    # -- friend tags (好友标签)：同样按来源分开撤销，MCP 只调 page.tagUndoAgent。
+    def edit_friend_tags(self, account, user, params, agent=None):
+        return self._friend_timeline_write("page.tagEdit", account, user, params, agent)
+
+    def undo_friend_tags(self, account, user, params, agent=None):
+        return self._friend_timeline_write("page.tagUndoAgent", account, user, params, agent)

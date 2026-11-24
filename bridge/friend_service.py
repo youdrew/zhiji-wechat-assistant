@@ -158,27 +158,20 @@ class FriendService:
             "goalVersion": store.goal(user)["version"], "accountProfileVersion": store.account_revision(),
         }
 
-    def memories(self, account, user, view="tags", status="active", offset=0, limit=PAGE_SIZE):
+    def memories(self, account, user, status="active", offset=0, limit=PAGE_SIZE):
         account, user, _fingerprint, _database, store = self._scope(account, user)
-        if view not in ("tags", "timeline") or status not in ("active", "pending", "confirmed", "rejected"):
+        if status not in ("active", "pending", "confirmed", "rejected"):
             raise AdvisorError("invalid-request", "列表参数不正确")
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise AdvisorError("invalid-request", "分页参数不正确")
         statuses = {"active": ("pending", "confirmed")}.get(status, (status,))
         rows = store.memories(user, statuses)
-        if view == "timeline":
-            def when(row):
-                stamp = row["event_time"] or (time.strftime("%Y-%m-%d", time.localtime(row["first_mention_ms"] / 1000))
-                                              if row["first_mention_ms"] else None)
-                return (stamp is None, stamp or "", row["created_at_ms"])
-            rows.sort(key=when)
-        else:
-            order = {tag: index for index, tag in enumerate(TAGS)}
-            rows.sort(key=lambda row: (row["status"] != "pending", order.get(json.loads(row["tags_json"])[0], 99),
-                                       row["created_at_ms"]))
+        order = {tag: index for index, tag in enumerate(TAGS)}
+        rows.sort(key=lambda row: (row["status"] != "pending", order.get(json.loads(row["tags_json"])[0], 99),
+                                   row["created_at_ms"]))
         page = rows[offset:offset + limit]
         evidence = store.evidence([row["id"] for row in page])
-        return {"account": account, "user": user, "view": view, "total": len(rows), "offset": offset,
+        return {"account": account, "user": user, "total": len(rows), "offset": offset,
                 "memoryVersion": store.state(user)["memory_version"],
                 "items": [_public_memory(row, evidence.get(row["id"], [])) for row in page]}
 

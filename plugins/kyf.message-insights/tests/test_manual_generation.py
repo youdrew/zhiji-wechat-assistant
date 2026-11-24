@@ -120,7 +120,7 @@ class ManualGenerationTests(unittest.TestCase):
         self.assertFalse(self.service.queue)
         self.assertEqual(self.store.rows(USER), [])
 
-    def test_enable_keeps_original_message_priority_for_the_whole_unanswered_wave(self):
+    def test_enable_queues_one_round_for_the_whole_unanswered_wave(self):
         self.store.set(USER, False)
         self.recent = [self.message("self-boundary", 1, side="self"),
                        self.message("earlier", 2, time=101000),
@@ -128,8 +128,7 @@ class ManualGenerationTests(unittest.TestCase):
                        self.message("latest", 4, time=103000)]
         self.service.set(ACCOUNT, USER, True)
         entry = self.service.queue[(ACCOUNT, USER)]
-        self.assertEqual(entry["ids"], ["earlier", "latest"])
-        self.assertEqual(entry["jobs"]["earlier"]["message_time"], 101000)
+        self.assertEqual(entry["ids"], ["latest"], "one job for the round, saved under its last message")
         self.assertEqual(entry["jobs"]["latest"]["message_time"], 103000)
         self.assertEqual(entry["jobs"]["latest"]["message_order"], (4, "synthetic", 4))
         self.assertFalse(any(call[:2] == ("post", "history/rows") for call in self.calls))
@@ -164,6 +163,45 @@ class ManualGenerationTests(unittest.TestCase):
         self.assertFalse(self.service.queue)
         self.assertFalse(self.calls)
 
+    def test_disable_suggestions_keeps_manual_analysis_queued_even_without_model_access(self):
+        self.service.generate(ACCOUNT, USER, "old-message")
+        self.service.require_model = lambda: self.fail("disabling a part must work offline")
+        status = self.service.set(ACCOUNT, USER, False, "suggestions")
+        spec = self.service.queue[(ACCOUNT, USER)]["jobs"]["old-message"]
+        self.assertEqual(spec["parts"], ("analysis",))
+        self.assertFalse(spec["automatic"])
+        self.assertTrue(status["enabled"] and status["analysisEnabled"])
+        self.assertFalse(status["suggestionsEnabled"])
+        item, = status["items"]
+        self.assertEqual((item["analysisState"], item["suggestionsState"]), ("pending", "none"))
+        self.store.finish(USER, ["old-message"], spec["generation"], "error", error="retry")
+        self.service.require_model = lambda: None
+        with self.assertRaises(InsightError):
+            self.service.retry(ACCOUNT, USER, "old-message", "suggestions", spec["generation"])
+        self.service.retry(ACCOUNT, USER, "old-message", "all", spec["generation"])
+        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["jobs"]["old-message"]["parts"], ("analysis",))
+
+    def test_toggle_during_quiet_period_keeps_the_due_time_and_restores_only_the_selected_part(self):
+        self.recent = [self.message("old-message", 1)]
+        self.service.restore_subscriptions()
+        self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                 "data": {"messages": self.recent}})
+        due = self.service.entries[(ACCOUNT, USER)]["due"]
+        self.service.set(ACCOUNT, USER, False, "analysis")
+        self.assertEqual(self.service.entries[(ACCOUNT, USER)]["due"], due)
+        self.assertFalse(self.service.queue)
+        self.service.clock = lambda: due + 1
+        self.service.due_rounds()
+        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["jobs"]["old-message"]["parts"], ("suggestions",))
+        self.store.close()
+        self.service.stores.clear()
+        self.service.entries.clear()
+        self.service.subscriptions.clear()
+        self.service.restore_subscriptions()
+        status = self.service.status(ACCOUNT, USER, [])
+        self.assertEqual((status["analysisEnabled"], status["suggestionsEnabled"]), (False, True))
+        self.assertIn((ACCOUNT, USER), self.service.subscriptions)
+
     def test_restoration_only_subscribes_enabled_friends_without_backfill(self):
         self.store.set("disabled-friend", False)
         self.service.restore_subscriptions()
@@ -184,18 +222,79 @@ class ManualGenerationTests(unittest.TestCase):
     def test_lazy_first_event_uses_core_start_boundary_and_skips_offline(self):
         self.service.restore_subscriptions()
         self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
-                                 "data": {"messages": [self.message("offline", 1, time=99000),
-                                                        self.message("live", 2, time=102000)]}})
-        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["ids"], ["live"])
+                                 "data": {"messages": [self.message("offline", 1, time=99000)]}})
+        self.assertNotIn("due", self.service.entries[(ACCOUNT, USER)], "an offline message starts no round")
+        self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                 "data": {"messages": [self.message("live", 2, time=102000)]}})
         self.assertEqual(self.service.entries[(ACCOUNT, USER)]["armed"], 100000)
+        self.assertFalse(self.service.queue, "the round waits for the friend to stop typing")
+        self.assertEqual(self.service.entries[(ACCOUNT, USER)]["due"], 105.7 + 20)
 
     def test_explicit_enable_keeps_its_later_boundary(self):
         self.store.set(USER, False)
         self.service.set(ACCOUNT, USER, True)
         self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
-                                 "data": {"messages": [self.message("before-enable", 1, time=102000),
-                                                        self.message("after-enable", 2, time=105000)]}})
-        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["ids"], ["after-enable"])
+                                 "data": {"messages": [self.message("before-enable", 1, time=102000)]}})
+        self.assertNotIn("due", self.service.entries[(ACCOUNT, USER)])
+        self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                 "data": {"messages": [self.message("after-enable", 2, time=105000)]}})
+        self.assertIn("due", self.service.entries[(ACCOUNT, USER)])
+
+    def test_quiet_round_covers_every_unanswered_message_and_new_messages_restart_it(self):
+        self.service.restore_subscriptions()
+        now = [105.7]
+        self.service.clock = lambda: now[0]
+        self.recent = [self.message("mine", 1, side="self", time=101000),
+                       self.message("first", 2, time=102000)]
+        event = lambda message: self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                                         "data": {"messages": [message]}})
+        event(self.recent[-1])
+        now[0] += 10
+        self.service.due_rounds()
+        self.assertFalse(self.service.queue, "still inside the quiet period")
+        self.recent.append(self.message("second", 3, time=103000))
+        event(self.recent[-1])
+        now[0] += 15
+        self.service.due_rounds()
+        self.assertFalse(self.service.queue, "the newer message restarted the timer")
+        now[0] += 6
+        self.service.due_rounds()
+        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["ids"], ["second"])
+        self.assertNotIn("due", self.service.entries[(ACCOUNT, USER)])
+        # A third message cancels the queued round; the next round covers all three.
+        self.recent.append(self.message("third", 4, time=104000))
+        event(self.recent[-1])
+        self.assertFalse(self.service.queue)
+        row, = self.store.rows(USER, ["second"])
+        self.assertEqual(row["state"], "error")
+        now[0] += 21
+        self.service.due_rounds()
+        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["ids"], ["third"])
+        self.assertEqual(self.store.rows(USER, ["second"]), [], "the cut-short round is removed")
+
+    def test_replayed_live_messages_of_the_started_round_do_not_cancel_it(self):
+        self.store.set(USER, False)
+        self.recent = [self.message("mine", 1, side="self", time=105000),
+                       self.message("latest", 2, time=105500)]
+        self.service.set(ACCOUNT, USER, True)
+        self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                 "data": {"messages": list(self.recent)}})
+        self.assertEqual(self.service.queue[(ACCOUNT, USER)]["ids"], ["latest"])
+        self.assertNotIn("due", self.service.entries[(ACCOUNT, USER)])
+        self.assertEqual(self.store.rows(USER, ["latest"])[0]["state"], "pending")
+
+    def test_quiet_seconds_setting_and_own_reply_ends_the_round(self):
+        self.service.restore_subscriptions()
+        original = self.get
+        self.get = lambda path, **query: ({"revision": 1, "values": {"replyStyle": "natural", "quietSeconds": 60}}
+                                          if path == "settings" else original(path, **query))
+        self.core.get = self.get
+        self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                 "data": {"messages": [self.message("first", 2, time=102000)]}})
+        self.assertEqual(self.service.entries[(ACCOUNT, USER)]["due"], 105.7 + 60)
+        self.service.on_message({"account": ACCOUNT, "user": USER, "liveSince": 100000,
+                                 "data": {"messages": [self.message("mine", 3, side="self", time=103000)]}})
+        self.assertNotIn("due", self.service.entries[(ACCOUNT, USER)])
 
     def test_missing_or_invalid_live_boundary_does_not_guess(self):
         for boundary in (None, True, -1, 999999):

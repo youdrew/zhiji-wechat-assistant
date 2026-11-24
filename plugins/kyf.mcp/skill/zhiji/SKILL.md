@@ -16,7 +16,7 @@ description: 通过知己（zhiji）MCP 工具查询用户本机保存的微信�
    - 谁提过某件事：`zhiji_search_messages`，不带 `subjectId` 时在已授权范围内跨联系人搜索。
    - 某条消息的前后文：`zhiji_get_message_context`。
    - 记忆的依据：`zhiji_list_memories` → `zhiji_get_memory_evidence`。
-   - 已保存的好友分析：`zhiji_get_friend_analysis`（`section` 选 overview／persona／chat／trend）。
+   - 已保存的好友分析：`zhiji_get_friend_analysis`（`section` 选 overview／persona／chat／trend；ta 的特征看 tags，我们之间的事看 timeline）。
    - 最近有哪些会话：`zhiji_list_recent_conversations`。
 
 普通问答由你自己的模型基于读到的资料组织回答，不需要让知己再跑模型。
@@ -43,6 +43,8 @@ description: 通过知己（zhiji）MCP 工具查询用户本机保存的微信�
 ## 5. 写入
 
 - 所有写操作都带 `requestId`；重试同一操作沿用原 `requestId`。报 `version-conflict` 时先重新读取，再基于最新内容修改并换新 `requestId`。
+- 好友时间线只在用户要求时改（`zhiji_edit_friend_timeline`）。`zhiji_undo_friend_timeline` 只撤销你自己的修改；返回 `skipped` 说明那处之后被用户改过，告诉用户，不要再改回去。
+- 好友标签同样只在用户要求时改（`zhiji_edit_friend_tags`，`expectedVersion` 取 `zhiji_get_friend_analysis` 的 `tags` 分节的 `version`）；说话习惯只能隐藏、恢复或手写补充，统计数字不能改。`zhiji_undo_friend_tags` 只撤销你自己的修改，`skipped` 的处理同时间线。
 - 删除账号、清空本机资料需要用户在本机确认窗口里确认；报 `confirmation-pending` 时告诉用户去确认，确认后再用同样参数调用一次。
 
 ## 6. 新消息通知
@@ -58,7 +60,7 @@ description: 通过知己（zhiji）MCP 工具查询用户本机保存的微信�
 
 | 模块 | 内容 | 需要 |
 |---|---|---|
-| `contact.overview`／`contact.memory`／`contact.persona`／`contact.values`／`contact.chat`／`contact.trends` | 联系人概况、记忆、性格、三观、聊天分析、关系趋势 | `accountId` + `subjectId`（不支持群聊） |
+| `contact.overview`／`contact.tags`／`contact.timeline`／`contact.memory`／`contact.persona`／`contact.values`／`contact.chat`／`contact.trends` | 联系人概况、标签、时间线、记忆、性格、三观、聊天分析、关系趋势 | `accountId` + `subjectId`（不支持群聊） |
 | `contact.conversation` | 打开该联系人的只读聊天记录窗口，用户可以搜索和查看媒体 | `accountId` + `subjectId`（不支持群聊） |
 | `analysis.progress` | 该联系人的分析运行状态 | `accountId` + `subjectId` |
 | `app.main`／`app.settings` | 知己主界面／设置页 | 不带上下文 |

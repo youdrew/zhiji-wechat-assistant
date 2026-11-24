@@ -5,8 +5,8 @@
 //
 // The advisor engine worker: one process per account, started by the plugin backend as
 //   KYF_NODE --import KYF_TSX_LOADER engine/worker.ts --state <plugin account dir> [--root <app root>]
-// (`--root` defaults to KYF_APP_ROOT; the pinned opencode is found under it, the engine's state lives in
-// `<state>/engine`). JSON lines on stdin, one command each:
+// (`--root` defaults to KYF_APP_ROOT; DeepSeek Harness is found under it or in the user's installation, the
+// engine's state lives in `<state>/dsh`). JSON lines on stdin, one command each:
 //   {"id": 1, "cmd": "respond" | "compact" | "inspectMedia" | "compactSession" | "summarizeDiscussion",
 //    "payload": {"service": {"id", "protocol", "model", "url", "contextTokens"?, "stamp"?}, "token": "<execution token>",
 //                "request": {...AdvisorRuntimeRequest}}}
@@ -32,7 +32,7 @@ type CommandId = string | number;
 function output(value: unknown): void { process.stdout.write(JSON.stringify(value) + "\n"); }
 
 export async function runAdvisorWorker(root: string, stateRoot: string): Promise<void> {
-  const runtime = new AdvisorRuntime({ root, stateRoot });
+  const runtime = new AdvisorRuntime({ root, stateRoot, engineDir: path.dirname(fileURLToPath(import.meta.url)) });
   const active = new Map<CommandId, AbortController>();
   const tasks = new Set<Promise<void>>();
   let closing = false;

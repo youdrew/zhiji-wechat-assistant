@@ -126,6 +126,16 @@ class WindowsProcessGroupTests(unittest.TestCase):
         self.directory.rmdir()
         self.assertFalse(self.directory.exists())
 
+    def test_peak_memory_reports_the_live_trees_commit_charge(self):
+        peak = self.group.peak_memory()
+        self.assertIsInstance(peak, int)
+        self.assertGreater(peak, 0)
+        # The same peak stays readable after the members are gone, so a crash
+        # record can still carry it.
+        self.group.terminate()
+        self.assert_immediately_reclaimable()
+        self.assertGreater(self.group.peak_memory(), 0)
+
     def test_terminate_waits_for_leader_and_child_handles_to_close(self):
         self.group.terminate()
         self.assert_immediately_reclaimable()

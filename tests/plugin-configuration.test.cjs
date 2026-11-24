@@ -291,13 +291,15 @@ test('message insights retains reply preferences while concurrency belongs to co
   f.state.snapshots.set(item.id, { plugin: item, schema: settings, values: { ...values, replyStyle: 'polite' },
     revision: 4, definition: ownDefinition, enabled: true, effective: 'next-task' });
   await f.ui.open(item.id);
+  assert.deepEqual(settings.groups.map(group => [group.title, group.fields.map(field => field.key)]),
+    [['分析', ['quietSeconds']], ['建议', ['replyDepth', 'replyStyle']]]);
   assert.equal(f.field('maxConcurrentTasks'), undefined);
   assert.equal(f.field('replyStyle').value, 'polite');
   assert.match(text(f.detail), /默认回复语气/);
   assert.doesNotMatch(text(f.detail), /并行数量|同时执行的 AI 请求数/);
   for (const replyStyle of ['natural', 'brief']) {
     await f.edit('replyStyle', replyStyle); await f.ids.get('pluginConfigSave').click();
-    assert.deepEqual(f.calls.at(-1).body.values, { replyStyle });
+    assert.deepEqual(f.calls.at(-1).body.values, { replyDepth: 'standard', replyStyle, quietSeconds: 20 });
     assert.equal(f.calls.at(-1).body.definition, ownDefinition);
     assert.equal(f.ui.isDirty(), false);
   }

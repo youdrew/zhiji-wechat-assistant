@@ -171,6 +171,21 @@ class ManifestTests(unittest.TestCase):
                     with self.assertRaisesRegex(ManifestError, "dependencies"):
                         parse_manifest(folder, "bundled")
 
+    def test_model_purposes_are_declared_with_a_short_usage_and_listed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            self.assertEqual(parse_manifest(write_plugin(base), "bundled")["models"], {})
+            folder = write_plugin(base, models={"image": "图片解读", "main": "回复建议"})
+            self.assertEqual(parse_manifest(folder, "bundled")["models"], {"main": "回复建议", "image": "图片解读"})
+            for value in (None, [], {"vision": "x"}, {"main": ""}, {"main": 1}, {"speech": "x" * 33}):
+                with self.subTest(models=value):
+                    folder = write_plugin(base, models=value)
+                    with self.assertRaisesRegex(ManifestError, "models"):
+                        parse_manifest(folder, "bundled")
+            write_plugin(base, models={"speech": "朗读"})
+            registry = PluginRegistry(base, bundled_dir=base, local_dir=base / "missing")
+            self.assertEqual(registry.listing()["plugins"][0]["models"], {"speech": "朗读"})
+
     def test_startup_order_handles_a_shared_diamond_and_dependents_stop_consumers_first(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

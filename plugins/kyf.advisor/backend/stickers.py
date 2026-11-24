@@ -148,7 +148,7 @@ class StickerLabeler:
                 raise AdvisorError("engine-unavailable", "表情识别暂不可用")
             image_model = service.plugin.models.service_for("image", refresh=True)
             if not image_model or image_model.get("supportsVision") is False:
-                raise AdvisorError("vision-required", "当前图片模型不支持图像")
+                raise AdvisorError("vision-required", "当前视觉模型不支持图像")
             pending = database.sticker_work_pending(user, MAX_FAILURES, image_model.get("fingerprint"))
             existing, claimed = database.claim_sticker_request(user, request_id)
             if not claimed:

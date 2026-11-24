@@ -15,10 +15,12 @@ mistyped or foreign account id never falls back to another account's data.
 """
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from core_mcp_offline import registry_records
 from core_mcp_proxy import McpError
+from core_mcp_tasks import agent_context
 from core_plugin_process import PluginError, PluginUnavailable
 
 ADVISOR_PLUGIN = "kyf.advisor"
@@ -51,7 +53,7 @@ class McpAssistantBridge:
             self.services.require_plugin(ADVISOR_PLUGIN, account)
         except PluginUnavailable as exc:
             raise McpError(503, exc.code, exc.message) from None
-        context = {key: value for key, value in (("account", account), ("user", user)) if value}
+        context = agent_context(account, user)
         try:
             return self.services.supervisor.rpc(ADVISOR_PLUGIN, method, params, context)
         except PluginUnavailable as exc:
@@ -97,11 +99,13 @@ class McpAssistantBridge:
         return self._rpc("friends.list", {}, account=account, user=user)
 
     def new_thread(self, account, user, agent_id):
-        return self._rpc("thread.new", {"agentId": agent_id}, account=account, user=user)
+        # The plugin requires its own idempotency key; the proxy already deduplicates the client's requestId.
+        return self._rpc("thread.new", {"agentId": agent_id, "requestId": uuid.uuid4().hex},
+                         account=account, user=user)
 
     # -- questions, stops and results ------------------------------------------
     def start(self, account, user, agent_id, thread_id, message, *, thinking=True, mentions=None):
-        params = {"agentId": agent_id, "threadId": thread_id, "message": message}
+        params = {"agentId": agent_id, "threadId": thread_id, "message": message, "requestId": uuid.uuid4().hex}
         if thinking is not None:
             params["thinking"] = thinking
         if mentions:

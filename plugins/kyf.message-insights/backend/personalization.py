@@ -1,6 +1,7 @@
 """Bounded expression examples from 自我剖析, separate from evidence about this friend.
 
 Copyright 2026 Know Your Friends contributors. SPDX-License-Identifier: Apache-2.0
+Modified 2026-11-09: the user's replies to this same friend come first.
 """
 import json
 import re
@@ -46,7 +47,7 @@ def retrieve(core, account, user, message_id, query, budget_chars):
         return None
     try:
         value = core.self_context(account, user, message_id, query,
-                                  budget_chars=min(6000, budget_chars), limit=4)
+                                  budget_chars=min(6000, budget_chars), limit=4, prefer_same_contact=True)
     except CoreError as exc:
         if exc.code in ("execution-revoked", "account-changed", "stopping", "cancelled"):
             raise

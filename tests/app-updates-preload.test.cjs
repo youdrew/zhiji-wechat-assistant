@@ -57,7 +57,6 @@ test("About links open through desktop IPC only from activated trusted main-fram
     "https://eugenepage.com/",
     "mailto:youdrewxuan@icloud.com",
     "https://github.com/tswawa/WechatVibe",
-    "https://github.com/tswawa",
   ];
   const h = preload();
   for (const href of destinations) {
@@ -66,7 +65,7 @@ test("About links open through desktop IPC only from activated trusted main-fram
   }
   assert.equal(h.sent.length, destinations.length);
 
-  for (const href of ["https://example.com/", "https://github.com/youdrew/other-repository",
+  for (const href of ["https://example.com/", "https://github.com/youdrew/other-repository", "https://github.com/tswawa",
     "https://github.com/youdrew/know-your-friends",
     "https://space.bilibili.com/29291963", "http://eugenepage.com/", "https://eugenepage.com.evil.example/",
     "https://eugenepage.com/private", "https://eugenepage.com/?redirect=https://example.com/",

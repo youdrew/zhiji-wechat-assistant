@@ -11,12 +11,19 @@ import time
 from self_contracts import PAGE_SIZE, SelfError, Stopped, now_ms
 from self_samples import extract
 
+# Maximum time without an advancing source read position (same shape as
+# self_profile_corpus.PREPARE_TIMEOUT): a huge first import keeps advancing its
+# readCount/watermark and must not be failed by a wall-clock total.
 PREPARE_TIMEOUT = 180
 # Core's history/verify-many bounds: one source read checks up to this many
 # conversations and references, so tails are verified in groups.
 VERIFY_GROUP = 16
 VERIFY_ITEMS = 500
 SOURCE_FAILURES = ("account-changed", "account-unavailable", "source-changed", "core-unavailable")
+
+
+def _number(value):
+    return value if type(value) is int and value >= 0 else 0
 
 
 class Worker:
@@ -151,10 +158,18 @@ class Worker:
     def _ready(self, user, rebuild=False):
         self.check()
         status = self.core.history_prepare(self.account, user, refresh=True, **({"rebuild": True} if rebuild else {}))
-        started = time.monotonic()
+        advanced_at = time.monotonic()
+        best_read, best_seq = 0, 0
         while status.get("state") != "ready" or status.get("importing") is True:
             self.check()
-            if status.get("state") == "error" or time.monotonic() - started > PREPARE_TIMEOUT:
+            now = time.monotonic()
+            watermark = status.get("watermark") or {}
+            read = _number(status.get("readCount"))
+            seq = _number(watermark.get("seq")) if isinstance(watermark, dict) else 0
+            if read > best_read or seq > best_seq:
+                advanced_at = now
+                best_read, best_seq = max(best_read, read), max(best_seq, seq)
+            if status.get("state") == "error" or now - advanced_at >= PREPARE_TIMEOUT:
                 raise SelfError("history-error", "会话读取未完成")
             self.cancel.wait(0.1)
             self.check()

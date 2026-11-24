@@ -535,14 +535,24 @@ class AssistantBridgeTests(unittest.TestCase):
         self.bridge.thread("账号甲", "好友1", "agent-1", "t1", before_seq=5)
         plugin, method, params, context = self.supervisor.rpc_calls[-1]
         self.assertEqual((plugin, method), ("kyf.advisor", "thread.get"))
-        self.assertEqual(context, {"account": "账号甲", "user": "好友1"})
+        self.assertEqual(context, {"account": "账号甲", "user": "好友1", "actor": "agent"})
         self.assertEqual(params, {"agentId": "agent-1", "threadId": "t1", "beforeSeq": 5})
         self.assertEqual(self.services.required, [("kyf.advisor", "账号甲")])
+
+    def test_new_threads_and_questions_carry_the_request_id_the_plugin_requires(self):
+        # kyf.advisor's REQUIRED_FIELDS rejects thread.new and run.start without a requestId.
+        self.bridge.new_thread("账号甲", "好友1", "agent-1")
+        self.bridge.start("账号甲", "好友1", "agent-1", "t1", "帮我看看")
+        new, start = self.supervisor.rpc_calls[-2][2], self.supervisor.rpc_calls[-1][2]
+        self.assertEqual(set(new), {"agentId", "requestId"})
+        self.assertGreaterEqual(set(start), {"agentId", "threadId", "message", "requestId"})
+        self.assertNotEqual(new["requestId"], start["requestId"])
+        self.assertTrue(1 <= len(new["requestId"]) <= 128)
 
     def test_catalog_management_is_unscoped(self):
         self.bridge.catalog()
         self.assertEqual(self.services.required, [("kyf.advisor", None)])
-        self.assertEqual(self.supervisor.rpc_calls[-1][3], {})
+        self.assertEqual(self.supervisor.rpc_calls[-1][3], {"actor": "agent"})  # 没有账号，只标来源
 
     def test_plugin_errors_keep_their_stable_code(self):
         self.supervisor.outcomes[("kyf.advisor", "run.stop")] = PluginError("run-unknown", "运行不存在")

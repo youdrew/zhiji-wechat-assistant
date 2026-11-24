@@ -2,25 +2,37 @@
   "schema": 1,
   "id": "kyf.message-insights",
   "name": "分析与建议",
-  "version": "0.2.0",
-  "description": "为开启的好友的每条新消息生成解读和三条回复建议；结果默认收起，不会自动发送",
+  "version": "0.4.0",
+  "description": "按好友分别开启整轮消息解读和回复建议。每轮建议提供三种可放入草稿的回复方案。",
   "author": "Know Your Friends",
   "core": { "api": [1] },
+  "dependencies": ["kyf.self-analysis"],
   "runtime": { "type": "python", "entry": "backend/main.py" },
+  "models": { "main": "消息解读与回复建议", "image": "图片解读" },
   "events": ["message.new"],
   "contributes": {
     "settings": {
       "schema": 1,
-      "description": "仅对你在聊天中手动开启的好友生效，仍为每条消息生成三条可复制建议；不会自动发送。",
+      "description": "在好友聊天的输入框工具栏分别开启“分析”和“建议”。两项都按轮处理你上次回复后对方连续发来的消息。",
       "groups": [{
-        "id": "replies", "title": "回复建议",
-        "fields": [{ "key": "replyStyle", "title": "默认回复语气", "type": "select", "default": "natural",
+        "id": "analysis", "title": "分析", "description": "解读本轮消息的意思，并标出仍不确定的地方。",
+        "fields": [{ "key": "quietSeconds", "title": "等对方说完（秒）", "type": "integer", "default": 20, "minimum": 5, "maximum": 300,
+          "description": "分析和建议共用这段等待时间。对方发来新消息时重新计时。"
+        }]
+      }, {
+        "id": "replies", "title": "建议", "description": "每轮生成三种回复方案，可逐句复制或放入草稿。",
+        "fields": [{ "key": "replyDepth", "title": "回复分析深度", "type": "select", "default": "standard",
+          "description": "越深越像你，也越慢。深度会先用自我剖析的资料（时间线、你过去的真实回复）调研你可能怎么回，再给三种方案。",
+          "options": [{ "value": "basic", "label": "基础：直接生成，最快" }, { "value": "standard", "label": "标准：先思考再写" },
+            { "value": "deep", "label": "深度：先调研你会怎么回" }]
+        }, { "key": "replyStyle", "title": "默认回复语气", "type": "select", "default": "natural",
           "description": "后续排队的消息与重试采用这个偏好，已排队的任务和已有结果保留。始终尊重最近对话、表达习惯与对方边界。",
           "options": [{ "value": "natural", "label": "自然口语" }, { "value": "brief", "label": "简短直接" }, { "value": "polite", "label": "礼貌温和" }]
         }]
       }]
     },
-    "chatHeader": [{ "id": "insights", "label": "分析与建议", "kind": "toggle" }],
+    "chatHeader": [{ "id": "analysis", "label": "分析", "kind": "toggle" },
+      { "id": "suggestions", "label": "建议", "kind": "toggle" }],
     "messageAnnotations": true
   }
 }

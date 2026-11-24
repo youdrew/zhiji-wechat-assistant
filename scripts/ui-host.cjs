@@ -38,7 +38,7 @@ const KEY = /^[0-9a-f]{8,64}$/;
 const REQ_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
 // 知己分析（kyf.friend-analysis 默认方案）的栏目；memory 是 memories 的别名。
-const TABS = new Set(["overview", "memories", "memory", "persona", "values", "chat", "trend"]);
+const TABS = new Set(["overview", "tags", "timeline", "memories", "memory", "persona", "values", "chat", "trend"]);
 const THEMES = new Set(["light", "dark"]);
 // Core 可以传 system：由宿主按系统深浅色解析成 light/dark 再写进片段。
 const REQUEST_THEMES = new Set(["light", "dark", "system"]);

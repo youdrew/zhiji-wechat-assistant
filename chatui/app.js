@@ -80,7 +80,7 @@ function getVisibleUnreadCount(session) {
   if (hasNewTime || hasNewPreview) return serverUnread;
   return 0;
 }
-const defaults = { theme: "dark", zoom: "1.0" };
+const defaults = { theme: "dark", zoom: "1.0", closeAction: "tray" };
 settingsState.settings = undefined;
 try { settingsState.settings = { ...defaults, ...JSON.parse(localStorage.getItem("real-ui-settings-1") || "{}") }; }
 catch { settingsState.settings = { ...defaults }; }
@@ -90,6 +90,7 @@ delete settingsState.settings.intent;
 delete settingsState.settings.backgroundAnalyze;
 if (!["dark", "light"].includes(settingsState.settings.theme)) settingsState.settings.theme = "dark";
 if (!["0.9", "1.0", "1.1", "1.25", "1.5"].includes(settingsState.settings.zoom)) settingsState.settings.zoom = "1.0";
+if (!["tray", "quit"].includes(settingsState.settings.closeAction)) settingsState.settings.closeAction = "tray";
 const save = () => localStorage.setItem("real-ui-settings-1", JSON.stringify(settingsState.settings));
 chatState.sessions = new Map();
 chatState.selectedConversations = new Set();
@@ -1950,6 +1951,11 @@ function applySettings() {
   window.ExternalImportHost?.theme(settingsState.settings.theme);
   byId("selectThemeMode").value = settingsState.settings.theme;
   byId("selectZoomLevel").value = settingsState.settings.zoom;
+  // Only the Windows shell keeps a tray icon; the Mac preview always quits.
+  const closeAction = window.desktopHost?.platform === "win32" && typeof window.desktopHost.setCloseAction === "function";
+  byId("rowCloseAction").hidden = !closeAction;
+  byId("selectCloseAction").value = settingsState.settings.closeAction;
+  if (closeAction) window.desktopHost.setCloseAction(settingsState.settings.closeAction);
 }
 function dataRootControlsBusy(busy) {
   settingsState.dataRootBusy = busy;
@@ -2027,7 +2033,10 @@ byId("inputDataRoot").addEventListener("input", () => { settingsState.dataRootDr
 byId("inputDataRoot").addEventListener("keydown", event => {
   if (event.key === "Enter") { event.preventDefault(); void changeDataRoot(); }
 });
-const MODEL_SOURCE_PROTOCOLS = new Set(["anthropic", "responses", "chat_completions", "gemini", "ollama"]);
+const MODEL_SOURCE_PROTOCOLS = new Set(["anthropic", "responses", "chat_completions", "gemini", "ollama", "openai_speech"]);
+const MODEL_ROLE_SELECTS = [["main", "selectRoleMain"], ["judge", "selectRoleJudge"],
+  ["image", "selectRoleImage"], ["speech", "selectRoleSpeech"]];
+const MODEL_ROLE_LABELS = {main: "语言模型", judge: "判别模型", image: "视觉模型", speech: "语音合成"};
 settingsState.modelSourceSnapshot = { mode: "none", api: null, sourceId: "local:laya", status: "idle" };
 settingsState.modelSourceResolved = false;
 settingsState.modelSourceReadRequest = 0;
@@ -2073,14 +2082,14 @@ function beginUnknownModelSource() {
 function updateModelSourceControls() {
   byId("btnReloadModelSource").hidden = settingsState.modelSourceResolved || settingsState.modelSourceLoading;
   for (const id of ["selectApiProtocol", "inputApiBaseUrl", "inputApiKey", "selectApiModel", "inputApiModelId",
-    "inputApiContextTokens", "inputApiTimeoutMinutes", "inputApiConcurrency"])
+    "inputApiContextTokens", "inputApiTimeoutMinutes", "inputApiConcurrency", "inputApiVoice"])
     byId(id).disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy ||
       (id === "selectApiModel" && byId(id).options.length < 2);
   byId("btnFetchApiModels").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelListBusy;
   byId("btnTestApiModel").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelTestBusy;
   byId("btnSaveApiModel").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy || settingsState.modelTestBusy;
   byId("btnDeleteApiModel").disabled = !settingsState.modelSourceResolved || settingsState.modelSourceLoading || settingsState.modelSourceBusy;
-  for (const id of ["selectRoleMain", "selectRoleJudge", "selectRoleImage"])
+  for (const [, id] of MODEL_ROLE_SELECTS)
     byId(id).disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy || !settingsState.modelSourceResolved;
   byId("btnAddModel").disabled = settingsState.modelSourceLoading || settingsState.modelSourceBusy || !settingsState.modelSourceResolved;
   syncApiKeyVisibility();
@@ -2333,7 +2342,11 @@ function apiModelDraft(requireModel) {
       throw new Error("生成超时须为 1～180 分钟的整数");
     draft.model = model;
     draft.timeoutMs = minutes * 60_000;
-    if (contextTokens !== null) draft.contextTokens = contextTokens;
+    if (protocol === "openai_speech") {
+      const voice = byId("inputApiVoice").value.trim();
+      if (!voice) throw new Error("请输入音色");
+      draft.voice = voice;
+    } else if (contextTokens !== null) draft.contextTokens = contextTokens;
   }
   return draft;
 }
@@ -2416,6 +2429,16 @@ function showModelView(view) {
   byId("localJudgeView").hidden = view !== "local";
 }
 const LOCAL_JUDGE_BUSY = new Set(["checking", "downloading", "verifying", "selftest"]);
+function localJudgeLabel(local) {
+  const labels = {missing: "尚未下载", checking: "检查电脑…", downloading: "下载中", verifying: "校验中…",
+    selftest: "自测中…", ready: "已下载", slow: "电脑较慢", error: "准备失败"};
+  const label = labels[local?.state] || "暂不可用";
+  return local?.state === "downloading" && local.totalBytes > 0 ?
+    `${label} ${Math.min(100, Math.floor(100 * local.downloadedBytes / local.totalBytes))}%` : label;
+}
+function localJudgeSize(local) {
+  return `${Math.round((local?.totalBytes > 0 ? local.totalBytes : 168000000) / 1000000)} MB`;
+}
 function renderLocalJudge() {
   const local = settingsState.modelSourceSnapshot.localJudge;
   const active = LOCAL_JUDGE_BUSY.has(local?.state);
@@ -2464,86 +2487,242 @@ async function localJudgeAction(action) {
   }
 }
 function protocolLabel(protocol) {
-  return {anthropic: "Anthropic", responses: "Responses", chat_completions: "Completions",
-    gemini: "Gemini", ollama: "Ollama", systemone: "本地"}[protocol] || protocol;
+  return {anthropic: "Anthropic", responses: "Responses", chat_completions: "Chat Completions",
+    gemini: "Gemini", ollama: "Ollama", systemone: "内置", openai_speech: "语音接口"}[protocol] || protocol;
 }
 function modelEntryLabel(item) {
-  return item.name || item.model;
+  // Older settings stored the bundled judge as "本地判断模型".
+  return item.builtin ? "内置判别模型" : item.name || item.model;
+}
+function modelEntryHost(item) {
+  try { return new URL(item.baseUrl).host; } catch { return ""; }
+}
+// Row icon: speech, models running on this computer, or an online/LAN interface.
+function modelEntryKind(item) {
+  if (item.protocol === "openai_speech") return "speech";
+  const host = modelEntryHost(item).replace(/:\d+$/, "");
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(host);
+  return item.builtin || item.protocol === "ollama" || loopback ? "local" : "cloud";
+}
+function modelEntryDetail(item, local) {
+  if (item.builtin) return `本机 · ${localJudgeSize(local)}`;
+  const parts = [protocolLabel(item.protocol), modelEntryHost(item)];
+  if (item.voice) parts.push(`音色 ${item.voice}`);
+  return parts.filter(Boolean).join(" · ");
+}
+// Modified 2026-11-07: four purposes. Speech models serve only speech; the
+// bundled judge serves only judging; judge and vision follow the language model.
+function modelFitsRole(role, item) {
+  const speech = item.protocol === "openai_speech";
+  if (role === "speech") return speech;
+  return !speech && (role === "judge" || !item.builtin);
 }
 function renderModelHome() {
   const data = settingsState.modelSourceSnapshot;
   if (!data) return;
   const models = Array.isArray(data.models) ? data.models : [];
-  const roles = data.roles || {main: null, judge: null, image: null};
+  const roles = data.roles || {main: null, judge: null, image: null, speech: null};
   const busy = settingsState.modelSourceLoading || settingsState.modelSourceBusy || !settingsState.modelSourceResolved;
-  const fill = (id, value, followAllowed) => {
+  for (const [role, id] of MODEL_ROLE_SELECTS) {
     const select = byId(id);
+    const follows = role === "judge" || role === "image";
+    const eligible = models.filter(item => modelFitsRole(role, item));
     select.replaceChildren();
-    if (followAllowed) {
-      const follow = document.createElement("option");
-      follow.value = "";
-      follow.textContent = "跟随主模型";
-      select.appendChild(follow);
+    if (follows || !eligible.length) {
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = follows ? "同语言模型" : "未设置";
+      select.appendChild(empty);
     }
-    for (const item of models) {
-      if (item.builtin && id !== "selectRoleJudge") continue;
+    for (const item of eligible) {
       const option = document.createElement("option");
       option.value = item.id;
-      option.textContent = modelEntryLabel(item) + (item.id === roles.main ? "（主模型）" : "");
+      option.textContent = modelEntryLabel(item);
       select.appendChild(option);
     }
-    select.value = value || "";
-    if (select.selectedIndex < 0) select.value = followAllowed ? "" : String(roles.main || "");
+    select.value = roles[role] || "";
+    if (select.selectedIndex < 0) select.value = follows ? "" : String(roles[role] || "");
     select.disabled = busy;
-  };
-  fill("selectRoleMain", roles.main, false);
-  fill("selectRoleJudge", roles.judge, true);
-  fill("selectRoleImage", roles.image, true);
-  if (data.localJudge?.supported && !models.some(item => item.builtin)) {
+  }
+  const local = data.localJudge;
+  const hasBuiltin = models.some(item => item.builtin);
+  if (local?.supported && !hasBuiltin) {
     const download = document.createElement("option");
     download.value = "download-local";
-    download.textContent = "下载本地模型（168 MB）";
+    download.textContent = `下载内置判别模型（${localJudgeSize(local)}）`;
     byId("selectRoleJudge").appendChild(download);
   }
+  // Preparation shows in the judge cell itself; there is no separate deployment step.
+  const preparing = LOCAL_JUDGE_BUSY.has(local?.state);
+  const unfinished = ["slow", "error"].includes(local?.state) || local?.downloadedBytes > 0;
+  if (preparing || (["slow", "error"].includes(local?.state) && !hasBuiltin)) {
+    const progress = document.createElement("option");
+    progress.value = "local-progress";
+    progress.textContent = localJudgeLabel(local);
+    byId("selectRoleJudge").appendChild(progress);
+    byId("selectRoleJudge").value = "local-progress";
+  }
+  for (const [, id] of MODEL_ROLE_SELECTS)
+    byId(id).classList.toggle("model-role-follow", !byId(id).value);
   const rows = byId("modelListRows");
   rows.replaceChildren();
-  for (const item of models) {
+  // Each row: source icon, name over "protocol · host", then the purposes it serves.
+  const addRow = (kind, label, detail, open, marks = []) => {
     const row = document.createElement("button");
     row.type = "button";
-    row.className = "settings-row model-list-row";
+    row.className = "model-row model-entry";
+    const icon = document.createElement("span");
+    icon.className = "model-entry-icon";
+    icon.dataset.kind = kind;
+    const body = document.createElement("span");
+    body.className = "model-entry-text";
     const name = document.createElement("span");
-    name.textContent = modelEntryLabel(item);
+    name.className = "model-entry-name";
+    name.textContent = label;
     const sub = document.createElement("span");
-    sub.className = "model-source-status";
-    sub.textContent = item.builtin ? "本地" : protocolLabel(item.protocol);
-    row.appendChild(name);
-    row.appendChild(sub);
-    row.addEventListener("click", () => openModelDetail(item.id));
+    sub.className = "model-entry-sub";
+    sub.textContent = detail;
+    body.appendChild(name);
+    body.appendChild(sub);
+    const dots = document.createElement("span");
+    dots.className = "model-row-roles";
+    for (const mark of marks) {
+      const dot = document.createElement("i");
+      dot.dataset.role = mark.role;
+      if (mark.inherited) dot.className = "model-row-role-inherited";
+      dot.title = MODEL_ROLE_LABELS[mark.role] + (mark.inherited ? "（同语言模型）" : "");
+      dots.appendChild(dot);
+    }
+    row.appendChild(icon);
+    row.appendChild(body);
+    row.appendChild(dots);
+    row.addEventListener("click", open);
     rows.appendChild(row);
+  };
+  for (const item of models) {
+    const marks = [];
+    for (const [role] of MODEL_ROLE_SELECTS) {
+      if (roles[role] === item.id) marks.push({role});
+      else if (!roles[role] && (role === "judge" || role === "image") && item.id === roles.main)
+        marks.push({role, inherited: true});
+    }
+    addRow(modelEntryKind(item), modelEntryLabel(item), modelEntryDetail(item, local),
+      () => openModelDetail(item.id), marks);
   }
+  // An unfinished preparation stays reachable so it can be cancelled or removed.
+  if (!hasBuiltin && (preparing || unfinished))
+    addRow("local", "内置判别模型", `本机 · ${localJudgeLabel(local)}`,
+      () => { hideApiKey(); showModelView("local"); renderLocalJudge(); });
   byId("btnAddModel").disabled = busy;
-  text("btnOpenSearchSettings", window.CoreModelSettings?.searchSource?.() === "searxng" ? "SearXNG" : "关闭");
+  byId("btnAddLocalJudge").hidden = !local?.supported || hasBuiltin || preparing || unfinished;
+  text("modelAddLocalJudgeSize", localJudgeSize(local));
+  window.CoreModelSettings?.showSearchValue?.();
   updateModelSourceControls();
   renderLocalJudge();
 }
-function openModelDetail(entryId) {
+// Which enabled plugins declare each purpose in plugin.json ("models"); Core
+// routes only declared purposes to their own model.
+async function toggleRoleUsage(role) {
+  const panel = byId("modelRoleUsage");
+  const open = !panel.hidden && panel.dataset.role === role;
+  for (const button of document.querySelectorAll(".model-role-info"))
+    button.setAttribute("aria-expanded", String(!open && button.dataset.role === role));
+  if (open) { panel.hidden = true; delete panel.dataset.role; return; }
+  panel.dataset.role = role;
+  panel.hidden = false;
+  panel.style.borderColor = `var(--role-${role})`;
+  const request = (settingsState.roleUsageRequest || 0) + 1;
+  settingsState.roleUsageRequest = request;
+  panel.replaceChildren(element("p", "model-role-usage-title", "读取中…"));
+  let plugins;
+  try {
+    const listing = await api("/api/plugins");
+    plugins = Array.isArray(listing?.plugins) ? listing.plugins : [];
+  } catch {
+    if (request === settingsState.roleUsageRequest)
+      panel.replaceChildren(element("p", "model-role-usage-title", "插件列表读取失败"));
+    return;
+  }
+  if (request !== settingsState.roleUsageRequest || panel.dataset.role !== role) return;
+  const users = plugins.filter(item => typeof item?.models?.[role] === "string");
+  const label = MODEL_ROLE_LABELS[role];
+  if (!users.length) {
+    panel.replaceChildren(element("p", "model-role-usage-title", `暂无插件声明使用${label}`));
+    return;
+  }
+  const list = document.createElement("ul");
+  for (const item of users) {
+    const row = document.createElement("li");
+    const off = !item.enabled || item.incompatible || item.dependencyError;
+    row.appendChild(element("span", off ? "model-role-usage-off" : "", item.name + (off ? "（未启用）" : "")));
+    row.appendChild(element("span", "", item.models[role]));
+    list.appendChild(row);
+  }
+  panel.replaceChildren(element("p", "model-role-usage-title", `以下插件在配置中声明使用${label}`), list);
+}
+const MODEL_PRESETS = {
+  deepseek: {title: "DeepSeek", protocol: "chat_completions", baseUrl: "https://api.deepseek.com/v1"},
+  openai: {title: "OpenAI", protocol: "responses", baseUrl: "https://api.openai.com/v1"},
+  anthropic: {title: "Anthropic", protocol: "anthropic", baseUrl: "https://api.anthropic.com/v1"},
+  gemini: {title: "Gemini", protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta"},
+  custom: {title: "其他兼容接口", protocol: "responses", baseUrl: "", showProtocol: true},
+  ollama: {title: "Ollama", protocol: "ollama", baseUrl: "http://127.0.0.1:11434"},
+  speech: {title: "语音合成", protocol: "openai_speech", baseUrl: "https://api.openai.com/v1", voice: "alloy"},
+};
+function toggleModelAddMenu() {
+  const menu = byId("modelAddMenu");
+  if (!menu.hidden) { closeModelAddMenu(); return; }
+  if (byId("btnAddModel").disabled) return;
+  menu.hidden = false;
+  byId("btnAddModel").setAttribute("aria-expanded", "true");
+  menu.querySelector("button:not([hidden])")?.focus();
+}
+function closeModelAddMenu(restoreFocus = false) {
+  const menu = byId("modelAddMenu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  byId("btnAddModel").setAttribute("aria-expanded", "false");
+  if (restoreFocus) byId("btnAddModel").focus();
+}
+async function addModelFrom(preset) {
+  closeModelAddMenu();
+  if (preset === "local-judge") {
+    hideApiKey();
+    showModelView("local");
+    await localJudgeAction("prepare");
+    return;
+  }
+  if (MODEL_PRESETS[preset]) openModelDetail(null, MODEL_PRESETS[preset]);
+}
+// The protocol picker shows only for "其他兼容接口" and saved text models; speech
+// models carry a voice instead of a context budget.
+function syncModelDetailFields() {
+  const speech = byId("selectApiProtocol").value === "openai_speech";
+  byId("apiProtocolField").hidden = !settingsState.modelDetailShowProtocol || speech;
+  byId("apiVoiceField").hidden = !speech;
+  byId("apiContextField").hidden = speech;
+}
+function openModelDetail(entryId, preset = null) {
   const data = settingsState.modelSourceSnapshot;
   const entry = entryId ? (data.models || []).find(item => item.id === entryId) : null;
   if (entryId && !entry) return;
   if (entry?.builtin) { hideApiKey(); showModelView("local"); renderLocalJudge(); return; }
   hideApiKey();
   settingsState.modelDetailId = entryId || null;
+  settingsState.modelDetailShowProtocol = !!entry || !!preset?.showProtocol;
   byId("apiModelAdvanced").open = false;
-  text("modelDetailTitle", entry ? "编辑模型" : "添加模型");
-  byId("selectApiProtocol").value = entry?.protocol || data.modelList?.protocol || "responses";
-  byId("inputApiBaseUrl").value = entry?.baseUrl || data.modelList?.baseUrl || "";
+  text("modelDetailTitle", entry ? "编辑模型" : `添加模型 · ${preset?.title || "其他兼容接口"}`);
+  byId("selectApiProtocol").value = entry?.protocol || preset?.protocol || data.modelList?.protocol || "responses";
+  byId("inputApiBaseUrl").value = entry?.baseUrl ?? preset?.baseUrl ?? data.modelList?.baseUrl ?? "";
   byId("inputApiModelId").value = entry?.model || "";
+  byId("inputApiVoice").value = entry?.voice || preset?.voice || "";
   byId("inputApiContextTokens").value = String(entry?.contextTokens ?? "");
   byId("inputApiTimeoutMinutes").value = String((entry?.timeoutMs ?? 3_600_000) / 60_000);
   byId("inputApiConcurrency").value = String(entry?.concurrency || 4);
   byId("inputApiKey").value = "";
   syncSavedApiKeyHint();
   byId("btnDeleteApiModel").hidden = !entry || entry.id === data.roles?.main;
+  syncModelDetailFields();
   invalidateModelDiscovery();
   restoreModelList();
   text("modelSourceStatus", "");
@@ -2569,7 +2748,7 @@ async function saveApiModel() {
       throw new Error("同时请求数须为 1～8 的整数");
     payload.concurrency = concurrency;
   } catch (error) { text("modelSourceStatus", error.message); return; }
-  if (mainIdentityWillChange(entryId, payload) && !window.confirm("修改主模型会停止运行中的任务，继续吗？")) return;
+  if (mainIdentityWillChange(entryId, payload) && !window.confirm("修改语言模型会停止运行中的任务，继续吗？")) return;
   hideApiKey();
   settingsState.modelSourceBusy = true;
   const abortController = new AbortController();
@@ -2615,7 +2794,7 @@ async function applyRole(role, value) {
   if (role === "judge" && value === "download-local") { renderModelHome(); await localJudgeAction("prepare"); return; }
   const snapshot = settingsState.modelSourceSnapshot;
   if ((snapshot.roles?.[role] || null) === (value || null)) { renderModelHome(); return; }
-  if (role === "main" && !window.confirm("修改主模型会停止运行中的任务，继续吗？")) { renderModelHome(); return; }
+  if (role === "main" && !window.confirm("修改语言模型会停止运行中的任务，继续吗？")) { renderModelHome(); return; }
   settingsState.modelSourceBusy = true;
   updateModelSourceControls();
   try {
@@ -2928,9 +3107,11 @@ window.addEventListener("pagehide", () => { window.ChatComposer.dispose(); compo
 byId("navChat").addEventListener("click", () => switchView("chat"));
 window.desktopHost?.onFriendLocate?.(target => { void locateFromFriend(target); });
 window.desktopHost?.onHistoryLocate?.(target => { void locateFromFriend(target); });
-for (const [id, key] of [["selectThemeMode", "theme"], ["selectZoomLevel", "zoom"]]) byId(id).addEventListener("change", event => { settingsState.settings[key] = event.target.value; save(); applySettings(); });
+for (const [id, key] of [["selectThemeMode", "theme"], ["selectZoomLevel", "zoom"], ["selectCloseAction", "closeAction"]]) byId(id).addEventListener("change", event => { settingsState.settings[key] = event.target.value; save(); applySettings(); });
 for (const id of ["selectApiProtocol", "inputApiBaseUrl"])
   byId(id).addEventListener(id === "selectApiProtocol" ? "change" : "input", apiConnectionChanged);
+byId("selectApiProtocol").addEventListener("change", syncModelDetailFields);
+byId("inputApiVoice").addEventListener("input", () => { settingsState.modelSourceDraftDirty = true; invalidateModelTest(); });
 byId("inputApiKey").addEventListener("input", apiKeyInputChanged);
 byId("btnToggleApiKeyVisibility").addEventListener("click", () => { void toggleApiKeyVisibility(); });
 byId("selectApiModel").addEventListener("change", event => {
@@ -2958,7 +3139,6 @@ byId("btnReloadModelSource").addEventListener("click", () => { void loadModelSou
 byId("btnTestApiModel").addEventListener("click", () => { void testApiModel(); });
 byId("btnSaveApiModel").addEventListener("click", () => { void saveApiModel(); });
 byId("btnDeleteApiModel").addEventListener("click", () => { void deleteApiModel(); });
-byId("btnAddModel").addEventListener("click", () => openModelDetail(null));
 byId("btnBackModelHome").addEventListener("click", () => showModelView("home"));
 byId("btnOpenSearchSettings").addEventListener("click", () => showModelView("search"));
 byId("btnOpenDeveloperSettings").addEventListener("click", () => showModelView("developer"));
@@ -2968,8 +3148,15 @@ byId("btnPrepareLocalJudge").addEventListener("click", () => void localJudgeActi
 byId("btnCancelLocalJudge").addEventListener("click", () => void localJudgeAction("cancel"));
 byId("btnDeleteLocalJudge").addEventListener("click", () => void localJudgeAction("delete"));
 byId("btnBackFromSearch").addEventListener("click", () => showModelView("home"));
-for (const [id, role] of [["selectRoleMain", "main"], ["selectRoleJudge", "judge"], ["selectRoleImage", "image"]])
+for (const [role, id] of MODEL_ROLE_SELECTS)
   byId(id).addEventListener("change", event => { void applyRole(role, event.target.value); });
+for (const button of document.querySelectorAll(".model-role-info"))
+  button.addEventListener("click", () => { void toggleRoleUsage(button.dataset.role); });
+byId("btnAddModel").addEventListener("click", event => { event.stopPropagation(); toggleModelAddMenu(); });
+for (const item of byId("modelAddMenu").querySelectorAll("[data-preset]"))
+  item.addEventListener("click", () => { void addModelFrom(item.dataset.preset); });
+document.addEventListener("click", event => { if (!event.target.closest?.("#modelAddMenu")) closeModelAddMenu(); });
+document.addEventListener("keydown", event => { if (event.key === "Escape") closeModelAddMenu(true); });
 const OFFICIAL_RELEASES_URL = "https://github.com/youdrew/zhiji-wechat-assistant/releases";
 // Modified by Know Your Friends, 2026-10-12: development builds do not use upstream updates.
 const appUpdatesEnabled = window.desktopHost?.appUpdatesEnabled === true;

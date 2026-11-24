@@ -145,6 +145,10 @@ class PluginAPI:
             return result
         if method == "POST" and parts == ["services", "self-context"]:
             return self._self_context(plugin, headers, body)
+        if method == "POST" and parts == ["services", "portrait-context"]:
+            return self._portrait_context(plugin, headers, body)
+        if method == "POST" and parts == ["services", "self-simulate"]:
+            return self._self_simulate(plugin, headers, body)
         if parts[:1] == ["embeddings"]:
             return self._embeddings(plugin, method, parts[1:], query, headers, body)
         if method == "GET" and parts == ["external", "friends"]:
@@ -368,6 +372,148 @@ class PluginAPI:
                 raise ApiError(400, "invalid-request", "核对项不正确") from None
         raise ApiError(404, "not-found", "接口不存在")
 
+    PORTRAIT_PROVIDERS = (("self", "kyf.self-analysis", "self.portrait", 6.0),
+                          ("friend", "kyf.friend-analysis", "profile.context", 12.0))
+
+    def _portrait_context(self, plugin, headers, body):
+        """本人画像 and 对方画像 for 分析与建议 (added 2026-11-09): read-only texts from two analysis plugins.
+
+        Allowlisted like self-context. A disabled, warming or failing provider leaves its side empty;
+        suggestions work without either.
+        """
+        if plugin != "kyf.message-insights":
+            raise ApiError(403, "service-forbidden", "该插件不能调用画像服务")
+        binding = self._execution(plugin, headers)
+        account, user = self._account(body.get("account")), _user(body.get("user"))
+        if binding["account"] != account or binding["user"] != user or user.endswith("@chatroom"):
+            raise ApiError(409, "scope-mismatch", "画像请求不属于该任务的好友")
+        if set(body) - {"account", "user", "messageId", "budgetChars"}:
+            raise ApiError(400, "invalid-request", "画像服务参数不正确")
+        message_id = body.get("messageId")
+        if not isinstance(message_id, str) or not 1 <= len(message_id) <= 512:
+            raise ApiError(400, "invalid-request", "消息标识不正确")
+        budget = _int(body.get("budgetChars"), 2000, 200, 6000)
+        target = self.core.history.rows(account, user, [message_id])["messages"]
+        if not target or target[0].get("side") != "other" or target[0].get("group"):
+            raise ApiError(404, "not-found", "好友目标消息不存在")
+        before = target[0].get("time")
+        fingerprint = self.core.history.context.source_scope(account)
+        result = {}
+        for side, provider, method, timeout in self.PORTRAIT_PROVIDERS:
+            result[side] = {"available": False, "reason": "plugin-disabled"}
+            if self.core.registry.get(provider) is None or not self.core.registry.enabled(provider):
+                continue
+            if not self._self_calls.acquire(blocking=False):
+                result[side] = {"available": False, "reason": "service-busy"}
+                continue
+            try:
+                self.core.require_plugin(provider, account)
+                process = self.core.supervisor.ensure(provider, wait=False)
+                if not process.ready.wait(0.25):
+                    result[side] = {"available": False, "reason": "service-warming"}
+                    continue
+                params = {"budgetChars": budget, **({"beforeTimeMs": before} if type(before) is int else {}),
+                          # The suggestions write as the user: ta described, not played (2026-11-09).
+                          **({"audience": "advisor"} if side == "friend" else {})}
+                value = process.call(method, params, {"account": account, "user": user}, timeout=timeout)
+                mine = value.get("mine") if isinstance(value, dict) and side == "friend" else None
+                if isinstance(mine, str) and mine.strip():
+                    result["mine"] = {"available": True, "text": mine[:budget]}
+                if (not isinstance(value, dict) or value.get("available") is not True or
+                        not isinstance(value.get("text"), str) or not value["text"].strip()):
+                    result[side] = {"available": False, "reason": "empty"}
+                    continue
+                result[side] = {"available": True, "text": value["text"][:budget],
+                                "stamp": json.dumps(value.get("stamp"), sort_keys=True)[:256]}
+            except (PluginUnavailable, PluginError, ApiError):
+                result[side] = {"available": False, "reason": "service-unavailable"}
+            except (TypeError, ValueError, OverflowError, RecursionError):
+                result[side] = {"available": False, "reason": "invalid-result"}
+            finally:
+                self._self_calls.release()
+        # A stopped caller or replaced account or source cannot take late material.
+        self._execution(plugin, headers)
+        self._account(account)
+        if self.core.history.context.source_scope(account) != fingerprint:
+            raise ApiError(409, "scope-mismatch", "聊天资料来源已经变化")
+        return result
+
+    SIMULATE_DEPTHS = ("auto", "basic", "standard", "deep")
+    SIMULATE_SOURCES = 8
+
+    def _self_simulate(self, plugin, headers, body):
+        """回复调研 for 分析与建议 (added 2026-11-09): start, read or stop one 自我剖析 research job.
+
+        Allowlisted like self-context. The job runs as a 自我剖析 task; this only relays the request
+        for the task's own friend and returns a bounded view. Failures read as unavailable, and the
+        suggestions then go ahead without the research.
+        """
+        if plugin != "kyf.message-insights":
+            raise ApiError(403, "service-forbidden", "该插件不能调用回复调研服务")
+        binding = self._execution(plugin, headers)
+        account, user = self._account(body.get("account")), _user(body.get("user"))
+        if binding["account"] != account or binding["user"] != user or user.endswith("@chatroom"):
+            raise ApiError(409, "scope-mismatch", "回复调研不属于该任务的好友")
+        if set(body) - {"account", "user", "messageId", "messages", "depth", "id", "stop"}:
+            raise ApiError(400, "invalid-request", "回复调研参数不正确")
+        identifier = body.get("id")
+        if identifier is not None:
+            if not isinstance(identifier, str) or not 1 <= len(identifier) <= 64 or type(body.get("stop", False)) is not bool:
+                raise ApiError(400, "invalid-request", "回复调研标识不正确")
+            method, params = ("self.simulateStop" if body.get("stop") else "self.simulateStatus"), {"id": identifier}
+        else:
+            message_id, messages, depth = body.get("messageId"), body.get("messages"), body.get("depth", "deep")
+            if not isinstance(message_id, str) or not 1 <= len(message_id) <= 512:
+                raise ApiError(400, "invalid-request", "消息标识不正确")
+            if not isinstance(messages, list) or not 1 <= len(messages) <= 20 or depth not in self.SIMULATE_DEPTHS:
+                raise ApiError(400, "invalid-request", "回复调研的对话不正确")
+            target = self.core.history.rows(account, user, [message_id])["messages"]
+            if not target or target[0].get("side") != "other" or target[0].get("group"):
+                raise ApiError(404, "not-found", "好友目标消息不存在")
+            method, params = "self.simulate", {"messages": messages, "depth": depth}
+        provider = "kyf.self-analysis"
+        if self.core.registry.get(provider) is None or not self.core.registry.enabled(provider):
+            return {"available": False, "reason": "plugin-disabled"}
+        try:
+            self.core.require_plugin(provider, account)
+            process = self.core.supervisor.ensure(provider, wait=False)
+            if not process.ready.wait(2.0):
+                return {"available": False, "reason": "service-warming"}
+            value = process.call(method, params, {"account": account, "user": user}, timeout=10.0)
+        except PluginError as exc:
+            return {"available": False, "reason": exc.code if isinstance(exc.code, str) else "service-unavailable",
+                    "message": str(exc.message)[:200]}
+        except (PluginUnavailable, ApiError):
+            return {"available": False, "reason": "service-unavailable"}
+        self._execution(plugin, headers)
+        self._account(account)
+        if not isinstance(value, dict) or not isinstance(value.get("id"), str):
+            return {"available": False, "reason": "invalid-result"}
+        result = {"available": True, "id": value["id"][:64],
+                  "state": value.get("state") if value.get("state") in ("running", "done", "error", "cancelled") else "error"}
+        for key in ("phase", "depth", "error"):
+            if isinstance(value.get(key), str):
+                result[key] = value[key][:200]
+        queries = value.get("queries")
+        if isinstance(queries, list):
+            result["queries"] = [item[:60] for item in queries[:4] if isinstance(item, str)]
+        sources = value.get("sources")
+        if isinstance(sources, list):
+            result["sources"] = [{"timeMs": row.get("timeMs") if type(row.get("timeMs")) is int else None,
+                                  "sameContact": row.get("sameContact") is True,
+                                  "input": row["input"][-600:], "reply": row["reply"][:600]}
+                                 for row in sources[:self.SIMULATE_SOURCES]
+                                 if isinstance(row, dict) and isinstance(row.get("input"), str) and isinstance(row.get("reply"), str)]
+        output = value.get("result") if result["state"] == "done" else None
+        if isinstance(output, dict):
+            messages = [item[:500] for item in output.get("messages") or [] if isinstance(item, str) and item.strip()][:6]
+            timeline = [item[:200] for item in output.get("timeline") or [] if isinstance(item, str)][:12]
+            if messages:
+                result["result"] = {"messages": messages, "timeline": timeline}
+            else:
+                result["state"] = "error"
+        return result
+
     def _self_context(self, plugin, headers, body):
         """One allowlisted read-only service, never a general cross-plugin RPC proxy."""
         if plugin != "kyf.message-insights":
@@ -376,7 +522,7 @@ class PluginAPI:
         account, user = self._account(body.get("account")), _user(body.get("user"))
         if binding["account"] != account or binding["user"] != user:
             raise ApiError(409, "scope-mismatch", "本人表达请求不属于该任务的好友")
-        if set(body) - {"account", "user", "messageId", "query", "budgetChars", "limit",
+        if set(body) - {"account", "user", "messageId", "query", "budgetChars", "limit", "preferSameContact",
                         "validateOnly", "generation", "sources", "profileVersion"}:
             raise ApiError(400, "invalid-request", "本人表达服务参数不正确")
         validation = {}
@@ -401,6 +547,9 @@ class PluginAPI:
             raise ApiError(400, "invalid-request", "消息标识不正确")
         budget = _int(body.get("budgetChars"), 6000, 100, 12000)
         limit = _int(body.get("limit"), 5, 1, 10)
+        if "preferSameContact" in body and type(body["preferSameContact"]) is not bool:
+            raise ApiError(400, "invalid-request", "本人表达检索参数不正确")
+        prefer = {"preferSameContact": True} if body.get("preferSameContact") else {}
         target = self.core.history.rows(account, user, [message_id])["messages"]
         if not target or target[0].get("side") != "other" or target[0].get("group"):
             raise ApiError(404, "not-found", "好友目标消息不存在")
@@ -421,7 +570,7 @@ class PluginAPI:
             result = process.call("self.context", {
                 "query": query, "budgetChars": budget, "limit": limit, "messageId": message_id,
                 "beforeTimeMs": target["time"], "beforeSeq": target["seq"],
-                "sourceFingerprint": fingerprint, **validation}, {"account": account, "user": user}, timeout=6.0)
+                "sourceFingerprint": fingerprint, **prefer, **validation}, {"account": account, "user": user}, timeout=6.0)
             # A stopped caller, replaced account or disabled provider cannot return late material.
             self._execution(plugin, headers)
             self._account(account)

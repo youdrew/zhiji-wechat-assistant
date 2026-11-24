@@ -239,6 +239,20 @@ test("latest timestamps sort within each pin group and sorting preserves the inp
   assert.deepEqual(source, original);
 });
 
+test("a conversation without sort_timestamp is ranked by its millisecond time, not above newer chats", () => {
+  const h = harness();
+  const first = h.state.sessions.get("first"), second = h.state.sessions.get("second");
+  // A new message: WeChat's sort_timestamp in seconds.
+  first.sortTimestamp = 1795435463; first.time = 1795435463000;
+  // An old conversation from a year earlier with no sort_timestamp, only a millisecond time.
+  second.sortTimestamp = null; second.time = 1757244671000;
+  assert.deepEqual(Array.from(h.ui.sortSessions([second, first, h.state.sessions.get("source-pinned")]),
+    value => value.username), ["source-pinned", "first", "second"]);
+  // And it still outranks an even older one that has a sort_timestamp.
+  first.sortTimestamp = 1700000000; first.time = 1700000000000;
+  assert.deepEqual(Array.from(h.ui.sortSessions([first, second]), value => value.username), ["second", "first"]);
+});
+
 test("a failed storage write preserves the previous pin preference and source values", async () => {
   const storage = new Map([[storageKey("synthetic-a"), '{"first":true}']]);
   const h = harness({ storage, storageFails: true });

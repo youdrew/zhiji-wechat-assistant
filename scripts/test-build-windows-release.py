@@ -71,6 +71,10 @@ class BuildReleaseTests(unittest.TestCase):
 
     def test_build_is_deterministic_and_extractable(self):
         self.add_file("resources/client/chatui/assets/app-icon.png", b"synthetic image")
+        self.add_file("resources/client/assets/showcase/chat-2.2.png", b"synthetic chat illustration")
+        self.add_file("resources/client/assets/showcase/timeline-2.2.png", b"synthetic timeline illustration")
+        self.add_file("resources/client/assets/showcase/self-2.2.png", b"synthetic self-analysis illustration")
+        self.add_file("resources/client/assets/showcase/extensions-2.2.png", b"synthetic extensions illustration")
         first = builder.build_release(self.source, self.root / "first", "1.0.2")
         second = builder.build_release(self.source, self.root / "second", "1.0.2")
         self.assertEqual(first.name, "KnowYourFriends-1.0.2-windows-x64.zip")
@@ -143,6 +147,7 @@ class BuildReleaseTests(unittest.TestCase):
             "resources/client/.env.production", "resources/client/logs/app.log",
             "resources/client/node_modules/other/lib/cache/state.js",
             "resources/client/app.log.1", "resources/client/screenshot.png",
+            "resources/client/assets/showcase/private.png",
             "resources/client/IMG_0001.jpg", "resources/client/chatui/assets/IMG_0001.jpg",
         )
         for index, relative in enumerate(private_paths):

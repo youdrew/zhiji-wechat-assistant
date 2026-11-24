@@ -22,7 +22,7 @@ const conversations = [
       { message: 4, text: '她从自己的近况聊到周末计划，再明确邀请你同行。可以先回应是否有空，把见面的时间和安排留给你们继续商量。', sources: [2, 4],
         suggestions: ['有空呀，我也想出去透透气。周六下午怎么样？', '想去！这次挑条轻松的路线，慢慢走就好。', '周六可以，不过我最近有点累，咱们别安排得太满。'] },
       { message: 8, text: '时间、地点和下雨时的备选都已经具体了。这条消息主要在等你确认，可以直接答应，顺便接住她留出的灵活安排。', sources: [5, 6, 8],
-        suggestions: ['好呀，三点桥头见。下雨我们就去喝咖啡。', '可以，我三点前到！这次慢慢走，走累了再歇。', '好，先这样定。要是天气变了，我们上午再确认一下。'] },
+        suggestions: ['好呀，三点桥头见。\n下雨我们就去喝咖啡。', '可以，我三点前到！\n这次慢慢走，走累了再歇。', '好，先这样定。\n要是天气变了，我们上午再确认一下。'] },
     ],
     questions: [
       { text: '她是在正式约我吗？', answer: ['她已经提出周六三点在桥头见，还给了下雨的备选，这是一项具体的见面安排。你可以先确认自己是否方便，再补充需要调整的地方。'], quote: '好呀，三点桥头见。下雨我们就去喝咖啡。' },
@@ -132,7 +132,7 @@ const draft = byId('draft');
 const draftStatus = byId('draft-status');
 const states = conversations.map(conversation => ({
   enabled: true, expanded: true, analysis: conversation.analyses.length - 1,
-  draft: '', question: 0, turns: [],
+  draft: '', question: 0, plan: 0, turns: [],
 }));
 let active = 0;
 let analysisButtons = [];
@@ -176,7 +176,17 @@ function renderAnalysis() {
     const item = conversation.messages[index];
     return node('p', 'source-quote', (item.self ? '我' : conversation.name) + '：' + item.text);
   }));
-  byId('suggestions').replaceChildren(...result.suggestions.map((text, index) => {
+  byId('suggestion-tabs').replaceChildren(...result.suggestions.map((_text, index) => {
+    const button = action('suggestion-tab', ['方案一', '方案二', '方案三'][index], () => {
+      state.plan = index;
+      renderAnalysis();
+      byId('suggestion-tabs').children[index].focus();
+    });
+    button.setAttribute('aria-pressed', String(state.plan === index));
+    return button;
+  }));
+  byId('suggestions').replaceChildren(...result.suggestions.flatMap((text, index) => {
+    if (state.plan !== index) return [];
     const card = node('article', 'message-analysis-candidate');
     const choose = action('message-analysis-copy', '试填草稿', () => {
       currentState().draft = text;
@@ -185,7 +195,7 @@ function renderAnalysis() {
     });
     choose.setAttribute('aria-label', '将建议 ' + (index + 1) + ' 试填到演示草稿');
     card.append(node('p', 'message-analysis-candidate-text', text), choose);
-    return card;
+    return [card];
   }));
   analysisTargets[state.analysis].append(analysisPanel);
 }

@@ -12,7 +12,7 @@ class ServiceAccountFilterTests(unittest.TestCase):
                      "notifymessage", "weixin", "opencustomerservicemsg", "newsapp",
                      "weixinliteservice", "weixinreminder", "fmessage", "floatbottle",
                      "medianote", "qqmail", "voiceinput", "exmail_tool",
-                     "fold@placeholder_foldgroup", "bot@weclaw", "svc@kefu.openim",
+                     "fold@placeholder_foldgroup", "svc@kefu.openim",
                      "brandsessionholder@somewhere"):
             with self.subTest(user=user):
                 self.assertTrue(is_service_account(user))
@@ -20,6 +20,12 @@ class ServiceAccountFilterTests(unittest.TestCase):
     def test_real_conversations_are_kept(self):
         for user in ("filehelper", "wxid_friend", "someone@chatroom", "user@openim",
                      "opencustomerservicemsg_real", "voiceinput_helper", ""):
+            with self.subTest(user=user):
+                self.assertFalse(is_service_account(user))
+
+    def test_user_configured_ai_bots_are_kept(self):
+        # A WeChat AI bot the user set up (OpenClaw plugin) is a conversation, not a service row.
+        for user in ("abc123XYZbotid@weclaw", "bot@WeClaw"):
             with self.subTest(user=user):
                 self.assertFalse(is_service_account(user))
 

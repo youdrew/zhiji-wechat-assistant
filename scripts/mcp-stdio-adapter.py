@@ -37,6 +37,7 @@ import socket
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -168,7 +169,8 @@ TOOL_CATALOG = {
                        "需 accountId 与 subjectId。contact.conversation 打开只读聊天记录，可搜索和查看媒体。",
         "inputSchema": {"type": "object",
                         "properties": {"module": {"type": "string", "enum": [
-                                           "contact.overview", "contact.memory", "contact.persona",
+                                           "contact.overview", "contact.tags", "contact.timeline",
+                                           "contact.memory", "contact.persona",
                                            "contact.values", "contact.chat", "contact.trends",
                                            "contact.conversation",
                                            "analysis.progress", "app.main", "app.settings"]},
@@ -373,7 +375,7 @@ TOOL_CATALOG = {
                         "additionalProperties": False},
     },
     # 阶段 3b 第二批：分析任务。开始/停止是写操作（requestId 幂等）；长任务返回
-    # 任务 ID，用 zhiji_get_task 轮询状态；逐句分析与回复建议按消息读取已保存结果；
+    # 任务 ID，用 zhiji_get_task 轮询状态；分析与建议按每轮末条消息读取已保存结果；
     # 自我剖析是账号级汇总，逐联系人授权模式不提供。
     "zhiji_start_friend_analysis": {
         "description": "为一位联系人开始知己好友分析（长任务）。返回任务 ID，用 zhiji_get_task 轮询；"
@@ -391,15 +393,117 @@ TOOL_CATALOG = {
     },
     "zhiji_get_friend_analysis": {
         "description": "读取一位联系人已保存的好友分析结果。section 可选：status=运行状态、"
-                       "overview=好友概述、persona=性格分析、chat=聊天分析、trend=关系趋势。",
+                       "overview=好友概述、persona=性格分析、chat=聊天分析、trend=关系趋势、"
+                       "tags=ta 的标签（性格、习惯、说话方式等特征；version 用作修改的 expectedVersion）、"
+                       "tagEvidence=一个标签的依据"
+                       "（需 name，说话习惯用 key）、timeline=我和 ta 之间的时间线（事件分页，nextOffset 非空时"
+                       "用 offset 续读；version 用作修改的 expectedVersion）、timelineEvidence=一个事件的依据"
+                       "（需 id）。",
         "inputSchema": {"type": "object",
                         "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
                                        "subjectId": {"type": "string", "description": "稳定联系人标识"},
                                        "section": {"type": "string",
                                                    "enum": ["status", "overview", "persona", "chat",
-                                                            "trend"],
-                                                   "description": "结果分节，缺省 status"}},
+                                                            "trend", "tags", "tagEvidence", "timeline",
+                                                            "timelineEvidence"],
+                                                   "description": "结果分节，缺省 status"},
+                                       "offset": {"type": "integer", "minimum": 0,
+                                                  "description": "timeline 的续读位置"},
+                                       "id": {"type": "string", "description": "timelineEvidence 的事件 id"},
+                                       "name": {"type": "string", "description": "tagEvidence 的标签名"},
+                                       "key": {"type": "string",
+                                               "description": "tagEvidence 的说话习惯条目键"}},
                         "required": ["accountId", "subjectId"],
+                        "additionalProperties": False},
+    },
+    "zhiji_edit_friend_timeline": {
+        "description": "修改一位联系人的好友时间线（我和 ta 之间的事），一次一项，和界面上的修改等价。"
+                       "target=event 时 action 为 add、edit、confirm、unconfirm、delete、restore；"
+                       "target=period 时为 add、edit、confirm、unconfirm、delete；"
+                       "target=track 时为 add、edit、visible、delete，id 是这位好友的自定义主线名。"
+                       "除 add 外都要 id；edit 只需给要改的字段，其余保留。"
+                       "“来自关系记忆”的只读行不能改，也不能取消与关系记忆的关联。"
+                       "返回新的 version，继续修改时作为 expectedVersion；add 返回新条目的 id。"
+                       "expectedVersion 不符时返回 version-conflict。可用 zhiji_undo_friend_timeline 撤销。",
+        "inputSchema": {"type": "object",
+                        "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
+                                       "subjectId": {"type": "string", "description": "稳定联系人标识"},
+                                       "requestId": {"type": "string", "description": "幂等请求标识"},
+                                       "target": {"type": "string", "enum": ["event", "period", "track"],
+                                                  "description": "修改对象：事件、时期或主线"},
+                                       "action": {"type": "string",
+                                                  "enum": ["add", "edit", "confirm", "unconfirm", "delete",
+                                                           "restore", "visible"],
+                                                  "description": "操作"},
+                                       "id": {"type": "string", "description": "事件或时期 id，或主线名"},
+                                       "fields": {
+                                           "type": "object",
+                                           "description": "event：title、track、category（见面聚会、一起出行、"
+                                                          "一起做的事、同学共事、互相帮忙、礼物纪念、情感、其他）、"
+                                                          "status（occurred/planned/cancelled/uncertain）、"
+                                                          "importance（important/general）、when、note。"
+                                                          "period：title、track、when、ongoing。"
+                                                          "track：title（add 时的主线名）、description、"
+                                                          "color、visible。when 可写 2024、2024.05、"
+                                                          "2024-05-03、2024春或 2024.03-2024.06，年份 1970–2099，"
+                                                          "空字符串清空时间。"},
+                                       "expectedVersion": {"type": "integer", "minimum": 0,
+                                                           "description": "当前版本"}},
+                        "required": ["accountId", "subjectId", "requestId", "target", "action",
+                                     "expectedVersion"],
+                        "additionalProperties": False},
+    },
+    "zhiji_undo_friend_timeline": {
+        "description": "撤销你（Agent）对这位联系人时间线最近一次的修改，可连续撤销；不会撤销用户自己的修改。"
+                       "undone 是被撤销操作的说明，没有可撤销的修改时为 null；那处之后被用户改过时不撤销，"
+                       "undone 为 null，skipped 说明跳过的操作和原因。"
+                       "expectedVersion 不符时返回 version-conflict。",
+        "inputSchema": {"type": "object",
+                        "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
+                                       "subjectId": {"type": "string", "description": "稳定联系人标识"},
+                                       "requestId": {"type": "string", "description": "幂等请求标识"},
+                                       "expectedVersion": {"type": "integer", "minimum": 0,
+                                                           "description": "当前版本"}},
+                        "required": ["accountId", "subjectId", "requestId", "expectedVersion"],
+                        "additionalProperties": False},
+    },
+    "zhiji_edit_friend_tags": {
+        "description": "修改一位联系人的标签（ta 是什么样的人），一次一项，和界面上的修改等价。"
+                       "action：confirm=确认标签、reset=取消确认或恢复已删除的标签、delete=删除标签、"
+                       "add=添加标签（需 category）；hide/unhide=隐藏或恢复一条说话习惯（用 key，见 tags 分节的 "
+                       "habits）。add 时 category=说话习惯 可手写一条说话习惯。不能取消标签与关系记忆的关联。"
+                       "返回新的 version，继续修改时作为 expectedVersion；expectedVersion 不符时返回 "
+                       "version-conflict。可用 zhiji_undo_friend_tags 撤销。",
+        "inputSchema": {"type": "object",
+                        "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
+                                       "subjectId": {"type": "string", "description": "稳定联系人标识"},
+                                       "requestId": {"type": "string", "description": "幂等请求标识"},
+                                       "action": {"type": "string",
+                                                  "enum": ["confirm", "reset", "delete", "add", "hide", "unhide"],
+                                                  "description": "操作"},
+                                       "name": {"type": "string", "description": "标签名（hide/unhide 以外）"},
+                                       "key": {"type": "string", "description": "说话习惯条目键（hide/unhide）"},
+                                       "category": {"type": "string",
+                                                    "description": "add 的类别：运动健身、游戏棋牌、影音娱乐、"
+                                                                   "阅读学习、美食饮食、旅行出行、工作技能、身份生活、"
+                                                                   "性格习惯、观点态度、其他、说话习惯"},
+                                       "expectedVersion": {"type": "integer", "minimum": 0,
+                                                           "description": "当前版本（tags 分节的 version）"}},
+                        "required": ["accountId", "subjectId", "requestId", "action", "expectedVersion"],
+                        "additionalProperties": False},
+    },
+    "zhiji_undo_friend_tags": {
+        "description": "撤销你（Agent）对这位联系人标签最近一次的修改，可连续撤销；不会撤销用户自己的修改。"
+                       "undone 是被撤销操作的说明，没有可撤销的修改时为 null；那处之后被用户改过时不撤销，"
+                       "undone 为 null，skipped 说明跳过的操作和原因。"
+                       "expectedVersion 不符时返回 version-conflict。",
+        "inputSchema": {"type": "object",
+                        "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
+                                       "subjectId": {"type": "string", "description": "稳定联系人标识"},
+                                       "requestId": {"type": "string", "description": "幂等请求标识"},
+                                       "expectedVersion": {"type": "integer", "minimum": 0,
+                                                           "description": "当前版本"}},
+                        "required": ["accountId", "subjectId", "requestId", "expectedVersion"],
                         "additionalProperties": False},
     },
     "zhiji_get_task": {
@@ -418,8 +522,7 @@ TOOL_CATALOG = {
                         "additionalProperties": False},
     },
     "zhiji_start_message_insights": {
-        "description": "为一位联系人的一条消息发起逐句解读与三条回复建议（长任务）。"
-                       "返回该消息的排队/运行状态；需要该好友已在知己中开启分析与建议。",
+        "description": "按该好友开启的功能生成本轮解读、三种回复方案或两者。以对方连续消息的末条发起，返回排队或运行状态。",
         "inputSchema": {"type": "object",
                         "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
                                        "subjectId": {"type": "string", "description": "稳定联系人标识"},
@@ -429,7 +532,7 @@ TOOL_CATALOG = {
                         "additionalProperties": False},
     },
     "zhiji_get_message_insights": {
-        "description": "读取一位联系人若干消息的已保存逐句解读与回复建议（一次最多 20 条）。",
+        "description": "按一轮的末条消息读取已保存的整轮解读与回复方案（一次最多 20 条；roundIds 为该轮全部消息）。",
         "inputSchema": {"type": "object",
                         "properties": {"accountId": {"type": "string", "description": "已保存账号标识"},
                                        "subjectId": {"type": "string", "description": "稳定联系人标识"},
@@ -850,6 +953,8 @@ SUBJECT_TOOLS = {"zhiji_get_contact", "zhiji_get_recent_messages", "zhiji_get_co
                  "zhiji_get_contact_goal", "zhiji_save_contact_goal", "zhiji_list_observations",
                  "zhiji_save_observation", "zhiji_delete_observation",
                  "zhiji_start_friend_analysis", "zhiji_get_friend_analysis",
+                 "zhiji_edit_friend_timeline", "zhiji_undo_friend_timeline",
+                 "zhiji_edit_friend_tags", "zhiji_undo_friend_tags",
                  "zhiji_start_message_insights", "zhiji_get_message_insights",
                  "zhiji_list_assistant_friends", "zhiji_list_assistant_threads",
                  "zhiji_get_assistant_thread", "zhiji_new_assistant_thread",
@@ -916,6 +1021,10 @@ TOOL_TITLES = {
     "zhiji_delete_observation": "删除观察记录",
     "zhiji_start_friend_analysis": "开始好友分析",
     "zhiji_get_friend_analysis": "读取好友分析",
+    "zhiji_edit_friend_timeline": "修改好友时间线",
+    "zhiji_undo_friend_timeline": "撤销好友时间线修改",
+    "zhiji_edit_friend_tags": "修改好友标签",
+    "zhiji_undo_friend_tags": "撤销好友标签修改",
     "zhiji_get_task": "查询分析任务",
     "zhiji_stop_task": "停止分析任务",
     "zhiji_start_message_insights": "开始消息解读",
@@ -986,7 +1095,8 @@ WRITE_TOOLS = frozenset((
     "zhiji_save_observation", "zhiji_delete_observation",
     "zhiji_start_friend_analysis", "zhiji_stop_task", "zhiji_start_message_insights",
     "zhiji_start_self_analysis", "zhiji_edit_self_timeline", "zhiji_undo_self_timeline",
-    "zhiji_stop_self_analysis",
+    "zhiji_stop_self_analysis", "zhiji_edit_friend_timeline", "zhiji_undo_friend_timeline",
+    "zhiji_edit_friend_tags", "zhiji_undo_friend_tags",
     "zhiji_save_assistant_template", "zhiji_enable_assistant_template",
     "zhiji_delete_assistant_template", "zhiji_import_assistant_skill",
     "zhiji_delete_assistant_skill", "zhiji_new_assistant_thread",
@@ -1011,7 +1121,9 @@ DESTRUCTIVE_TOOLS = frozenset((
 NON_IDEMPOTENT_TOOLS = frozenset((
     "zhiji_create_memory", "zhiji_save_observation", "zhiji_start_friend_analysis",
     "zhiji_start_message_insights", "zhiji_start_self_analysis", "zhiji_edit_self_timeline",
-    "zhiji_undo_self_timeline", "zhiji_save_assistant_template",
+    "zhiji_undo_self_timeline", "zhiji_edit_friend_timeline", "zhiji_undo_friend_timeline",
+    "zhiji_edit_friend_tags", "zhiji_undo_friend_tags",
+    "zhiji_save_assistant_template",
     "zhiji_import_assistant_skill", "zhiji_new_assistant_thread",
     "zhiji_submit_assistant_question", "zhiji_start_import_recognition",
 ))
@@ -1226,8 +1338,8 @@ class CoreConnection:
     def resolve(self):
         """Health-check the installation's Core; cold-start it under the install lock if needed."""
         base = self.config(launcher.default_port(self.root))
-        port = launcher.selected_port(base, allow_fallback=True)
-        config = self.config(port)
+        # Only read the pin here; choosing or rewriting a port happens under the locks.
+        config = self.config(launcher.selected_port(base, allow_fallback=False))
         if self._health is not None:
             state = self._health(config)
         else:
@@ -1237,8 +1349,14 @@ class CoreConnection:
                 runtime_dir = launcher.checked_runtime_dir(config)
             except launcher.LauncherError as exc:
                 raise AdapterError("core-start-refused", str(exc)) from None
-            with install_start_lock(runtime_dir):
-                # Another starter may have won the race while we waited.
+            with install_start_lock(runtime_dir), self._selection_mutex():
+                # Another starter may have won the race while we waited, possibly on a
+                # port it fell back to: select again so this adapter attaches to that
+                # Core instead of starting a second one on the port it read earlier.
+                try:
+                    config = self.config(launcher.selected_port(base, allow_fallback=True))
+                except launcher.LauncherError as exc:
+                    raise AdapterError("core-start-refused", str(exc)) from None
                 if self._health is not None:
                     state = self._health(config)
                 else:
@@ -1261,6 +1379,22 @@ class CoreConnection:
                                f"本安装的本地服务暂不可用（{state}）；请显式启动一次知己后再试")
         diagnostic(f"使用本机服务 {config.url}（{state}）")
         return config.url
+
+    @contextmanager
+    def _selection_mutex(self):
+        """The launcher's installation-wide port selection mutex (port 0), shared with desktop launches."""
+        if os.name != "nt":
+            yield  # The named mutex is Windows-only; the install lock still serializes adapters.
+            return
+        mutex = launcher.launch_mutex(self.config(0))
+        try:
+            mutex.__enter__()
+        except launcher.LauncherError as exc:
+            raise AdapterError("start-lock-timeout", f"另一个启动过程长时间占用本安装的端口选择锁：{exc}") from None
+        try:
+            yield
+        finally:
+            mutex.__exit__(None, None, None)
 
     # -- HTTP -----------------------------------------------------------------
     def _post(self, url, path, body, token=None, timeout=CALL_TIMEOUT):

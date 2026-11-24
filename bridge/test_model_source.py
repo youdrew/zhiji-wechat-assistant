@@ -34,6 +34,10 @@ class FakeProbe:
         self.calls.append(("test", protocol, base_url, api_key, model))
         return {"ok": True, "latencyMs": 12.5}
 
+    def speech_test(self, base_url, api_key, model, voice):
+        self.calls.append(("speech", base_url, api_key, model, voice))
+        return {"ok": True, "latencyMs": 40}
+
 
 class ModelSourceTests(unittest.TestCase):
     def setUp(self):
@@ -74,6 +78,35 @@ class ModelSourceTests(unittest.TestCase):
         self.assertEqual(len(self.probe.calls), 1)
         self.backend.model_source_activate({**request, "model": "different-model", "apiKey": ""})
         self.assertEqual(len(self.probe.calls), 2)
+
+    def test_speech_models_are_tested_by_synthesis_and_never_activated_as_language_model(self):
+        self.backend.model_source_activate({"mode": "api", "protocol": "responses",
+                                            "baseUrl": "https://example.test/v1", "model": "test-model",
+                                            "apiKey": "text-key"})
+        speech = {"protocol": "openai_speech", "baseUrl": "https://tts.test/v1", "model": "tts-1",
+                  "apiKey": "tts-key", "voice": "alloy"}
+        self.assertEqual(self.backend.model_source_test(speech), {"ok": True, "latencyMs": 40})
+        self.assertEqual(self.probe.calls[-1], ("speech", "https://tts.test/v1", "tts-key", "tts-1", "alloy"))
+        with self.assertRaises(ValueError):
+            self.backend.model_source_test({**speech, "voice": ""})
+        with self.assertRaises(ValueError):
+            self.backend.model_source_activate({"mode": "api", **speech})
+        saved = self.backend.model_source_models_save(speech)
+        speech_id = saved["roles"]["speech"]
+        self.assertIsNotNone(speech_id)
+        self.assertEqual(next(item for item in saved["models"] if item["id"] == speech_id)["voice"], "alloy")
+        # An unchanged edit with the stored key skips the probe; a new voice is tested again.
+        calls = len(self.probe.calls)
+        self.backend.model_source_models_save({**speech, "id": speech_id, "apiKey": ""})
+        self.assertEqual(len(self.probe.calls), calls)
+        self.backend.model_source_models_save({**speech, "id": speech_id, "apiKey": "", "voice": "nova"})
+        self.assertEqual(self.probe.calls[-1][-1], "nova")
+        # The catalog of a speech service is read at its OpenAI-compatible /models path.
+        self.backend.model_source_list({"protocol": "openai_speech", "baseUrl": "https://tts.test/v1", "id": speech_id})
+        self.assertEqual(self.probe.calls[-1][:2], ("list", "chat_completions"))
+        self.assertEqual(self.backend.model_source_roles({"speech": None})["roles"]["speech"], None)
+        with self.assertRaises(ValueError):
+            self.backend.model_source_roles({"main": speech_id})
 
     @staticmethod
     def request(server, method, path, body=None, headers=None):
@@ -413,7 +446,7 @@ class ModelSourceTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(initial, {"mode": "none", "api": None,
                                    "sourceId": LOCAL_SOURCE_ID, "status": "active",
-                                   "models": [], "roles": {"main": None, "judge": None, "image": None},
+                                   "models": [], "roles": {"main": None, "judge": None, "image": None, "speech": None},
                                    "localJudge": initial["localJudge"], "modelList": None})
         self.assertEqual(initial["localJudge"]["state"], "missing")
         self.assertFalse(initial["localJudge"]["qualityVerified"])
@@ -605,7 +638,7 @@ class MultiModelStoreTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 2)
         listing = reopened.models()
         self.assertEqual([item["model"] for item in listing["models"]], ["model-a", "model-b"])
-        self.assertEqual(listing["roles"], {"main": second, "judge": None, "image": None})
+        self.assertEqual(listing["roles"], {"main": second, "judge": None, "image": None, "speech": None})
         self.assertEqual(listing["models"][0]["concurrency"], 6)
         # The upgraded main keeps the original cache identity.
         self.assertEqual(reopened.saved_selection()["sourceId"], second)
@@ -632,6 +665,49 @@ class MultiModelStoreTests(unittest.TestCase):
             self.store.delete_model(judge_id)
         with self.assertRaises(ValueError):
             self.store.set_roles(judge=main_id, image="0" * 32)
+
+    def test_speech_model_serves_only_speech_and_stays_out_of_older_documents(self):
+        main_id = self.activate("model-a", "key-a")
+        with self.assertRaises(ValueError):
+            self.store.save_model(protocol="openai_speech", base_url="https://tts.test/v1", model="tts")
+        speech_id = self.store.save_model(protocol="openai_speech", base_url="https://tts.test/v1",
+                                          model="tts", key="tts-key", voice="alloy")
+        listing = self.store.models()
+        self.assertEqual(listing["roles"], {"main": main_id, "judge": None, "image": None, "speech": speech_id})
+        entry = next(item for item in listing["models"] if item["id"] == speech_id)
+        self.assertEqual(entry["voice"], "alloy")
+        for role in ("main", "judge", "image"):
+            with self.assertRaises(ValueError):
+                self.store.set_roles(**{role: speech_id})
+        with self.assertRaises(ValueError):
+            self.store.set_roles(speech=main_id)
+        with self.assertRaises(ValueError):
+            self.store.save_api("openai_speech", "https://tts.test/v1", "tts", "tts-key")
+        # Serving speech, the model cannot turn into a text model.
+        with self.assertRaises(ValueError):
+            self.store.save_model(speech_id, protocol="responses", base_url="https://tts.test/v1", model="tts")
+        with self.assertRaises(ValueError):
+            self.store.save_model(main_id, protocol="openai_speech", base_url="https://example.test/v1",
+                                  model="model-a", voice="alloy")
+        self.store.set_roles(speech=None)
+        stored = json.loads(self.path.read_text(encoding="utf-8"))
+        # Unassigned speech is not written, so builds with three purposes still read the file.
+        self.assertEqual(set(stored["roles"]), {"main", "judge", "image"})
+        self.assertEqual(self.store.models()["roles"]["speech"], None)
+        self.store.set_roles(speech=speech_id)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["roles"]["speech"], speech_id)
+        # A speech-only store keeps the language model unset rather than invalid.
+        self.store.delete_model(speech_id)
+        self.assertEqual(self.store.models()["roles"]["speech"], None)
+
+    def test_speech_only_store_has_no_language_model(self):
+        speech_id = self.store.save_model(protocol="openai_speech", base_url="https://tts.test/v1",
+                                          model="tts", key="tts-key", voice="nova")
+        self.assertEqual(self.store.models()["roles"],
+                         {"main": None, "judge": None, "image": None, "speech": speech_id})
+        self.assertIsNone(self.store.saved_selection()["api"])
+        main_id = self.activate("model-a", "key-a")
+        self.assertEqual(self.store.models()["roles"]["main"], main_id)
 
     def test_blank_key_reuses_same_endpoint_ciphertext_without_reencryption(self):
         main_id = self.activate("model-a", "key-a")
@@ -693,7 +769,7 @@ class MultiModelStoreTests(unittest.TestCase):
         self.store.set_roles(judge=builtin_id)
         self.store.delete_model(builtin_id)
         self.assertEqual(self.store.models(), {
-            "models": [], "roles": {"main": None, "judge": None, "image": None}})
+            "models": [], "roles": {"main": None, "judge": None, "image": None, "speech": None}})
         main_id = self.store.save_model(protocol="responses", base_url="https://first.test/v1",
                                          model="first-model", key="synthetic-key")
         self.assertEqual(self.store.models()["roles"]["main"], main_id)
@@ -709,7 +785,7 @@ class MultiModelStoreTests(unittest.TestCase):
         original = {"version": 1, "selectedMode": "local", "api": None}
         self.path.write_text(json.dumps(original), encoding="utf-8")
         self.assertEqual(self.store.models(), {
-            "models": [], "roles": {"main": None, "judge": None, "image": None}})
+            "models": [], "roles": {"main": None, "judge": None, "image": None, "speech": None}})
         self.store.ensure_builtin("julia-1", "本地判断模型", "julia-1")
         self.assertEqual(json.loads(self.path.with_name("api-model-source.v1.json").read_text()), original)
 

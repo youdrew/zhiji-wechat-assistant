@@ -17,7 +17,7 @@ function removeFixture(root) {
 }
 
 async function main() {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "kyf-final-ready-"));
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "kyf-final-ready-"));
   try {
     const installRoot = path.join(parent, "KnowYourFriends");
     const clientRoot = path.join(installRoot, "resources", "client");

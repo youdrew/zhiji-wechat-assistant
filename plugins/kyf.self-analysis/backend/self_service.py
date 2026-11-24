@@ -19,7 +19,7 @@ from self_draft import DEPTHS, Draft, existing as draft_profile, depth as draft_
 from self_model import failure, service_ready
 from self_tag_store import CATEGORIES, TagStore
 from self_tags import TagJob
-from self_trial import REPLY_DEPTH_SETTINGS, Trial, conversation, eval_guard, depth as reply_depth
+from self_trial import REPLY_DEPTH_SETTINGS, Simulation, Trial, conversation, eval_guard, depth as reply_depth
 from self_analysis_run import AnalysisRun, saved_outputs, selected_outputs, saved_view as analysis_saved_view
 from self_progress import timed_view
 from self_contracts import now_ms
@@ -35,6 +35,7 @@ class Service:
         self.embeddings = {}
         self.drafts = {}
         self.trials = {}
+        self.simulations = {}
         self.tag_stores = {}
         self.tag_jobs = {}
         self.analyses = {}
@@ -467,6 +468,56 @@ class Service:
     def reply_status(self, account):
         return self._job_status(account, self.trials)
 
+    # 回复调研 for 分析与建议 (2026-11-09): several rounds may research at once, so jobs are kept by id.
+    MAX_SIMULATIONS = 4
+    KEEP_SIMULATIONS = 16
+
+    def simulate(self, account, user, params):
+        """Start researching how the user would answer a real round from ``user``; returns the job view."""
+        if not isinstance(user, str) or not user or user.endswith("@chatroom"):
+            raise SelfError("invalid-request", "回复调研只用于私聊好友")
+        turns = conversation(params)
+        level = reply_depth(params.get("depth", "deep"))
+        store, tags = self._tags(account)
+        if store.counts()["samples"] == 0:
+            raise SelfError("no-samples", "还没有可用的本人回复，请先建立知识库")
+        with self.lock:
+            running = [job for job in self.simulations.values() if job.running]
+            if len(running) >= self.MAX_SIMULATIONS:
+                raise SelfError("service-busy", "回复调研同时进行的任务已满，请稍后重试")
+        try:
+            service_ready(self.plugin)
+        except Exception as exc:
+            raise SelfError(getattr(exc, "code", None) or "model-unavailable", failure(exc, Simulation.fallback)) from None
+        job = Simulation(self.plugin, store, account, user, turns, tags, level)
+        with self.lock:
+            self.simulations[job.id] = job
+            for key in [key for key, item in self.simulations.items() if not item.running][:-self.KEEP_SIMULATIONS]:
+                del self.simulations[key]
+        try:
+            job.start()
+        except Exception as exc:
+            with self.lock:
+                self.simulations.pop(job.id, None)
+            raise SelfError(getattr(exc, "code", None) or "self-simulate-failed", failure(exc, Simulation.fallback)) from None
+        return job.view()
+
+    def _simulation(self, account, user, params):
+        self._scope(account)
+        with self.lock:
+            job = self.simulations.get(params.get("id"))
+        if job is None or job.account != account or job.user != user:
+            raise SelfError("not-found", "回复调研不存在或已结束")
+        return job
+
+    def simulate_status(self, account, user, params):
+        return self._simulation(account, user, params).view()
+
+    def simulate_stop(self, account, user, params):
+        job = self._simulation(account, user, params)
+        job.cancel()
+        return job.view()
+
     def _tags(self, account):
         store, _ = self._account(account)
         with self.lock:
@@ -575,7 +626,18 @@ class Service:
         budget = integer(params.get("budgetChars"), DEFAULT_CONTEXT_CHARS, 256, MAX_CONTEXT_CHARS)
         retrieval = Retrieval(self.plugin.core, store, account)
         search_params = {**params, "limit": min(4, integer(params.get("limit"), 4, 1, 8))}
-        sources = retrieval.search(search_params, user)
+        search_params.pop("onlyUser", None)
+        if params.get("preferSameContact") is True and user:
+            # 分析与建议 (2026-11-09): how the user answered this same friend comes first; other
+            # contacts only fill the remaining places.
+            own = retrieval.search({**search_params, "onlyUser": True}, user)
+            mode = retrieval.mode
+            rest = retrieval.search(search_params, user) if len(own) < search_params["limit"] else []
+            taken = {row["id"] for row in own}
+            sources = (own + [row for row in rest if row["id"] not in taken])[:search_params["limit"]]
+            retrieval.mode = "hybrid" if "hybrid" in (mode, retrieval.mode) else retrieval.mode
+        else:
+            sources = retrieval.search(search_params, user)
         bounded = bounded_context(sources, profile["style"], max(256, budget - 350))
         self._scope(account)
         result = {**common, **bounded, "mode": retrieval.mode, "semanticPartial": retrieval.semantic_partial,
@@ -589,6 +651,14 @@ class Service:
         result["available"] = bool(result["sources"] or result["profile"]["style"])
         return result
 
+    def portrait(self, account, params):
+        """本人画像 text for 分析与建议; read-only, no model call."""
+        from self_portrait import portrait
+        store, tags = self._tags(account)
+        result = portrait(store, tags, params)
+        self._scope(account)
+        return result
+
     def changed(self, account, user):
         with self.lock:
             entry = self.accounts.get(account)
@@ -599,7 +669,8 @@ class Service:
         with self.lock:
             entries = [(account, *value) for account, value in self.accounts.items()]
             self.accounts.clear()
-            for job in [*self.drafts.values(), *self.trials.values(), *self.tag_jobs.values(), *self.analyses.values()]:
+            for job in [*self.drafts.values(), *self.trials.values(), *self.simulations.values(),
+                        *self.tag_jobs.values(), *self.analyses.values()]:
                 job.cancel()
         for account, store, worker in entries:
             embeddings_stopped = self.embeddings[account].close()

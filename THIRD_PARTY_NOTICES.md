@@ -10,9 +10,9 @@
 
 ## Agent 会话引擎与界面组件
 
-Agent 使用 OpenCode `v1.18.34` 的官方 SDK 和独立 Windows 引擎。来源为 [anomalyco/opencode](https://github.com/anomalyco/opencode)，固定提交 `e9f8a210b9e2b1e13d375b84906069886eb3b767`，MIT 完整许可证见 [licenses/OpenCode-MIT.txt](licenses/OpenCode-MIT.txt)。
+Agent 讨论由用户本机安装的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（MIT，已验证 `0.2.2-rc.1`）运行；知己通过其 ACP 接口启动和续接会话，安装包不携带 DeepSeek Harness 的程序或源码。此前使用的 OpenCode `v1.18.34` 引擎和 SDK 已移除。
 
-`plugins/kyf.advisor/ui-src/vendor/opencode/` 的 Markdown 流式投影、消息文本读取、TextShimmer 与 SessionRetry 来自该提交的 `packages/session-ui` 和 `packages/ui`；SessionRetry 的主题与翻译依赖经过局部适配。它们编译为独立面板组件，不引入上游全局主题或编程工作区。编译依赖 Solid、Marked、Remend 和 DOMPurify，实际许可证保留在对应 npm 包及构建输出中。
+`plugins/kyf.advisor/ui-src/vendor/opencode/` 的 Markdown 流式投影、消息文本读取、TextShimmer 与 SessionRetry 来自 [anomalyco/opencode](https://github.com/anomalyco/opencode) 固定提交 `e9f8a210b9e2b1e13d375b84906069886eb3b767` 的 `packages/session-ui` 和 `packages/ui`，MIT 完整许可证见 [licenses/OpenCode-MIT.txt](licenses/OpenCode-MIT.txt)；SessionRetry 的主题、翻译与状态类型经过局部适配。它们编译为独立面板组件，不引入上游全局主题或编程工作区。编译依赖 Solid、Marked、Remend 和 DOMPurify，实际许可证保留在对应 npm 包及构建输出中。
 
 ## 分析模型
 

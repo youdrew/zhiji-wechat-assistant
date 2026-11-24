@@ -75,6 +75,10 @@ register("self.tagsPause", lambda app, account, params, ctx: app.tags_pause(acco
 register("self.tagEvidence", lambda app, account, params, ctx: app.tag_evidence(account, params))
 register("self.tagEdit", lambda app, account, params, ctx: app.tag_edit(account, params))
 register("self.context", lambda app, account, params, ctx: app.context(account, params, ctx.get("user")))
+register("self.portrait", lambda app, account, params, ctx: app.portrait(account, params))
+register("self.simulate", lambda app, account, params, ctx: app.simulate(account, ctx.get("user"), params))
+register("self.simulateStatus", lambda app, account, params, ctx: app.simulate_status(account, ctx.get("user"), params))
+register("self.simulateStop", lambda app, account, params, ctx: app.simulate_stop(account, ctx.get("user"), params))
 register("self.exclude", lambda app, account, params, ctx: app.exclude(account, params.get("id"), params.get("excluded", True)))
 register("self.exclusions", lambda app, account, params, ctx: app.exclusions(account))
 

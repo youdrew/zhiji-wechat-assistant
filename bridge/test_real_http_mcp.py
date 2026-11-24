@@ -94,7 +94,7 @@ class McpRouteTests(unittest.TestCase):
         self.assertEqual(result["result"]["server"]["openCapabilities"],
                                                  ['zhiji_clear_local_data', 'zhiji_confirm_memory', 'zhiji_create_memory',
                           'zhiji_delete_account', 'zhiji_delete_assistant_skill', 'zhiji_delete_assistant_template',
-                          'zhiji_delete_memory', 'zhiji_delete_observation', 'zhiji_edit_self_timeline',
+                          'zhiji_delete_memory', 'zhiji_delete_observation', 'zhiji_edit_friend_tags', 'zhiji_edit_friend_timeline', 'zhiji_edit_self_timeline',
                           'zhiji_enable_assistant_template',
                           'zhiji_find_contacts', 'zhiji_get_assistant_catalog', 'zhiji_get_assistant_run', 'zhiji_get_assistant_thread',
                           'zhiji_get_contact', 'zhiji_get_contact_brief', 'zhiji_get_contact_goal', 'zhiji_get_friend_analysis', 'zhiji_get_import_batch',
@@ -112,7 +112,8 @@ class McpRouteTests(unittest.TestCase):
                           'zhiji_start_friend_analysis', 'zhiji_start_import_recognition',
                           'zhiji_start_message_insights', 'zhiji_start_self_analysis', 'zhiji_stop_assistant_run',
                           'zhiji_stop_import_recognition', 'zhiji_stop_self_analysis', 'zhiji_stop_task',
-                          'zhiji_submit_assistant_question', 'zhiji_undo_self_timeline', 'zhiji_update_memory'])
+                          'zhiji_submit_assistant_question', 'zhiji_undo_friend_tags', 'zhiji_undo_friend_timeline', 'zhiji_undo_self_timeline',
+                          'zhiji_update_memory'])
 
     def test_handshake_needs_the_exact_content_type(self):
         created = self.mcp.store.create_profile("桌面客户端", "full")

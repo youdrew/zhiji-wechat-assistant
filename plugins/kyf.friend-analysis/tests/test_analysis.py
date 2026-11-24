@@ -19,6 +19,8 @@ from kyf_plugin import persona as persona_catalog
 import friend_chat
 import friend_overview
 import friend_persona
+import friend_tags
+import friend_timeline
 from analysis_store import FriendStore, now_ms
 from backend_contracts import MessageWindow
 from friend_extract import DEDUP_SYSTEM, EXTRACT_SYSTEM
@@ -53,7 +55,10 @@ class ScriptedRuntime(FakeRuntime):
                    for count in range(1, 5)
                    for fields in itertools.combinations(("intent", "emotion", "response", "invite"), count)},
                 friend_persona.SYNTH_SYSTEM: "synth", friend_persona.CONDENSE_SYSTEM: "condense",
-                friend_persona.AUDIT_SYSTEM: "audit",
+                friend_persona.AUDIT_SYSTEM: "audit", friend_tags.EXTRACT: "tags", friend_tags.REVIEW: "tags_review",
+                friend_tags.MERGE: "tags_merge", friend_timeline.EXTRACT: "timeline",
+                friend_timeline.REVIEW: "timeline_review", friend_timeline.MERGE: "timeline_merge",
+                friend_timeline.ASSIGN: "timeline_assign",
                 **{system: "evidence" for system in friend_persona.EVIDENCE_SYSTEMS}}[system]
 
     def generate(self, config, request, on_event, cancel_event):
@@ -77,6 +82,34 @@ class ScriptedRuntime(FakeRuntime):
     @staticmethod
     def answer_extract(message):
         return {"memories": []}
+
+    @staticmethod
+    def answer_tags(message):
+        return {"tags": []}
+
+    @staticmethod
+    def answer_tags_review(message):
+        return {"tags": json.loads(message.rsplit("tags: ", 1)[1])}
+
+    @staticmethod
+    def answer_tags_merge(message):
+        return {"merge": []}
+
+    @staticmethod
+    def answer_timeline(message):
+        return {"events": []}
+
+    @staticmethod
+    def answer_timeline_review(message):
+        return {"events": []}
+
+    @staticmethod
+    def answer_timeline_merge(message):
+        return {"merge": []}
+
+    @staticmethod
+    def answer_timeline_assign(message):
+        return {"assign": []}
 
     @staticmethod
     def answer_dedup(message):
@@ -250,7 +283,7 @@ class FirstRunTests(AnalysisCase):
         run = self.analyse()
         self.assertEqual(run["state"], "done", run)
         self.assertEqual([step["key"] for step in run["steps"]],
-                         ["history", "recent", "archive", "chat", "persona", "overview"])
+                         ["history", "recent", "archive", "chat", "persona", "tags", "timeline", "overview"])
         self.assertTrue(all(step["state"] in ("done", "skipped") for step in run["steps"]), run["steps"])
         self.assertGreater(run["usage"]["inputTokens"], 0)
         self.assertFalse(run["usage"]["estimated"])

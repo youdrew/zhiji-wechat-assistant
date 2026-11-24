@@ -13,6 +13,13 @@ type Registration = { context: RemoteContext; users: number; lastUsed: number; p
 const MAX_QUEUE_BYTES = 2 * 1024 * 1024;
 const MAX_ENVELOPE_BYTES = 64 * 1024;
 const MAX_REGISTRATIONS = 64;
+// Core accepts {"events": [...]} up to 64 events in a 64 KiB body and closes the
+// connection after every response. One request per stream delta opened thousands
+// of loopback connections per second, which crashes Node 24 on Windows natively
+// (0xC0000409, no stderr), so events are sent in batches at a bounded rate.
+const MAX_BATCH_EVENTS = 64;
+const MAX_BATCH_BYTES = 60 * 1024;
+const INGEST_INTERVAL_MS = 50;
 // Bound concurrent control/ingest connections even for ten simultaneous tasks.
 const dispatcher = new Agent({ connections: 2, pipelining: 1 });
 const registrations = new Map<string, Registration>();
@@ -21,6 +28,7 @@ let stateRevision = -1;
 let queue: { producer: string; body: string; bytes: number }[] = [];
 let queuedBytes = 0;
 let sending = false;
+let lastIngestAt = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 let configured = false;
 let droppedEvents = 0;
@@ -96,10 +104,28 @@ async function drain(): Promise<void> {
   sending = true;
   try {
     while (queue.length) {
-      const item = queue.shift()!;
-      const registration = registrations.get(item.producer);
+      // A full batch goes at once; a partial one waits briefly so a delta stream
+      // costs at most one request per interval, or one per full batch when faster.
+      const wait = lastIngestAt + INGEST_INTERVAL_MS - Date.now();
+      if (wait > 0 && queue.length < MAX_BATCH_EVENTS && queuedBytes < MAX_BATCH_BYTES) {
+        await new Promise(resolve => setTimeout(resolve, wait));
+        if (!queue.length) break;
+      }
+      lastIngestAt = Date.now();
+      // Consecutive events of one producer share a request; order is unchanged.
+      const producer = queue[0].producer;
+      const batch = [queue.shift()!];
+      let batchBytes = batch[0].bytes;
+      while (queue.length && queue[0].producer === producer && batch.length < MAX_BATCH_EVENTS &&
+          batchBytes + queue[0].bytes + 1 <= MAX_BATCH_BYTES) {
+        const next = queue.shift()!;
+        batch.push(next); batchBytes += next.bytes + 1;
+      }
+      const sent = batch.reduce((total, item) => total + item.bytes, 0);
+      const registration = registrations.get(producer);
       try {
-        if (registration) await request(registration.context, "ingest", item.body);
+        if (registration) await request(registration.context, "ingest",
+          batch.length === 1 ? batch[0].body : `{"events":[${batch.map(item => item.body).join(",")}]}`);
       } catch (error) {
         if (registration?.revoked) continue;
         if (error instanceof TraceProducerRevoked && registration) {
@@ -107,12 +133,12 @@ async function drain(): Promise<void> {
           continue;
         }
         lastTransportError = error instanceof Error ? `${error.name}:${(error.cause as { code?: string })?.code ?? "channel"}` : "channel";
-        droppedEvents += queue.length + 1;
+        droppedEvents += queue.length + batch.length;
         state = { ...state, collecting: false };
         // A broken diagnostic link cannot replay business requests. The backend
         // independently expires incomplete records; discard this bounded queue.
-        queue = []; queuedBytes = item.bytes;
-      } finally { queuedBytes -= item.bytes; }
+        queue = []; queuedBytes = sent;
+      } finally { queuedBytes -= sent; }
     }
   } finally { sending = false; }
 }

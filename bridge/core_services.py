@@ -566,10 +566,24 @@ class CoreServices:
         migrations.ensure(account)
 
     def model_services(self, plugin):
+        """The services this plugin may route to: a purpose it did not declare in
+        plugin.json falls back to the main model, so the settings page's list of
+        plugins per purpose is exactly who uses that purpose's own model."""
         try:
-            return {"services": self.gateway.services()}
+            services = self.gateway.services()
         except GatewayUnavailable as exc:
             raise ApiError(503, exc.code, exc.message) from None
+        manifest = self.registry.get(plugin)
+        declared = set(manifest.get("models", {})) if manifest else set()
+        result = []
+        for index, service in enumerate(services):
+            roles = [role for role in service.get("roles") or [] if role == "main" or role in declared]
+            if index and not roles:
+                continue
+            if "roles" in service:
+                service = {**service, "roles": roles}
+            result.append(service)
+        return {"services": result}
 
     def require_plugin(self, plugin, account=None):
         """Do not let a plugin replace legacy data with defaults after an incomplete migration."""

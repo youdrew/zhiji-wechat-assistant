@@ -339,7 +339,7 @@ test("recognition shows the primary model's actual name separately from its conn
   assert.doesNotMatch(page.text("eiContent"), /识别模型/, "model details stay out of the task page");
   page.button("eiContent", "更多");
   assert.match(page.text("eiDialog"), /识别模型：synthetic-primary-model/);
-  assert.match(page.text("eiDialog"), /使用“模型设置”中配置的主模型/);
+  assert.match(page.text("eiDialog"), /使用“模型设置”中配置的语言模型/);
   assert.match(page.text("eiDialog"), /连接地址：http:\/\/127\.0\.0\.1:12345/);
 });
 

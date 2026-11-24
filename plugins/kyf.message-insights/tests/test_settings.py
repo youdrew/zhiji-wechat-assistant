@@ -25,7 +25,8 @@ class SettingsTests(unittest.TestCase):
         self.addCleanup(lambda: [store.close() for store in self.insights.stores.values()])
 
     def enqueue(self, message_id):
-        self.insights.enqueue("synthetic-account", "synthetic-friend", [message_id], {"revision": 1},
+        self.insights.enqueue("synthetic-account", "synthetic-friend", [message_id],
+                              {"revision": 1, "analysis_enabled": 1, "suggestions_enabled": 1},
                               automatic=True, unified=True)
         return self.insights.queue[("synthetic-account", "synthetic-friend")]["jobs"][message_id]
 
@@ -51,10 +52,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(len(set(prompts)), 3)
         for prompt in prompts:
             self.assertTrue(prompt.startswith(SUGGESTIONS_SYSTEM))
-            self.assertIn("replies恰好3条", prompt)
+            self.assertIn("replies恰好3个", prompt)
             self.assertIn("绝不发送消息", prompt)
             self.assertIn("对方边界优先", prompt)
-        self.assertIn("20 字以内", prompts[1])
+        self.assertIn("更简短直接", prompts[1])
+        self.assertNotIn("20 字以内", prompts[1], "brevity follows the user's own habit, not a fixed cap")
         self.assertIn("礼貌温和", prompts[2])
 
 

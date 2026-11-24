@@ -66,6 +66,7 @@ function hashFormat() {
   assert.deepEqual([...full.keys()], ["account", "user", "name", "avatar", "restricted", "theme", "tab"]);
   assert.equal(full.get("restricted"), "1");
   assert.equal(new URLSearchParams(host.buildHash(scope, { tab: "evil", theme: "x" })).has("tab"), false);
+  for (const tab of ["tags", "timeline"]) assert.equal(new URLSearchParams(host.buildHash(scope, { tab })).get("tab"), tab);
   const request = host.validateOpenRequest(openOp());
   assert.equal(request.theme, "system", "Core may defer to the system theme");
   assert.equal(host.targetUrl({ ...request, theme: "dark" }), CORE + "/friend.html#" + plain + "&restricted=1&theme=dark");
