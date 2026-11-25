@@ -131,7 +131,7 @@ PUBLIC_FILES = (
     "chatui/history.html", "chatui/history-panel.js", "chatui/history-panel.css",
     "licenses/Skype-SILK-BSD.txt", "licenses/silk-v3-decoder-MIT.txt",
     "licenses/imageio-ffmpeg-BSD.txt", "licenses/FFmpeg-LGPL-2.1.txt",
-    "licenses/wechat-exporter-MIT.txt",
+    "licenses/wechat-exporter-MIT.txt", "licenses/8values-LICENSE.txt",
     "chatui/plugin-panel.html", "chatui/plugin-panel.css", "chatui/plugin-panel.js",
     "shared/message-input.ts",
     "native-reader/THIRD_PARTY_NOTICES.md",
