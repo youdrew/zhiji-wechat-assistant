@@ -101,7 +101,7 @@ Windows 安装包和校验文件见[最新正式版本](https://github.com/youdr
 
 安装脚本可下载知己、检查安装包哈希并发起账号配对。你在安装界面和知己授权窗口确认后，Agent 继续检查连接。详细步骤及当前验收范围见[安装说明](https://zhiji.eugenepage.com/install.html)。
 
-从[官方 v2.1.0 发布附件](https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.1.0)下载 `install-zhiji.ps1`，也可以自行运行。例如 Codex 使用
+从[官方 v2.2.0 发布附件](https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.2.0)下载 `install-zhiji.ps1`，也可以自行运行。例如 Codex 使用
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install-zhiji.ps1 -Client codex
