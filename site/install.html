@@ -15,7 +15,7 @@
   <a class="skip-link" href="#main">跳到主要内容</a>
   <header class="site-header shell"><a class="brand" href="index.html"><img class="brand-symbol" src="app-icon.png" alt="" width="32" height="32" aria-hidden="true"><span>知己<span class="brand-description">微信助手</span></span></a><a class="source-link" href="https://github.com/youdrew/zhiji-wechat-assistant">GitHub ↗</a></header>
   <main class="install-guide shell" id="main">
-    <p class="guide-eyebrow">v2.1.0 · Windows 10/11 x64 · 本机 MCP</p>
+    <p class="guide-eyebrow">v2.2.0 · Windows 10/11 x64 · 本机 MCP</p>
     <h1>让 AI 帮你安装知己</h1>
     <p>把下面这句话发送给你正在使用的 AI 客户端。Agent 按本页选择安装方式、合并配置并检查连接，你在安装界面及知己授权窗口完成确认。</p>
     <div class="prompt-box"><p id="agent-prompt">请阅读 https://zhiji.eugenepage.com/install.html，帮我安装知己微信助手并接入当前客户端。</p><button type="button" class="copy-text" data-copy-target="agent-prompt" aria-describedby="agent-copy-status" hidden>复制这句话</button><span class="copy-status" id="agent-copy-status" role="status"></span></div>
@@ -23,7 +23,7 @@
 
     <h2>先确认运行环境和客户端</h2>
     <p>安装与 MCP 进程运行在同一台 Windows 10/11 x64 电脑、同一个 Windows 用户下。Agent 需要能够访问网络、运行 PowerShell 和编辑该客户端的配置。仅有网页聊天、远程 Linux 或 WSL 环境时，请转到 Windows 本机执行。知己自带 Python 与 Node.js。</p>
-    <p>以当前对话所在的客户端为准。如果无法识别，请向用户询问。每个客户端使用独立连接档案。以下选择对应 v2.1.0 已发布脚本。</p>
+    <p>以当前对话所在的客户端为准。如果无法识别，请向用户询问。每个客户端使用独立连接档案。以下选择对应 v2.2.0 已发布脚本。</p>
     <div class="table-scroll"><table><thead><tr><th>当前客户端</th><th>安装参数</th><th>配置方式</th></tr></thead><tbody>
       <tr><td>Claude Code</td><td><code>-Client claude-code</code></td><td>脚本合并用户级 MCP 配置</td></tr>
       <tr><td>Codex</td><td><code>-Client codex</code></td><td>脚本合并 <code>~/.codex/config.toml</code>，尊重 <code>CODEX_HOME</code></td></tr>
@@ -35,12 +35,12 @@
     <p>Claude Code 已做真实客户端图像传递验证。Codex、Cursor 和 DeepSeek Harness 提供配置适配。WorkBuddy 路径与 stdio 格式依据官方说明，尚未完成真实 WorkBuddy 客户端验收。图片显示、新消息提示及配置热加载取决于客户端。</p>
 
     <h2>下载安装脚本并校验</h2>
-    <p>使用官方 v2.1.0 附件。下面的 PowerShell 命令把脚本存到本机临时目录，并核对 SHA-256。该脚本还会校验它下载的 Windows 安装包。</p>
+    <p>使用官方 v2.2.0 附件。下面的 PowerShell 命令把脚本存到本机临时目录，并核对 SHA-256。该脚本还会校验它下载的 Windows 安装包。</p>
     <pre><code id="download-command">$ErrorActionPreference = 'Stop'
 $zhijiInstaller = Join-Path ([IO.Path]::GetTempPath()) ('install-zhiji-' + [guid]::NewGuid().ToString('N') + '.ps1')
-Invoke-WebRequest 'https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/install-zhiji.ps1' -OutFile $zhijiInstaller -UseBasicParsing
-if ((Get-FileHash -LiteralPath $zhijiInstaller -Algorithm SHA256).Hash -ne '648b291c941968918ea7dbab7eba2d6bd59d22d281969d28bec2f122ac452d25') { throw '知己安装脚本校验失败' }</code></pre>
-    <p><a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/install-zhiji.ps1">下载脚本</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.1.0/SHA256SUMS.txt">校验文件</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.1.0">版本说明</a></p>
+Invoke-WebRequest 'https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.2.0/install-zhiji.ps1' -OutFile $zhijiInstaller -UseBasicParsing
+if ((Get-FileHash -LiteralPath $zhijiInstaller -Algorithm SHA256).Hash -ne 'a3c9fdaf1828920566ebabac95d744ab67fccbd826a1e3f0bd8ce428e0050072') { throw '知己安装脚本校验失败' }</code></pre>
+    <p><a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.2.0/install-zhiji.ps1">下载脚本</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/download/v2.2.0/SHA256SUMS.txt">校验文件</a> · <a href="https://github.com/youdrew/zhiji-wechat-assistant/releases/tag/v2.2.0">版本说明</a></p>
     <h2>安装、配对并连接</h2>
     <p>在同一个 PowerShell 会话中，选择当前客户端的命令。如果 Agent 的命令工具每次新建 shell，请将下载校验和所选安装命令放在同一次调用中，或在后续调用使用脚本的实际绝对路径。例如 Codex 使用</p>
     <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File $zhijiInstaller -Client codex -Yes</code></pre>
@@ -48,7 +48,7 @@ if ((Get-FileHash -LiteralPath $zhijiInstaller -Algorithm SHA256).Hash -ne '648b
     <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File $zhijiInstaller -Client claude-code -Yes</code></pre>
     <p>WorkBuddy 使用</p>
     <pre><code>powershell -NoProfile -ExecutionPolicy Bypass -File $zhijiInstaller -Client generic -Yes --name workbuddy</code></pre>
-    <p><code>-Yes</code> 省去脚本重复询问是否下载，安装程序和账号授权仍需用户操作。需要先看计划时使用 <code>-WhatIf</code>。已装 v2.1.0 会复用安装；如检测到旧版本，请先通过官方安装包升级。安装在自定义目录时可加 <code>-InstallRoot</code>。</p>
+    <p><code>-Yes</code> 省去脚本重复询问是否下载，安装程序和账号授权仍需用户操作。需要先看计划时使用 <code>-WhatIf</code>。已装 v2.2.0 会复用安装；如检测到旧版本，请先通过官方安装包升级。安装在自定义目录时可加 <code>-InstallRoot</code>。</p>
     <p>保持安装任务运行，等待用户在知己窗口选择允许读取的账号并确认。默认只读。配对期间 Agent 应提示用户查看窗口，保持进程存活并等待结果。授权应由用户确认。遇到超时可重新运行同一命令。</p>
     <p>基础查询使用当前 AI 客户端的模型。用到好友分析、自我分析等知己专项能力时，再配置知己的模型服务。</p>
 
