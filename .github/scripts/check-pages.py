@@ -41,6 +41,7 @@ class Page(HTMLParser):
         self.references = []
         self.images = []
         self.frames = []
+        self.downloads = []
         self.csp = ''
 
     def handle_starttag(self, tag, attrs):
@@ -56,6 +57,8 @@ class Page(HTMLParser):
             self.images.append(attrs)
         if tag == 'iframe':
             self.frames.append(attrs)
+        if tag == 'a' and 'data-download' in attrs:
+            self.downloads.append(attrs.get('href', ''))
 
 
 def validate_release(value, *, required):
@@ -149,7 +152,10 @@ def main():
                 assert target.is_relative_to(path.parent.resolve()) and target.is_file(), 'Broken local file link'
             if parsed.fragment and not parsed.path:
                 assert parsed.fragment in page.ids, 'Broken local anchor'
-    release = validate_release(json.loads((SITE / 'release.json').read_text(encoding='utf-8')), required=args.require_download)
+    release_document = json.loads((SITE / 'release.json').read_text(encoding='utf-8'))
+    release = validate_release(release_document, required=args.require_download)
+    if release != 'pending':
+        assert pages['index.html'].downloads == [release_document['downloadUrl']], 'Static download URL differs from release.json'
     print(json.dumps({'siteFiles': len(actual), 'interactiveDemos': len(DEMO_PAGES), 'screenshots': 0,
                       'download': release, 'publicAssetVerified': args.require_download}))
 
