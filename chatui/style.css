@@ -840,7 +840,7 @@ a.msg-link-card:hover .msg-link-title { text-decoration: underline; }
   outline-offset: 3px;
 }
 
-/* Crab Farm Pattern in Hexianxue bubble */
+/* Decorative text bubble pattern */
 .crab-farm-text {
   white-space: pre-wrap;
   font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", -apple-system, BlinkMacSystemFont, sans-serif;
